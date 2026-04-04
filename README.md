@@ -1,1 +1,1 @@
-# my-worker-6o1
+# Ftt otc analysis.direction 
