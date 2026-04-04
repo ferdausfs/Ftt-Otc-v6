@@ -1,5 +1,5 @@
 /**
- * FTT Signal Worker v6.3.2 — Multi-Timeframe Binary Trading (Forex + Crypto)
+ * FTT Signal Worker v6.6.0 — Multi-Timeframe Binary Trading (Forex + Crypto)
  *
  * v6.3 additions:
  * 1. S/R level detection (swing high/low clustering) — CAT 11
@@ -11,6 +11,46 @@
  * 12. detectFVG() — scanBack index calculation corrected (wrong candle triplet)
  * 13. FVG block TF priority — 1min first (was 5min → wrong TF for block decision)
  * 14. CAT 11 S/R strength normalized (0–1.0 range) — was inflating scores 3x
+ *
+ * v6.4.0 accuracy improvements:
+ * A1. S/R nearThresh tightened: atr*1.0 → atr*0.5
+ * A2. FVG hard block removed → confidence penalty (-20)
+ * A3. HTF hard block conditioned on ADX>=25
+ * A4. Confidence formula rebuilt: NO_TRADE TF weights in denominator
+ * A5. Entry candle confirmation penalty
+ * A6. MIN_CONFIDENCE_FLOOR: 65 → 62
+ *
+ * v6.5.0 — Cerebras AI validation layer
+ * v6.5.1 — getApiKeys() JSON array support
+ * v6.5.2 — FVG dead-market TF bug fix
+ *
+ * v6.6.0 — Market Regime System:
+ * C1. detectMarketRegime() — 4 regimes: TRENDING / RANGING / BREAKOUT / VOLATILE
+ * C2. getRegimeWeights()   — dynamic category weights per regime
+ *     TRENDING  : trend↑, sr↓, oscillator normal
+ *     RANGING   : sr↑↑, oscillator↑, trend↓ — S/R bounce is primary signal
+ *     BREAKOUT  : bands↑↑, volume↑, trend↑, sr↓
+ *     VOLATILE  : all weights×0.7 — unstable, penalize everything
+ * C3. Regime passed into analyzeTimeframe → weights applied per TF
+ * C4. Alignment bonus regime-aware: RANGING/VOLATILE → +5 max (was +15)
+ * C5. Confidence hard cap: 99% → 92% (realistic upper bound)
+ * C6. AI concerns → boost removed + extra -5 penalty
+ * C7. marketRegime + regimeAdvice added to signal response
+ *
+ * v6.6.1 — 20-candle context for Cerebras AI:
+ *
+ * v6.7.0 — OTC Hybrid Layer (Olymp Trade):
+ * O1. Full OTC pair support: EURUSD-OTC / EUR/USD-OTC / EURUSDOTC
+ * O2. OTC-specific category weights (price action primary)
+ * O3. 5 OTC patterns: ConsecCandles / WickRejection / RoundNumber / SizeAnomaly / TimeContext
+ * O4. HTF block disabled for OTC (synthetic price does not trend)
+ * O5. OTC Cerebras prompt — mean reversion focused
+ * O6. 24/7 trading — no market hours restriction
+ * O7. OTC confidence cap 88%, floor 60%
+ * D1. buildIndicatorSnapshot() now includes 20 compact candles per TF (1min/5min/15min)
+ * D2. Compact format: U/B:O/H/L/C — token efficient (~525 extra tokens, ~975 signals/day)
+ * D3. Price structure summary per TF: HH-HL / LH-LL / Consolidation / Expanding
+ * D4. AI now sees recent price action + structure, not just calculated indicators
  */
 
 // ============================================
@@ -26,8 +66,8 @@ const CONFIG = {
   MIN_CONFLUENCE: 5,
   MIN_CATEGORY_SCORE: 0.3,
 
-  // [v6.2] Confidence floor — below this → NO_TRADE
-  MIN_CONFIDENCE_FLOOR: 65,
+  // [v6.4] Confidence floor — below this → NO_TRADE (lowered from 65 → 62)
+  MIN_CONFIDENCE_FLOOR: 62,
 
   // [v6.2] Volume spike filter — ratio above this triggers anomaly check
   VOLUME_SPIKE_FILTER_MULTIPLIER: 3.5,
@@ -89,6 +129,53 @@ const CONFIG = {
     'COP', 'PEN', 'ARS', 'EGP', 'NGN', 'KES', 'GHS', 'TZS', 'UGX', 'MAD',
   ],
   EXOTIC_CONFIDENCE_PENALTY: 10,
+};
+
+
+// ============================================
+// OTC CONFIG (v6.7.0)
+// ============================================
+
+const ASSET_TYPE_OTC = 'FOREX_OTC';
+
+const OTC_SUFFIXES = ['-OTC', 'OTC'];
+
+const OTC_SUPPORTED_BASE_PAIRS = [
+  'EUR/USD', 'GBP/USD', 'USD/JPY', 'USD/CHF', 'USD/CAD', 'AUD/USD', 'NZD/USD',
+  'EUR/GBP', 'EUR/JPY', 'EUR/CHF', 'EUR/AUD', 'EUR/CAD', 'EUR/NZD',
+  'GBP/JPY', 'GBP/CHF', 'GBP/AUD', 'GBP/CAD', 'GBP/NZD',
+  'AUD/JPY', 'AUD/CHF', 'AUD/CAD', 'AUD/NZD',
+  'NZD/JPY', 'NZD/CHF', 'NZD/CAD',
+  'CAD/JPY', 'CAD/CHF', 'CHF/JPY',
+  'USD/SEK', 'USD/NOK', 'USD/DKK', 'USD/SGD', 'USD/HKD',
+  'USD/TRY', 'USD/ZAR', 'USD/MXN',
+  'EUR/SEK', 'EUR/NOK', 'EUR/PLN', 'EUR/TRY',
+];
+
+const OTC_CATEGORY_WEIGHTS = {
+  trend:      0.4,
+  momentum:   2.2,
+  macd:       0.5,
+  stochastic: 2.0,
+  bands:      1.8,
+  adx:        0.3,
+  patterns:   2.5,
+  divergence: 1.8,
+  pivots:     1.2,
+  volume:     0.0,
+  sr:         2.0,
+};
+
+const OTC_SCORE_THRESHOLD = 2.2;
+const OTC_MIN_CONFLUENCE  = 4;
+const OTC_CONFIDENCE_FLOOR = 60;
+const OTC_CONFIDENCE_CAP   = 88;
+const OTC_EXOTIC_PENALTY   = 15;
+
+const OTC_DURATION_CONFIG = {
+  '1min':  { base: 2, min: 2, max: 3 },
+  '5min':  { base: 2, min: 2, max: 2 },
+  '15min': { base: 1, min: 1, max: 2 },
 };
 
 // ============================================
@@ -263,7 +350,7 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.3.2 — Forex + Crypto Multi-Timeframe',
+          message: 'FTT Signal Worker v6.6.1 — Forex + Crypto Multi-Timeframe',
           endpoints: {
             health: '/',
             signal: '/api/signal?pair=EUR/USD',
@@ -356,45 +443,62 @@ async function checkRateLimit(request, env) {
 // INPUT SANITIZATION
 // ============================================
 
+// OTC helpers
+function isOTCInput(input) {
+  if (!input || typeof input !== 'string') return false;
+  const u = input.toUpperCase();
+  return u.endsWith('-OTC') || u.endsWith('OTC');
+}
+
+function stripOTCSuffix(input) {
+  if (!input) return input;
+  let s = input.toUpperCase().trim();
+  if (s.endsWith('-OTC')) return s.slice(0, -4);
+  if (s.endsWith('OTC'))  return s.slice(0, -3);
+  return s;
+}
+
+function getOTCBasePair(pair) {
+  if (!pair) return pair;
+  if (pair.endsWith('-OTC')) return pair.slice(0, -4);
+  return pair;
+}
+
 function sanitizePair(input) {
   if (!input || typeof input !== 'string') return null;
-  const c = input.replace(/[^A-Za-z/]/g, '').toUpperCase();
 
-  // --- Slash format: BTC/USD, EUR/USD, ETH/BTC ---
+  const otcFlag  = isOTCInput(input);
+  const baseInput = otcFlag ? stripOTCSuffix(input) : input;
+  const c = baseInput.replace(/[^A-Za-z/]/g, '').toUpperCase();
+
+  // --- Slash format ---
   const slashPattern = /^[A-Z]{3,}\/[A-Z]{3,}$/;
   if (slashPattern.test(c)) {
     const parts = c.split('/');
-    const b = parts[0];
-    const q = parts[1];
-    // Crypto pair check first
-    if (CRYPTO_BASES.includes(b) && (CRYPTO_QUOTES.includes(q) || VALID_FOREX_CURRENCIES.includes(q)) && b !== q) {
-      return c;
-    }
-    // Forex pair
+    const b = parts[0]; const q = parts[1];
+    if (!otcFlag && CRYPTO_BASES.includes(b) && (CRYPTO_QUOTES.includes(q) || VALID_FOREX_CURRENCIES.includes(q)) && b !== q) return c;
     if (VALID_FOREX_CURRENCIES.includes(b) && VALID_FOREX_CURRENCIES.includes(q) && b !== q) {
-      return c;
+      return otcFlag ? b + '/' + q + '-OTC' : c;
     }
     return null;
   }
 
-  // --- No-slash format: BTCUSD, ETHUSD, EURUSD ---
-  // FIX: Crypto check FIRST — CRYPTO_BASES length varies (3+ chars), must check before forex 6-char
-  for (const base of CRYPTO_BASES) {
-    if (c.startsWith(base) && c.length > base.length) {
-      const quote = c.slice(base.length);
-      if ((CRYPTO_QUOTES.includes(quote) || VALID_FOREX_CURRENCIES.includes(quote)) && base !== quote) {
-        return base + '/' + quote;
+  // --- No-slash crypto (only when not OTC) ---
+  if (!otcFlag) {
+    for (const base of CRYPTO_BASES) {
+      if (c.startsWith(base) && c.length > base.length) {
+        const quote = c.slice(base.length);
+        if ((CRYPTO_QUOTES.includes(quote) || VALID_FOREX_CURRENCIES.includes(quote)) && base !== quote) return base + '/' + quote;
       }
     }
   }
 
-  // Forex 6-char: EURUSD → EUR/USD
+  // --- Forex 6-char ---
   const noSlashPattern = /^[A-Z]{6}$/;
   if (noSlashPattern.test(c)) {
-    const b = c.slice(0, 3);
-    const q = c.slice(3, 6);
+    const b = c.slice(0, 3); const q = c.slice(3, 6);
     if (VALID_FOREX_CURRENCIES.includes(b) && VALID_FOREX_CURRENCIES.includes(q) && b !== q) {
-      return b + '/' + q;
+      return otcFlag ? b + '/' + q + '-OTC' : b + '/' + q;
     }
   }
 
@@ -403,6 +507,7 @@ function sanitizePair(input) {
 
 function getAssetType(pair) {
   if (!pair || typeof pair !== 'string') return ASSET_TYPE.FOREX;
+  if (pair.endsWith('-OTC')) return ASSET_TYPE_OTC;
   const parts = pair.split('/');
   const base = parts[0] || '';
   if (CRYPTO_BASES.includes(base)) return ASSET_TYPE.CRYPTO;
@@ -702,6 +807,7 @@ function formatTimeUntil(target) {
 
 function handleHealth(env) {
   const keyCount = getApiKeys(env).length;
+  const keySource = env.TWELVEDATA_API_KEYS ? 'TWELVEDATA_API_KEYS (JSON array)' : 'TWELVEDATA_API_KEY_N (individual vars)';
   const forexOpen = isForexMarketOpen();
   const holiday = getForexHoliday();
   const session = detectTradingSession();
@@ -709,12 +815,13 @@ function handleHealth(env) {
 
   return jsonResponse({
     status: 'healthy',
-    version: '6.3.2',
+    version: '6.6.1',
     timestamp: new Date().toISOString(),
-    apiKeys: { configured: keyCount, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
+    apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
     bindings: {
       kvCache: env.SIGNAL_CACHE ? 'ready' : 'NOT CONFIGURED',
       rateLimiter: env.RATE_LIMITER ? 'ready' : 'KV fallback',
+      cerebrasAI: env.CEREBRAS_API_KEY ? 'ready (v6.5.0 AI layer enabled)' : 'NOT CONFIGURED (add CEREBRAS_API_KEY secret)',
     },
     currentSession: session,
     newsBlackout: newsBlock || { blocked: false, label: 'NONE' },
@@ -876,6 +983,13 @@ async function handleSignal(pair, env, ctx) {
 
 async function handleSignalRaw(pair, env, ctx) {
   const assetType = getAssetType(pair);
+
+  // ── OTC ROUTING (v6.7.0) ──────────────────────────────────────
+  if (assetType === ASSET_TYPE_OTC) {
+    return await handleSignalRawOTC(pair, env, ctx);
+  }
+  // ─────────────────────────────────────────────────────────────
+
   const session = detectTradingSession();
   const exotic = assetType === ASSET_TYPE.FOREX ? isExoticPair(pair) : false;
   let holidayWarning = null;
@@ -945,7 +1059,7 @@ async function handleSignalRaw(pair, env, ctx) {
     };
   }
 
-  const signal = buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic, newsBlock);
+  const signal = await buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic, newsBlock, env);
 
   if (holidayWarning) signal.holidayWarning = holidayWarning;
 
@@ -985,12 +1099,29 @@ async function handleSignalRaw(pair, env, ctx) {
 // ============================================
 
 function getApiKeys(env) {
+  // JSON array থেকে keys নাও — TWELVEDATA_API_KEYS বা TWELVEDATA_API_KEY দুটোই চেক করো
+  const jsonSources = [env.TWELVEDATA_API_KEYS, env.TWELVEDATA_API_KEY];
+  for (const src of jsonSources) {
+    if (src && typeof src === 'string' && src.trim().startsWith('[')) {
+      try {
+        const keys = JSON.parse(src);
+        if (Array.isArray(keys) && keys.length > 0) {
+          const filtered = keys.map(k => k.trim()).filter(k => k.length > 0);
+          if (filtered.length > 0) return filtered;
+        }
+      } catch (e) {
+        console.warn('API key JSON parse error:', e.message);
+      }
+    }
+  }
+  // Fallback: আলাদা variable format TWELVEDATA_API_KEY_1 … _10
   const keys = [];
   for (let i = 1; i <= 10; i++) {
     const k = env['TWELVEDATA_API_KEY_' + i];
     if (k && typeof k === 'string' && k.trim().length > 0) keys.push(k.trim());
   }
-  if (keys.length === 0 && env.TWELVEDATA_API_KEY) {
+  // Single plain key
+  if (keys.length === 0 && env.TWELVEDATA_API_KEY && !env.TWELVEDATA_API_KEY.trim().startsWith('[')) {
     keys.push(env.TWELVEDATA_API_KEY.trim());
   }
   return keys;
@@ -1669,6 +1800,97 @@ function detectMACDDivergence(candles, hist, lookback) {
 }
 
 // ============================================
+// [v6.6.0] MARKET REGIME DETECTION
+// 4 regimes: TRENDING / RANGING / BREAKOUT / VOLATILE
+// ============================================
+
+function detectMarketRegime(adxVal, bbBandwidth, atr, lastClose, assetType, prevBbBandwidth) {
+  const vt = VOLATILITY_THRESHOLDS[assetType] || VOLATILITY_THRESHOLDS.FOREX;
+
+  // VOLATILE: ATR very high → unstable, unpredictable
+  if (atr !== null && lastClose > 0) {
+    const atrPct = (atr / lastClose) * 100;
+    if (atrPct > vt.atrVeryHigh) return 'VOLATILE';
+  }
+
+  // BREAKOUT: BB was squeezed, now expanding fast
+  if (bbBandwidth !== null && prevBbBandwidth !== null) {
+    const expanding  = bbBandwidth > prevBbBandwidth * 1.25;
+    const wasSqueezed = prevBbBandwidth < vt.bbSqueeze * 1.5;
+    if (wasSqueezed && expanding) return 'BREAKOUT';
+  }
+
+  // TRENDING: ADX >= 25 → directional move
+  if (adxVal !== null && adxVal >= 25) return 'TRENDING';
+
+  // RANGING: ADX < 20 → oscillating market
+  return 'RANGING';
+}
+
+// ============================================
+// [v6.6.0] DYNAMIC WEIGHTS BY REGIME
+// ============================================
+
+function getRegimeWeights(regime) {
+  if (regime === 'TRENDING') {
+    return {
+      trend: 2.4, momentum: 1.4, macd: 1.6, stochastic: 0.7,
+      bands: 0.8, adx: 1.8, patterns: 1.2, divergence: 1.5,
+      pivots: 0.6, volume: 0.7, sr: 0.8,
+    };
+  }
+  if (regime === 'RANGING') {
+    return {
+      trend: 0.8, momentum: 1.8, macd: 0.8, stochastic: 1.8,
+      bands: 1.4, adx: 0.8, patterns: 1.3, divergence: 1.8,
+      pivots: 1.2, volume: 0.5, sr: 2.2,
+    };
+  }
+  if (regime === 'BREAKOUT') {
+    return {
+      trend: 2.0, momentum: 1.2, macd: 1.4, stochastic: 0.6,
+      bands: 2.0, adx: 1.6, patterns: 1.0, divergence: 0.8,
+      pivots: 0.7, volume: 1.2, sr: 0.7,
+    };
+  }
+  if (regime === 'VOLATILE') {
+    return {
+      trend: 1.2, momentum: 1.0, macd: 0.8, stochastic: 0.8,
+      bands: 0.9, adx: 1.0, patterns: 0.8, divergence: 1.0,
+      pivots: 0.6, volume: 0.4, sr: 1.0,
+    };
+  }
+  // Default fallback = CONFIG base
+  return {
+    trend: 1.8, momentum: 1.4, macd: 1.2, stochastic: 1.0,
+    bands: 1.0, adx: 1.3, patterns: 1.1, divergence: 1.5,
+    pivots: 0.8, volume: 0.5, sr: 1.4,
+  };
+}
+
+// ============================================
+// [v6.6.0] REGIME ADVICE
+// ============================================
+
+function getRegimeAdvice(regime, direction) {
+  if (regime === 'TRENDING')
+    return direction === 'NO_TRADE'
+      ? 'Trending — wait for pullback entry'
+      : 'Trending — trade with trend, momentum expiry';
+  if (regime === 'RANGING')
+    return direction === 'NO_TRADE'
+      ? 'Ranging — wait for S/R boundary'
+      : 'Ranging — trade at S/R only, short expiry';
+  if (regime === 'BREAKOUT')
+    return direction === 'NO_TRADE'
+      ? 'Breakout forming — wait for candle close'
+      : 'Breakout — ride momentum, avoid counter-trades';
+  if (regime === 'VOLATILE')
+    return 'High volatility — reduce size or skip';
+  return '';
+}
+
+// ============================================
 // MARKET CONDITION DETECTION
 // ============================================
 
@@ -1936,10 +2158,229 @@ function jsonResponse(data, status) {
 }
 
 // ============================================
-// BUILD MULTI-TIMEFRAME SIGNAL (v6.2)
+// [v6.5.0] CEREBRAS AI VALIDATION LAYER
+// Sends full indicator snapshot to Cerebras llama3.1-8b.
+// Returns independent BUY/SELL/NO_TRADE verdict.
+// On any error/timeout → returns { status: 'UNAVAILABLE' }
 // ============================================
 
-function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic, newsBlock) {
+async function callCerebrasValidation(pair, assetType, engineSignal, indicatorSnapshot, env) {
+  if (!env.CEREBRAS_API_KEY) return { status: 'NO_KEY' };
+
+  // Build a compact but information-rich prompt
+  var prompt = [
+    'You are an expert binary options trading analyst. Analyze the following technical indicator snapshot for ' + pair + ' (' + assetType + ').',
+    '',
+    '=== ENGINE SIGNAL ===',
+    'Direction: ' + engineSignal.direction,
+    'Confidence: ' + engineSignal.confidence,
+    'Alignment: ' + engineSignal.alignment,
+    'HTF Trend (15min): ' + engineSignal.higherTFTrend,
+    'Market condition: ' + (engineSignal.marketCondition || []).join(', '),
+    '',
+    '=== INDICATOR SNAPSHOT (best timeframe: ' + engineSignal.bestTF + ') ===',
+    'EMA alignment: ' + indicatorSnapshot.emaAlignment,
+    'EMA5/10/20: ' + indicatorSnapshot.ema5 + ' / ' + indicatorSnapshot.ema10 + ' / ' + indicatorSnapshot.ema20,
+    'RSI(14): ' + indicatorSnapshot.rsi,
+    'MACD histogram: ' + indicatorSnapshot.macdHist,
+    'ADX: ' + indicatorSnapshot.adx + '  (+DI ' + indicatorSnapshot.plusDI + '  -DI ' + indicatorSnapshot.minusDI + ')',
+    'Stochastic K/D: ' + indicatorSnapshot.stochK + ' / ' + indicatorSnapshot.stochD,
+    'Williams %R: ' + indicatorSnapshot.williamsR,
+    'CCI: ' + indicatorSnapshot.cci,
+    'BB %B: ' + indicatorSnapshot.bbPercentB + '  Bandwidth: ' + indicatorSnapshot.bbBandwidth,
+    'ATR: ' + indicatorSnapshot.atr,
+    'S/R context: ' + indicatorSnapshot.srContext,
+    'FVG active: ' + indicatorSnapshot.fvgActive,
+    'Candlestick patterns: ' + (indicatorSnapshot.patterns.length ? indicatorSnapshot.patterns.join(', ') : 'NONE'),
+    'RSI divergence: ' + indicatorSnapshot.rsiDiv,
+    'MACD divergence: ' + indicatorSnapshot.macdDiv,
+    'Pivot: ' + indicatorSnapshot.pivot + '  R1: ' + indicatorSnapshot.r1 + '  S1: ' + indicatorSnapshot.s1,
+    '',
+    '=== PRICE STRUCTURE (last 20 candles) ===',
+    '1min  structure: ' + indicatorSnapshot.structure1min,
+    '5min  structure: ' + indicatorSnapshot.structure5min,
+    '15min structure: ' + indicatorSnapshot.structure15min,
+    '',
+    '=== RAW CANDLES — compact format (U=bullish B=bearish O/H/L/C, newest last) ===',
+    '1min  (20): ' + indicatorSnapshot.candles1min,
+    '5min  (20): ' + indicatorSnapshot.candles5min,
+    '15min (20): ' + indicatorSnapshot.candles15min,
+    '',
+    '=== YOUR TASK ===',
+    'Based ONLY on these indicators, give your independent analysis.',
+    'Consider: Are the indicators consistent? Any contradictions? Is this a high-probability setup?',
+    'Respond in STRICT JSON only — no markdown, no extra text:',
+    '{"signal":"BUY"|"SELL"|"NO_TRADE","confidence":0-100,"reason":"max 20 words","concerns":"max 15 words or null"}',
+  ].join('\n');
+
+  try {
+    var controller = new AbortController();
+    var timeoutId = setTimeout(function() { controller.abort(); }, 8000); // 8s timeout
+
+    var res;
+    try {
+      res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + env.CEREBRAS_API_KEY,
+        },
+        body: JSON.stringify({
+          model: 'llama3.1-8b',
+          max_tokens: 120,
+          temperature: 0.05, // near-deterministic for trading decisions
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    if (!res.ok) {
+      return { status: 'API_ERROR', httpStatus: res.status };
+    }
+
+    var data = await res.json();
+    var text = (data.choices && data.choices[0] && data.choices[0].message)
+      ? data.choices[0].message.content.trim()
+      : null;
+
+    if (!text) return { status: 'EMPTY_RESPONSE' };
+
+    // Strip any accidental markdown fences
+    text = text.replace(/```json|```/g, '').trim();
+
+    // Find JSON object in response
+    var jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { status: 'PARSE_ERROR', raw: text.slice(0, 100) };
+
+    var parsed = JSON.parse(jsonMatch[0]);
+
+    // Validate fields
+    var validSignals = ['BUY', 'SELL', 'NO_TRADE'];
+    var aiSignal = typeof parsed.signal === 'string' ? parsed.signal.toUpperCase() : 'NO_TRADE';
+    if (!validSignals.includes(aiSignal)) aiSignal = 'NO_TRADE';
+    var aiConf = typeof parsed.confidence === 'number'
+      ? Math.max(0, Math.min(100, Math.round(parsed.confidence)))
+      : 50;
+
+    return {
+      status: 'OK',
+      signal: aiSignal,
+      confidence: aiConf,
+      reason: parsed.reason || null,
+      concerns: parsed.concerns || null,
+      model: 'cerebras/llama3.1-8b',
+    };
+
+  } catch (e) {
+    if (e.name === 'AbortError') return { status: 'TIMEOUT' };
+    return { status: 'ERROR', message: e.message };
+  }
+}
+
+// ============================================
+// [v6.5.0] BUILD INDICATOR SNAPSHOT for Cerebras
+// Pulls best-TF indicators into a flat object
+// ============================================
+
+function buildIndicatorSnapshot(tfResults, candleData, finalDirection, bestTF) {
+  var best = tfResults[bestTF] || tfResults['5min'] || tfResults['1min'] || tfResults['15min'];
+  if (!best) return null;
+
+  var ind = best.indicators || {};
+  var catScores = best.categoryScores || {};
+
+  // [v6.6.1] Build compact 20-candle string per TF
+  // Format: "U/B:O/H/L/C" — U=bullish, B=bearish, prices 5 decimal
+  function compactCandles(candles, count) {
+    if (!candles || candles.length === 0) return 'N/A';
+    var recent = candles.slice(-count);
+    return recent.map(function(c) {
+      var dir = c.close >= c.open ? 'U' : 'B';
+      var o = c.open.toFixed(5);
+      var h = c.high.toFixed(5);
+      var l = c.low.toFixed(5);
+      var cl = c.close.toFixed(5);
+      return dir + ':' + o + '/' + h + '/' + l + '/' + cl;
+    }).join(' ');
+  }
+
+  // [v6.6.1] Price structure from last 20 candles
+  function priceStructure(candles) {
+    if (!candles || candles.length < 6) return 'UNKNOWN';
+    var recent = candles.slice(-20);
+    var highs = recent.map(function(c) { return c.high; });
+    var lows  = recent.map(function(c) { return c.low;  });
+    var n = recent.length;
+    // Compare first half vs second half
+    var midH1 = Math.max.apply(null, highs.slice(0, Math.floor(n/2)));
+    var midH2 = Math.max.apply(null, highs.slice(Math.floor(n/2)));
+    var midL1 = Math.min.apply(null, lows.slice(0, Math.floor(n/2)));
+    var midL2 = Math.min.apply(null, lows.slice(Math.floor(n/2)));
+    var higherHigh = midH2 > midH1;
+    var higherLow  = midL2 > midL1;
+    var lowerHigh  = midH2 < midH1;
+    var lowerLow   = midL2 < midL1;
+    if (higherHigh && higherLow)  return 'HH-HL (Bullish structure)';
+    if (lowerHigh  && lowerLow)   return 'LH-LL (Bearish structure)';
+    if (higherHigh && lowerLow)   return 'Expanding (Volatile)';
+    if (lowerHigh  && higherLow)  return 'Contracting (Consolidation)';
+    return 'Mixed structure';
+  }
+
+  // [v6.6.1] Nearest S/R distance in pips
+  function srDistance(catSc, atr) {
+    var ctx = catSc.sr && catSc.sr.context ? catSc.sr.context : 'NO_LEVEL';
+    if (!atr || atr === 'N/A') return ctx;
+    return ctx;
+  }
+
+  var candles1  = candleData['1min']  || [];
+  var candles5  = candleData['5min']  || [];
+  var candles15 = candleData['15min'] || [];
+
+  return {
+    emaAlignment:  ind.emaAlignment  || 'UNKNOWN',
+    ema5:          ind.ema5          || 'N/A',
+    ema10:         ind.ema10         || 'N/A',
+    ema20:         ind.ema20         || 'N/A',
+    rsi:           ind.rsi           || 'N/A',
+    macdHist:      ind.macdHist      || 'N/A',
+    adx:           ind.adx           || 'N/A',
+    plusDI:        ind.plusDI        || 'N/A',
+    minusDI:       ind.minusDI       || 'N/A',
+    stochK:        ind.stochK        || 'N/A',
+    stochD:        ind.stochD        || 'N/A',
+    williamsR:     ind.williamsR     || 'N/A',
+    cci:           ind.cci           || 'N/A',
+    bbPercentB:    ind.bbPercentB    || 'N/A',
+    bbBandwidth:   ind.bbBandwidth   || 'N/A',
+    atr:           ind.atr           || 'N/A',
+    pivot:         ind.pivot         || 'N/A',
+    r1:            ind.r1            || 'N/A',
+    s1:            ind.s1            || 'N/A',
+    srContext:     (catScores.sr && catScores.sr.context)             || 'NO_LEVEL',
+    fvgActive:     (catScores.fvg && catScores.fvg.active)            || 'NONE',
+    patterns:      (catScores.patterns && catScores.patterns.detected) || [],
+    rsiDiv:        (catScores.divergence && catScores.divergence.rsi)  || 'NONE',
+    macdDiv:       (catScores.divergence && catScores.divergence.macd) || 'NONE',
+    // [v6.6.1] 20 candle compact + structure
+    candles1min:   compactCandles(candles1,  20),
+    candles5min:   compactCandles(candles5,  20),
+    candles15min:  compactCandles(candles15, 20),
+    structure1min:  priceStructure(candles1),
+    structure5min:  priceStructure(candles5),
+    structure15min: priceStructure(candles15),
+  };
+}
+
+// ============================================
+// BUILD MULTI-TIMEFRAME SIGNAL (v6.5.0)
+// ============================================
+
+async function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic, newsBlock, env) {
   const now = new Date();
   const tfResults = {};
   const votes = [];
@@ -1962,6 +2403,29 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
     }
   }
 
+  // [v6.6.0] Step 0b: Detect Market Regime from 15min candles
+  // Regime determines dynamic weights for all TF analyses
+  var marketRegime = 'RANGING'; // default
+  if (candleData['15min'] && candleData['15min'].length >= 3) {
+    var regimeCandles = candleData['15min'];
+    var rInd = calculateAllIndicators(regimeCandles);
+    var rAdx = safeLastValue(rInd.adx.adx);
+    var rBbBW = safeLastValue(rInd.bollinger.bandwidth);
+    var rBbBWPrev = null;
+    var rBbBWArr = rInd.bollinger.bandwidth;
+    // Get second-to-last valid bandwidth for breakout detection
+    if (rBbBWArr) {
+      var bwVals = [];
+      for (var bi = rBbBWArr.length - 1; bi >= 0 && bwVals.length < 2; bi--) {
+        if (rBbBWArr[bi] !== null && !isNaN(rBbBWArr[bi])) bwVals.push(rBbBWArr[bi]);
+      }
+      if (bwVals.length >= 2) rBbBWPrev = bwVals[1];
+    }
+    var rAtr = safeLastValue(rInd.atr);
+    var rLastClose = regimeCandles[regimeCandles.length - 1].close;
+    marketRegime = detectMarketRegime(rAdx, rBbBW, rAtr, rLastClose, assetType, rBbBWPrev);
+  }
+
   // Step 1: Analyze each timeframe
   const tfKeys = Object.keys(candleData);
   for (let t = 0; t < tfKeys.length; t++) {
@@ -1970,7 +2434,7 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
     if (!candles || candles.length === 0) continue;
 
     const indicators = calculateAllIndicators(candles);
-    const analysis = analyzeTimeframe(indicators, candles, tf, assetType, higherTFTrend);
+    const analysis = analyzeTimeframe(indicators, candles, tf, assetType, higherTFTrend, marketRegime);
 
     const durationCandles = calculateCandleDuration(indicators, analysis.direction, candles, tf, assetType);
     const candleMin = CANDLE_MINUTES[tf] || 1;
@@ -2006,29 +2470,34 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
   }
 
   // Step 2: Weighted Multi-TF Voting
-  let weightedBuy = 0; let weightedSell = 0; let totalWeight = 0;
+  let weightedBuy = 0; let weightedSell = 0; let weightedNoTrade = 0; let totalWeight = 0;
   const activeDirs = [];
 
   for (let v = 0; v < votes.length; v++) {
     const vote = votes[v];
     const w = CONFIG.TF_WEIGHTS[vote.tf] || 1.0;
     totalWeight += w;
-    if (vote.direction === 'BUY')  { weightedBuy  += w * (vote.score.up   || 1); activeDirs.push('BUY');  }
+    if (vote.direction === 'BUY')  { weightedBuy      += w * (vote.score.up   || 1); activeDirs.push('BUY');  }
     else if (vote.direction === 'SELL') { weightedSell += w * (vote.score.down || 1); activeDirs.push('SELL'); }
+    else { weightedNoTrade += w; } // [v6.4] track NO_TRADE weight for confidence denominator
   }
 
-  // Alignment
+  // Alignment — [v6.6.0] bonus reduced for RANGING/VOLATILE (misleading in those regimes)
   const allBuy  = activeDirs.length > 0 && activeDirs.every(function (d) { return d === 'BUY'; });
   const allSell = activeDirs.length > 0 && activeDirs.every(function (d) { return d === 'SELL'; });
   let alignment = 'MIXED'; let alignmentBonus = 0;
 
-  if (allBuy)  { alignment = 'ALL_BULLISH'; alignmentBonus = 15; }
-  else if (allSell) { alignment = 'ALL_BEARISH'; alignmentBonus = 15; }
+  // Base bonus by alignment type
+  var fullBonus    = (marketRegime === 'TRENDING' || marketRegime === 'BREAKOUT') ? 15 : 5;
+  var partialBonus = (marketRegime === 'TRENDING' || marketRegime === 'BREAKOUT') ? 7  : 3;
+
+  if (allBuy)  { alignment = 'ALL_BULLISH'; alignmentBonus = fullBonus; }
+  else if (allSell) { alignment = 'ALL_BEARISH'; alignmentBonus = fullBonus; }
   else if (!allBuy && !allSell && activeDirs.length >= 2) {
     const bc = activeDirs.filter(function (d) { return d === 'BUY'; }).length;
     const sc = activeDirs.filter(function (d) { return d === 'SELL'; }).length;
-    if (bc > sc) { alignment = 'MOSTLY_BULLISH'; alignmentBonus = 7; }
-    if (sc > bc) { alignment = 'MOSTLY_BEARISH'; alignmentBonus = 7; }
+    if (bc > sc) { alignment = 'MOSTLY_BULLISH'; alignmentBonus = partialBonus; }
+    if (sc > bc) { alignment = 'MOSTLY_BEARISH'; alignmentBonus = partialBonus; }
   }
 
   // Step 3: Decision
@@ -2038,23 +2507,36 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
 
   if (weightedBuy > weightedSell && weightedBuy > 0) {
     finalDirection = 'BUY';
-    confidence = totalWeightedScore > 0 ? Math.round((weightedBuy / totalWeightedScore) * 100) : 50;
+    // [v6.4] NO_TRADE weight counts as partial resistance in denominator
+    // Prevents 1-TF BUY + 2-TF NO_TRADE giving 100% confidence
+    var buyDenom = weightedBuy + weightedSell + (weightedNoTrade * 0.6);
+    confidence = buyDenom > 0 ? Math.round((weightedBuy / buyDenom) * 100) : 50;
   } else if (weightedSell > weightedBuy && weightedSell > 0) {
     finalDirection = 'SELL';
-    confidence = totalWeightedScore > 0 ? Math.round((weightedSell / totalWeightedScore) * 100) : 50;
+    var sellDenom = weightedBuy + weightedSell + (weightedNoTrade * 0.6);
+    confidence = sellDenom > 0 ? Math.round((weightedSell / sellDenom) * 100) : 50;
   } else {
     const tie = resolveTieWithTolerance(tfResults);
     finalDirection = tie.direction; confidence = tie.confidence;
   }
 
-  // [v6.1] HTF conflict → hard NO_TRADE
+  // [v6.4] HTF conflict — hard block ONLY if 15min trend is strong (ADX>=25)
+  // Weak HTF trend = apply confidence penalty only, not full NO_TRADE
   if (higherTFTrend !== null && finalDirection !== 'NO_TRADE' && finalDirection !== higherTFTrend) {
-    finalDirection = 'NO_TRADE'; confidence = 0;
+    var htfResult15 = tfResults['15min'];
+    var htfADXVal = htfResult15 && htfResult15.indicators ? parseFloat(htfResult15.indicators.adx) : null;
+    if (htfADXVal !== null && !isNaN(htfADXVal) && htfADXVal >= 25) {
+      // Strong HTF trend — hard block counter-signals
+      finalDirection = 'NO_TRADE'; confidence = 0;
+    } else {
+      // Weak/uncertain HTF trend — just penalize confidence
+      confidence = Math.max(0, confidence - 18);
+    }
   } else if (higherTFTrend !== null && finalDirection === higherTFTrend) {
-    confidence = Math.min(99, confidence + 5);
+    confidence = Math.min(92, confidence + 5);
   }
 
-  confidence = Math.min(99, confidence + alignmentBonus);
+  confidence = Math.min(92, confidence + alignmentBonus); // [v6.6.0] hard cap 92%
 
   // [v6.1] MIXED → NO_TRADE
   if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
@@ -2062,7 +2544,7 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
   // Session quality
   if (assetType === ASSET_TYPE.FOREX) {
     if (session.quality === 'LOW') confidence = Math.max(25, confidence - 8);
-    else if (session.quality === 'HIGHEST') confidence = Math.min(99, confidence + 3);
+    else if (session.quality === 'HIGHEST') confidence = Math.min(92, confidence + 3);
   }
 
   // Exotic penalty
@@ -2088,27 +2570,37 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
     }
   }
 
-  // [v6.3] FVG hard block — if price is inside an opposing FVG → NO_TRADE
-  // [v6.3.2] FIX: Use most granular TF first (1min), not 5min
-  // [v6.3.1] Reads from tfResults.categoryScores (already computed) — no redundant detectFVG call
+  // [v6.5.2] FVG penalty — find first TF that actually has fvg data (skip dead market TFs)
+  // Bug fix: dead market 1min has categoryScores:{} — was truthy so 5min/15min fvg never checked
   var fvgBlocked = false;
   var fvgBlockDetail = '';
-  var fvgCheckTF = tfResults['1min'] || tfResults['5min'] || tfResults['15min'];
+  var fvgCheckTF = null;
+  var fvgTFOrder = ['1min', '5min', '15min'];
+  for (var fi = 0; fi < fvgTFOrder.length; fi++) {
+    var candidate = tfResults[fvgTFOrder[fi]];
+    if (candidate && candidate.categoryScores && candidate.categoryScores.fvg) {
+      fvgCheckTF = candidate;
+      break;
+    }
+  }
   if (finalDirection !== 'NO_TRADE' && fvgCheckTF && fvgCheckTF.categoryScores && fvgCheckTF.categoryScores.fvg) {
     var activeFVGType = fvgCheckTF.categoryScores.fvg.active; // 'BULLISH' | 'BEARISH' | 'NONE'
     if (activeFVGType && activeFVGType !== 'NONE') {
       if (finalDirection === 'BUY' && activeFVGType === 'BEARISH') {
         fvgBlocked = true;
-        fvgBlockDetail = 'BUY blocked: price inside bearish FVG (supply imbalance) on ' + fvgCheckTF.timeframe;
+        fvgBlockDetail = 'BUY confidence reduced: inside bearish FVG (supply imbalance) on ' + fvgCheckTF.timeframe;
+        confidence = Math.max(0, confidence - 20); // penalty, not hard block
       }
       if (finalDirection === 'SELL' && activeFVGType === 'BULLISH') {
         fvgBlocked = true;
-        fvgBlockDetail = 'SELL blocked: price inside bullish FVG (demand imbalance) on ' + fvgCheckTF.timeframe;
+        fvgBlockDetail = 'SELL confidence reduced: inside bullish FVG (demand imbalance) on ' + fvgCheckTF.timeframe;
+        confidence = Math.max(0, confidence - 20);
       }
-    }
-    if (fvgBlocked) {
-      finalDirection = 'NO_TRADE';
-      confidence = 0;
+      // After penalty: if confidence falls below floor, then block
+      if (fvgBlocked && confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
+        finalDirection = 'NO_TRADE';
+        confidence = 0;
+      }
     }
   }
 
@@ -2118,6 +2610,34 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
     newsBlocked = true;
     finalDirection = 'NO_TRADE';
     confidence = 0;
+  }
+
+  // [v6.4] Entry candle confirmation — if last 1min candle strongly opposes signal, penalize
+  // A strong body candle against the signal direction is a warning sign
+  var entryCandlePenalty = false;
+  if (finalDirection !== 'NO_TRADE') {
+    var entryCheckCandles = candleData['1min'] || candleData['5min'] || candleData['15min'];
+    if (entryCheckCandles && entryCheckCandles.length >= 2) {
+      var lastC    = entryCheckCandles[entryCheckCandles.length - 1];
+      var prevC    = entryCheckCandles[entryCheckCandles.length - 2];
+      var lastBody = Math.abs(lastC.close - lastC.open);
+      var lastRange = (lastC.high - lastC.low) || 0.00001;
+      var bodyRatio = lastBody / lastRange;
+      var lastBullish = lastC.close > lastC.open;
+      // Only penalize if strong body (bodyRatio > 0.55) AND prev candle also against signal
+      var prevBullish = prevC.close > prevC.open;
+      var bothAgainst = (finalDirection === 'BUY'  && !lastBullish && !prevBullish) ||
+                        (finalDirection === 'SELL' &&  lastBullish &&  prevBullish);
+      if (bothAgainst && bodyRatio > 0.55) {
+        entryCandlePenalty = true;
+        confidence = Math.max(0, confidence - 10);
+        // Re-check floor after penalty
+        if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
+          finalDirection = 'NO_TRADE';
+          confidence = 0;
+        }
+      }
+    }
   }
 
   // Grade
@@ -2199,24 +2719,79 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
 
   // [v6.2] Build filter audit trail
   var filtersApplied = [];
-  if (newsBlocked)        filtersApplied.push('NEWS_BLACKOUT: ' + (newsBlock ? newsBlock.label : ''));
-  if (volumeSpikeBlocked) filtersApplied.push('VOLUME_SPIKE_ANOMALY');
-  if (fvgBlocked)         filtersApplied.push('FVG_BLOCK: ' + fvgBlockDetail);
-  if (belowFloor)         filtersApplied.push('CONFIDENCE_BELOW_FLOOR (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
+  if (newsBlocked)         filtersApplied.push('NEWS_BLACKOUT: ' + (newsBlock ? newsBlock.label : ''));
+  if (volumeSpikeBlocked)  filtersApplied.push('VOLUME_SPIKE_ANOMALY');
+  if (fvgBlocked)          filtersApplied.push('FVG_PENALTY: ' + fvgBlockDetail);
+  if (belowFloor)          filtersApplied.push('CONFIDENCE_BELOW_FLOOR (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
   if (consistencyMult < 1.0) filtersApplied.push('CANDLE_INCONSISTENCY (mult=' + consistencyMult + ')');
   if (alignment === 'MIXED') filtersApplied.push('MIXED_ALIGNMENT');
+  if (entryCandlePenalty)  filtersApplied.push('ENTRY_CANDLE_PENALTY (-10 confidence)');
+
+  // [v6.5.0] CEREBRAS AI VALIDATION
+  var aiValidation = { status: 'SKIPPED' };
+  var aiAgreed = null;
+
+  if (finalDirection !== 'NO_TRADE') {
+    var snapshot = buildIndicatorSnapshot(tfResults, candleData, finalDirection, best.timeframe);
+    var engineSignalSummary = {
+      direction:       finalDirection,
+      confidence:      confidence + '%',
+      alignment:       alignment,
+      higherTFTrend:   higherTFTrend || 'NEUTRAL',
+      marketCondition: marketCondition,
+      bestTF:          best.timeframe,
+    };
+
+    aiValidation = await callCerebrasValidation(pair, assetType, engineSignalSummary, snapshot, env);
+
+    if (aiValidation.status === 'OK') {
+      aiAgreed = (aiValidation.signal === finalDirection);
+
+      if (aiAgreed) {
+        // [v6.6.0] AI agrees — boost ONLY if no concerns
+        if (!aiValidation.concerns) {
+          confidence = Math.min(92, confidence + 5);
+          filtersApplied.push('AI_BOOST: Cerebras agrees (' + aiValidation.signal + ' ' + aiValidation.confidence + '%)');
+        } else {
+          // Agrees but has concerns → no boost, small penalty
+          confidence = Math.max(0, confidence - 5);
+          filtersApplied.push('AI_AGREE_WITH_CONCERNS: ' + aiValidation.signal + ' but concerned — ' + aiValidation.concerns);
+        }
+      } else if (aiValidation.signal !== 'NO_TRADE') {
+        // AI gives opposite direction → meaningful penalty
+        confidence = Math.max(0, confidence - 15);
+        filtersApplied.push('AI_PENALTY: Cerebras disagrees (AI=' + aiValidation.signal + ' ' + aiValidation.confidence + '%)');
+        if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
+          finalDirection = 'NO_TRADE';
+          confidence = 0;
+          filtersApplied.push('CONFIDENCE_BELOW_FLOOR_AFTER_AI (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
+        }
+      } else {
+        // AI says NO_TRADE while engine has signal → soft penalty
+        confidence = Math.max(0, confidence - 8);
+        filtersApplied.push('AI_SOFT_PENALTY: Cerebras uncertain (NO_TRADE ' + aiValidation.confidence + '%)');
+      }
+      aiValidation.agrees = aiAgreed;
+    }
+  }
+
+  // Re-run grade after AI adjustments (confidence may have changed)
+  const finalGrade = getSignalGrade(confidence, avgConf, alignment);
 
   return {
     finalSignal:    finalDirection,
     confidence:     confidence + '%',
-    grade:          grade,
+    grade:          finalGrade,
     assetType:      assetType,
+    marketRegime:   marketRegime,                              // [v6.6.0]
+    regimeAdvice:   getRegimeAdvice(marketRegime, finalDirection), // [v6.6.0]
     marketCondition: marketCondition,
     alignment:      alignment,
     higherTFTrend:  higherTFTrend || 'NEUTRAL',
-    entryReason:    entryReason,         // [v6.2]
-    filtersApplied: filtersApplied,      // [v6.2]
-    newsBlackout:   newsBlock || null,   // [v6.2]
+    entryReason:    entryReason,
+    filtersApplied: filtersApplied,
+    newsBlackout:   newsBlock || null,
+    aiValidation:   aiValidation,          // [v6.5.0]
     session: assetType === ASSET_TYPE.FOREX ? session : { sessions: ['24/7'], quality: 'N/A' },
     recommendations: recommendations,
     bestTimeframe: best,
@@ -2225,12 +2800,13 @@ function buildMultiTimeframeSignal(candleData, pair, assetType, session, exotic,
       SELL:     votes.filter(function (v) { return v.direction === 'SELL'; }).length,
       NO_TRADE: votes.filter(function (v) { return v.direction === 'NO_TRADE'; }).length,
       total:    votes.length,
-      weightedBuy:  r2(weightedBuy),
-      weightedSell: r2(weightedSell),
+      weightedBuy:      r2(weightedBuy),
+      weightedSell:     r2(weightedSell),
+      weightedNoTrade:  r2(weightedNoTrade),
     },
     averageConfluence: Math.round(avgConf * 10) / 10,
     timeframeAnalysis: tfResults,
-    method:      'WEIGHTED_MULTI_TF_v6.3.2',
+    method:      'WEIGHTED_MULTI_TF_v6.6.1',
     generatedAt: now.toISOString(),
   };
 }
@@ -2281,10 +2857,11 @@ function findBestTimeframe(tfResults, finalDirection) {
 // TIMEFRAME ANALYSIS v6.2
 // ============================================
 
-function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTrend) {
+function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTrend, marketRegime) {
   const vt = VOLATILITY_THRESHOLDS[assetType] || VOLATILITY_THRESHOLDS.FOREX;
   const minScoreThreshold = SCORE_THRESHOLDS[assetType] || 3.0;
-  const weights = CONFIG.CATEGORY_WEIGHTS;
+  // [v6.6.0] Use regime-specific weights instead of static CONFIG weights
+  const weights = getRegimeWeights(marketRegime || 'RANGING');
 
   const ema5   = safeLastValue(indicators.ema5);
   const ema10  = safeLastValue(indicators.ema10);
@@ -2614,7 +3191,7 @@ function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTre
   var srU = 0; var srD = 0;
   var srContext = 'NO_LEVEL'; // NEAR_SUPPORT | NEAR_RESISTANCE | BETWEEN | NO_LEVEL
   if (atr !== null && atr > 0) {
-    var nearThresh = atr * 1.0; // within 1 ATR = "near"
+    var nearThresh = atr * 0.5; // [v6.4] tightened from 1.0 → 0.5 (prevents over-wide S/R detection)
     var nearSupport = null; var nearResistance = null;
 
     // Find nearest support BELOW price
@@ -2738,5 +3315,492 @@ function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTre
       patterns: patterns ? patterns.map(function (p) { return p.name; }) : [],
     },
     timeframe: timeframe,
+  };
+}
+
+// ============================================
+// OTC FUNCTIONS (v6.7.0)
+// ============================================
+
+function countConsecutiveCandles(candles) {
+  if (!candles || candles.length < 2) return { count: 0, direction: null };
+  const last = candles[candles.length - 1];
+  const lastBull = last.close >= last.open;
+  let count = 1;
+  for (let i = candles.length - 2; i >= 0; i--) {
+    const c = candles[i];
+    const bull = c.close >= c.open;
+    if (bull === lastBull) count++;
+    else break;
+  }
+  return { count: count, direction: lastBull ? 'BUY' : 'SELL' };
+}
+
+function detectWickRejection(candles) {
+  if (!candles || candles.length < 1) return null;
+  const c = candles[candles.length - 1];
+  const body       = Math.abs(c.close - c.open);
+  const totalRange = c.high - c.low;
+  if (totalRange <= 0) return null;
+  const upperWick = c.high - Math.max(c.open, c.close);
+  const lowerWick = Math.min(c.open, c.close) - c.low;
+  if (totalRange < 0.00005) return null;
+  const upperRatio = upperWick / totalRange;
+  const lowerRatio = lowerWick / totalRange;
+  if (upperRatio >= 0.55 && upperWick > body * 2) {
+    return { type: 'UPPER_WICK_REJECTION', direction: 'SELL', strength: upperRatio >= 0.7 ? 2.0 : 1.2, wickRatio: Math.round(upperRatio * 100) / 100 };
+  }
+  if (lowerRatio >= 0.55 && lowerWick > body * 2) {
+    return { type: 'LOWER_WICK_REJECTION', direction: 'BUY', strength: lowerRatio >= 0.7 ? 2.0 : 1.2, wickRatio: Math.round(lowerRatio * 100) / 100 };
+  }
+  return null;
+}
+
+function detectRoundNumberProximity(lastClose, atr) {
+  if (!lastClose || !atr || atr <= 0) return null;
+  const levels = [];
+  for (const step of [0.00100, 0.00500, 0.01000]) {
+    const rounded   = Math.round(lastClose / step) * step;
+    const dist      = Math.abs(lastClose - rounded);
+    const threshold = atr * 0.3;
+    if (dist < threshold) {
+      levels.push({
+        level:     Math.round(rounded * 100000) / 100000,
+        distance:  Math.round(dist * 100000) / 100000,
+        stepType:  step === 0.01000 ? 'BIG_FIGURE' : step === 0.00500 ? 'HALF_FIGURE' : 'MINOR',
+        proximity: Math.round((1 - dist / threshold) * 100) / 100,
+      });
+    }
+  }
+  if (levels.length === 0) return null;
+  levels.sort(function(a, b) { return b.proximity - a.proximity; });
+  return levels[0];
+}
+
+function detectCandleSizeAnomaly(candles) {
+  if (!candles || candles.length < 10) return null;
+  const last    = candles[candles.length - 1];
+  const sample  = candles.slice(-11, -1);
+  const avgBody = sample.reduce(function(s, c) { return s + Math.abs(c.close - c.open); }, 0) / sample.length;
+  if (avgBody <= 0) return null;
+  const lastBody = Math.abs(last.close - last.open);
+  const ratio    = lastBody / avgBody;
+  if (ratio >= 2.5) {
+    return { anomaly: true, bodyRatio: Math.round(ratio * 100) / 100, likelyDirection: last.close > last.open ? 'SELL' : 'BUY', strength: ratio >= 4.0 ? 'STRONG' : 'MODERATE' };
+  }
+  return null;
+}
+
+function getOTCTimeContext() {
+  const now    = new Date();
+  const minute = now.getUTCMinutes();
+  if (minute <= 2 || minute >= 57)  return { quality: 'AVOID',    reason: 'Hour boundary — spike risk',    penaltyPct: 12 };
+  if (minute >= 28 && minute <= 32) return { quality: 'MODERATE', reason: 'Half-hour mark',                penaltyPct: 0  };
+  if ((minute >= 10 && minute <= 25) || (minute >= 35 && minute <= 55)) return { quality: 'GOOD', reason: 'Stable OTC window', penaltyPct: -3 };
+  return { quality: 'NORMAL', reason: 'Standard window', penaltyPct: 0 };
+}
+
+function analyzeOTCPatterns(candles, atr, lastClose) {
+  const result = { consecutiveCandles: null, wickRejection: null, roundNumber: null, sizeAnomaly: null, timeContext: null, otcBonusUp: 0, otcBonusDown: 0, otcSignals: [], confluenceBonus: 0 };
+
+  const consec = countConsecutiveCandles(candles);
+  result.consecutiveCandles = consec;
+  if (consec.count >= 3) {
+    const reverseDir = consec.direction === 'BUY' ? 'down' : 'up';
+    const bonus = consec.count >= 5 ? 1.5 : consec.count >= 4 ? 1.0 : 0.6;
+    if (reverseDir === 'up') result.otcBonusUp += bonus; else result.otcBonusDown += bonus;
+    result.otcSignals.push('CONSEC_' + consec.count + '_' + consec.direction + '_REVERSAL');
+  }
+
+  const wick = detectWickRejection(candles);
+  result.wickRejection = wick;
+  if (wick) {
+    if (wick.direction === 'BUY') result.otcBonusUp += wick.strength; else result.otcBonusDown += wick.strength;
+    result.otcSignals.push(wick.type);
+  }
+
+  const round = detectRoundNumberProximity(lastClose, atr);
+  result.roundNumber = round;
+  if (round) {
+    result.otcBonusUp   += round.proximity * 0.4;
+    result.otcBonusDown += round.proximity * 0.4;
+    result.otcSignals.push('ROUND_LEVEL_' + round.stepType);
+  }
+
+  const anomaly = detectCandleSizeAnomaly(candles);
+  result.sizeAnomaly = anomaly;
+  if (anomaly) {
+    const bonus = anomaly.strength === 'STRONG' ? 1.2 : 0.7;
+    if (anomaly.likelyDirection === 'BUY') result.otcBonusUp += bonus; else result.otcBonusDown += bonus;
+    result.otcSignals.push('SIZE_ANOMALY_' + anomaly.strength);
+  }
+
+  result.timeContext = getOTCTimeContext();
+
+  const upC  = [wick && wick.direction === 'BUY' ? 1 : 0, consec.count >= 3 && consec.direction === 'SELL' ? 1 : 0, anomaly && anomaly.likelyDirection === 'BUY' ? 1 : 0].reduce(function(a,b){return a+b;},0);
+  const dnC  = [wick && wick.direction === 'SELL' ? 1 : 0, consec.count >= 3 && consec.direction === 'BUY' ? 1 : 0, anomaly && anomaly.likelyDirection === 'SELL' ? 1 : 0].reduce(function(a,b){return a+b;},0);
+  if (upC >= 2)  { result.confluenceBonus =  8; result.otcSignals.push('OTC_CONFLUENCE_BUY');  }
+  if (dnC >= 2)  { result.confluenceBonus = -8; result.otcSignals.push('OTC_CONFLUENCE_SELL'); }
+
+  return result;
+}
+
+function calculateOTCCandleDuration(indicators, direction, candles, timeframe) {
+  const cfg    = OTC_DURATION_CONFIG[timeframe] || { base: 2, min: 1, max: 3 };
+  let dur      = cfg.base;
+  const rsi    = safeLastValue(indicators.rsi);
+  const stochK = safeLastValue(indicators.stochastic.k);
+  const atr    = safeLastValue(indicators.atr);
+  if (rsi    !== null && (rsi > 80 || rsi < 20)) dur -= 1;
+  if (stochK !== null && (stochK > 90 || stochK < 10)) dur -= 1;
+  if (atr !== null && candles.length > 0) {
+    const lc = candles[candles.length - 1].close;
+    if (lc > 0 && (atr / lc) * 100 > 0.15) dur -= 1;
+  }
+  return Math.max(cfg.min, Math.min(cfg.max, dur));
+}
+
+function analyzeTimeframeOTC(indicators, candles, timeframe) {
+  var result = analyzeTimeframe(indicators, candles, timeframe, ASSET_TYPE.FOREX, null, 'RANGING');
+  var rangingWeights = { trend: 0.8, momentum: 1.8, macd: 0.8, stochastic: 1.8, bands: 1.4, adx: 0.8, patterns: 1.3, divergence: 1.8, pivots: 1.2, volume: 0.5, sr: 2.2 };
+  var otcW = OTC_CATEGORY_WEIGHTS;
+  var newUpScore = 0; var newDownScore = 0;
+  var cats = ['trend','momentum','macd','stochastic','bands','adx','patterns','divergence','pivots','volume','sr'];
+
+  for (var ci = 0; ci < cats.length; ci++) {
+    var cat = cats[ci];
+    var catData = result.categoryScores[cat];
+    if (!catData) continue;
+    var rW  = rangingWeights[cat] || 1.0;
+    var otW = otcW[cat] !== undefined ? otcW[cat] : 0;
+    if (rW > 0) {
+      var rawUp   = (catData.up   || 0) / rW;
+      var rawDown = (catData.down || 0) / rW;
+      newUpScore   += rawUp   * otW;
+      newDownScore += rawDown * otW;
+      result.categoryScores[cat] = Object.assign({}, catData, { up: r2(rawUp * otW), down: r2(rawDown * otW), otcWeight: otW });
+    }
+  }
+
+  var scoreDiff  = Math.abs(newUpScore - newDownScore);
+  var upCatCount = 0; var downCatCount = 0;
+  for (var ci2 = 0; ci2 < cats.length; ci2++) {
+    var catD = result.categoryScores[cats[ci2]];
+    if (!catD) continue;
+    if ((catD.up || 0) > (catD.down || 0) && Math.abs((catD.up || 0) - (catD.down || 0)) >= CONFIG.MIN_CATEGORY_SCORE) upCatCount++;
+    else if ((catD.down || 0) > (catD.up || 0) && Math.abs((catD.down || 0) - (catD.up || 0)) >= CONFIG.MIN_CATEGORY_SCORE) downCatCount++;
+  }
+
+  var confluence = Math.max(upCatCount, downCatCount);
+  var direction;
+  if (newUpScore >= OTC_SCORE_THRESHOLD && newUpScore > newDownScore && upCatCount >= OTC_MIN_CONFLUENCE) direction = 'BUY';
+  else if (newDownScore >= OTC_SCORE_THRESHOLD && newDownScore > newUpScore && downCatCount >= OTC_MIN_CONFLUENCE) direction = 'SELL';
+  else if (scoreDiff >= 3.0 && confluence >= 3) direction = newUpScore > newDownScore ? 'BUY' : 'SELL';
+  else direction = 'NO_TRADE';
+
+  result.direction  = direction;
+  result.score      = { up: r2(newUpScore), down: r2(newDownScore), diff: r2(scoreDiff) };
+  result.confluence = confluence;
+  result.confluenceDetail = { bullish: upCatCount, bearish: downCatCount, total: 11 };
+  result.otcWeighted = true;
+  return result;
+}
+
+async function callCerebrasValidationOTC(pair, engineSignal, snapshot, otcPatterns, env) {
+  if (!env || !env.CEREBRAS_API_KEY) return { status: 'NO_KEY' };
+  var basePair = getOTCBasePair(pair);
+  var otcSummary = [
+    '=== OTC CONTEXT ===',
+    'Consecutive candles: ' + (otcPatterns.consecutiveCandles ? otcPatterns.consecutiveCandles.count + ' × ' + otcPatterns.consecutiveCandles.direction : 'N/A'),
+    'Wick rejection: '  + (otcPatterns.wickRejection  ? otcPatterns.wickRejection.type  + ' (ratio=' + otcPatterns.wickRejection.wickRatio  + ')' : 'NONE'),
+    'Round number: '    + (otcPatterns.roundNumber    ? otcPatterns.roundNumber.stepType + ' (proximity=' + otcPatterns.roundNumber.proximity + ')' : 'NONE'),
+    'Size anomaly: '    + (otcPatterns.sizeAnomaly    ? 'YES expect ' + otcPatterns.sizeAnomaly.likelyDirection + ' (' + otcPatterns.sizeAnomaly.strength + ')' : 'NONE'),
+    'Time quality: '    + (otcPatterns.timeContext     ? otcPatterns.timeContext.quality  + ' — ' + otcPatterns.timeContext.reason : 'N/A'),
+    'OTC signals: '     + (otcPatterns.otcSignals.length ? otcPatterns.otcSignals.join(', ') : 'NONE'),
+  ].join('\n');
+
+  var prompt = [
+    '=== OTC BINARY TRADING ANALYSIS ===',
+    'Pair: ' + basePair + ' (OTC — Olymp Trade synthetic)',
+    'Engine signal: ' + engineSignal.direction + ' @ ' + engineSignal.confidence,
+    '',
+    '=== IMPORTANT OTC RULES ===',
+    '1. SYNTHETIC price — broker controls it. Trend-following is UNRELIABLE.',
+    '2. Mean reversion is primary — price returns to mean after extremes.',
+    '3. Focus on: patterns, RSI/Stoch extremes, BB touches, S/R bounces.',
+    '4. 3+ consecutive same-direction candles = high reversal probability.',
+    '5. Long wicks = broker pushed price and pulled back = reversal signal.',
+    '',
+    '=== INDICATORS ===',
+    'EMA alignment: ' + snapshot.emaAlignment,
+    'RSI(14): ' + snapshot.rsi,
+    'Stoch K/D: ' + snapshot.stochK + ' / ' + snapshot.stochD,
+    'Williams %R: ' + snapshot.williamsR,
+    'CCI: ' + snapshot.cci,
+    'BB %B: ' + snapshot.bbPercentB + '  BW: ' + snapshot.bbBandwidth,
+    'MACD hist: ' + snapshot.macdHist,
+    'ATR: ' + snapshot.atr,
+    'Patterns: ' + (snapshot.patterns.length ? snapshot.patterns.join(', ') : 'NONE'),
+    'RSI div: ' + snapshot.rsiDiv + '  MACD div: ' + snapshot.macdDiv,
+    'S/R: ' + snapshot.srContext,
+    '',
+    '=== PRICE STRUCTURE ===',
+    '1min: '  + snapshot.structure1min,
+    '5min: '  + snapshot.structure5min,
+    '15min: ' + snapshot.structure15min,
+    '',
+    otcSummary,
+    '',
+    '=== RAW CANDLES ===',
+    '1min (20): '  + snapshot.candles1min,
+    '5min (20): '  + snapshot.candles5min,
+    '',
+    'Respond in STRICT JSON only:',
+    '{"signal":"BUY"|"SELL"|"NO_TRADE","confidence":0-100,"reason":"max 20 words","concerns":"max 15 words or null"}',
+  ].join('\n');
+
+  try {
+    var controller = new AbortController();
+    var timeoutId  = setTimeout(function() { controller.abort(); }, 8000);
+    var res;
+    try {
+      res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
+        method: 'POST', signal: controller.signal,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.CEREBRAS_API_KEY },
+        body: JSON.stringify({ model: 'llama3.1-8b', max_tokens: 120, temperature: 0.05, messages: [{ role: 'user', content: prompt }] }),
+      });
+    } finally { clearTimeout(timeoutId); }
+    if (!res.ok) return { status: 'API_ERROR', httpStatus: res.status };
+    var data = await res.json();
+    var text = (data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content.trim() : null;
+    if (!text) return { status: 'EMPTY_RESPONSE' };
+    text = text.replace(/```json|```/g, '').trim();
+    var jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { status: 'PARSE_ERROR', raw: text.slice(0, 100) };
+    var parsed   = JSON.parse(jsonMatch[0]);
+    var validSig = ['BUY', 'SELL', 'NO_TRADE'];
+    var aiSig    = typeof parsed.signal === 'string' ? parsed.signal.toUpperCase() : 'NO_TRADE';
+    if (!validSig.includes(aiSig)) aiSig = 'NO_TRADE';
+    var aiConf   = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.confidence))) : 50;
+    return { status: 'OK', signal: aiSig, confidence: aiConf, reason: parsed.reason || null, concerns: parsed.concerns || null, model: 'cerebras/llama3.1-8b', mode: 'OTC' };
+  } catch (e) {
+    if (e.name === 'AbortError') return { status: 'TIMEOUT' };
+    return { status: 'ERROR', message: e.message };
+  }
+}
+
+async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, env) {
+  const now       = new Date();
+  const tfResults = {};
+  const votes     = [];
+
+  let htfContext = null;
+  if (candleData['15min'] && candleData['15min'].length > 0) {
+    const htfInd  = calculateAllIndicators(candleData['15min']);
+    const htfEma5 = safeLastValue(htfInd.ema5);
+    const htfEma20= safeLastValue(htfInd.ema20);
+    if (htfEma5 !== null && htfEma20 !== null) htfContext = htfEma5 > htfEma20 ? 'BUY_BIAS' : 'SELL_BIAS';
+  }
+
+  const tfKeys = Object.keys(candleData);
+  for (let t = 0; t < tfKeys.length; t++) {
+    const tf = tfKeys[t]; const candles = candleData[tf];
+    if (!candles || candles.length === 0) continue;
+    const indicators = calculateAllIndicators(candles);
+    const analysis   = analyzeTimeframeOTC(indicators, candles, tf);
+    const durCandles = calculateOTCCandleDuration(indicators, analysis.direction, candles, tf);
+    const candleMin  = CANDLE_MINUTES[tf] || 1;
+    const durMins    = durCandles * candleMin;
+    const expiryTime = new Date(now.getTime() + durMins * 60000);
+    analysis.expiry  = { candles: durCandles, candleSize: candleMin + 'min', totalMinutes: durMins, expiryTime: expiryTime.toISOString(), humanReadable: formatDuration(durMins), nextCandleClose: getNextCandleClose(now, candleMin).toISOString(), countdown: getCandleCountdown(candleMin) };
+    const lastCandle  = candles[candles.length - 1];
+    analysis.entry    = { price: lastCandle.close, candleTime: lastCandle.datetime, candleDirection: lastCandle.close >= lastCandle.open ? 'BULLISH' : 'BEARISH' };
+    analysis.higherTFTrend  = htfContext;
+    analysis.alignedWithHTF = true;
+    tfResults[tf] = analysis;
+    votes.push({ direction: analysis.direction, score: analysis.score, confluence: analysis.confluence, tf: tf, alignedWithHTF: true });
+  }
+
+  let weightedBuy = 0; let weightedSell = 0; let weightedNoTrade = 0;
+  const activeDirs = [];
+  for (let v = 0; v < votes.length; v++) {
+    const vote = votes[v]; const w = CONFIG.TF_WEIGHTS[vote.tf] || 1.0;
+    if (vote.direction === 'BUY')       { weightedBuy      += w * (vote.score.up   || 1); activeDirs.push('BUY');  }
+    else if (vote.direction === 'SELL') { weightedSell     += w * (vote.score.down || 1); activeDirs.push('SELL'); }
+    else                                { weightedNoTrade  += w; }
+  }
+
+  const allBuy  = activeDirs.length > 0 && activeDirs.every(function(d){return d==='BUY';});
+  const allSell = activeDirs.length > 0 && activeDirs.every(function(d){return d==='SELL';});
+  let alignment = 'MIXED'; let alignmentBonus = 0;
+  if (allBuy)  { alignment = 'ALL_BULLISH'; alignmentBonus = 8; }
+  else if (allSell) { alignment = 'ALL_BEARISH'; alignmentBonus = 8; }
+  else if (activeDirs.length >= 2) {
+    const bc = activeDirs.filter(function(d){return d==='BUY';}).length;
+    const sc = activeDirs.filter(function(d){return d==='SELL';}).length;
+    if (bc > sc) { alignment = 'MOSTLY_BULLISH'; alignmentBonus = 4; }
+    if (sc > bc) { alignment = 'MOSTLY_BEARISH'; alignmentBonus = 4; }
+  }
+
+  let finalDirection; let confidence;
+  if (weightedBuy > weightedSell && weightedBuy > 0) {
+    finalDirection = 'BUY';
+    var bd = weightedBuy + weightedSell + weightedNoTrade * 0.6;
+    confidence = bd > 0 ? Math.round((weightedBuy / bd) * 100) : 50;
+  } else if (weightedSell > weightedBuy && weightedSell > 0) {
+    finalDirection = 'SELL';
+    var sd = weightedBuy + weightedSell + weightedNoTrade * 0.6;
+    confidence = sd > 0 ? Math.round((weightedSell / sd) * 100) : 50;
+  } else {
+    const tie = resolveTieWithTolerance(tfResults);
+    finalDirection = tie.direction; confidence = tie.confidence;
+  }
+
+  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
+  confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);
+
+  const primaryCandles = candleData['1min'] || candleData['5min'] || candleData['15min'] || [];
+  const lastClose      = primaryCandles.length > 0 ? primaryCandles[primaryCandles.length - 1].close : 0;
+  const atrVal         = primaryCandles.length > 0 ? safeLastValue(calculateATR(primaryCandles, CONFIG.ATR_PERIOD)) : null;
+  const otcPatterns    = analyzeOTCPatterns(primaryCandles, atrVal, lastClose);
+
+  if (finalDirection !== 'NO_TRADE') {
+    const pb = finalDirection === 'BUY' ? otcPatterns.otcBonusUp - otcPatterns.otcBonusDown : otcPatterns.otcBonusDown - otcPatterns.otcBonusUp;
+    if (pb > 0) confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + Math.round(pb * 3));
+    else if (pb < 0) confidence = Math.max(0, confidence + Math.round(pb * 3));
+    if (otcPatterns.confluenceBonus !== 0) {
+      const bonusDir = otcPatterns.confluenceBonus > 0 ? 'BUY' : 'SELL';
+      if (finalDirection === bonusDir) confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + Math.abs(otcPatterns.confluenceBonus));
+      else { confidence = Math.max(0, confidence - Math.abs(otcPatterns.confluenceBonus)); if (confidence < OTC_CONFIDENCE_FLOOR) { finalDirection = 'NO_TRADE'; confidence = 0; } }
+    }
+  }
+
+  if (finalDirection !== 'NO_TRADE' && otcPatterns.timeContext) {
+    const tp = otcPatterns.timeContext.penaltyPct;
+    if (tp > 0) { confidence = Math.max(0, confidence - tp); if (confidence < OTC_CONFIDENCE_FLOOR) { finalDirection = 'NO_TRADE'; confidence = 0; } }
+    else if (tp < 0) confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + Math.abs(tp));
+  }
+
+  var consistencyMult = 1.0;
+  if (primaryCandles.length > 0 && finalDirection !== 'NO_TRADE') {
+    consistencyMult = recentCandleConsistency(primaryCandles, finalDirection, 3);
+    if (consistencyMult < 1.0) confidence = Math.round(confidence * consistencyMult);
+  }
+
+  var entryCandlePenalty = false;
+  if (finalDirection !== 'NO_TRADE' && primaryCandles.length >= 2) {
+    var lC = primaryCandles[primaryCandles.length - 1]; var pC = primaryCandles[primaryCandles.length - 2];
+    var lBody = Math.abs(lC.close - lC.open); var lRange = (lC.high - lC.low) || 0.00001;
+    var bRatio = lBody / lRange; var lBull = lC.close > lC.open; var pBull = pC.close > pC.open;
+    var bothAgainst = (finalDirection === 'BUY' && !lBull && !pBull) || (finalDirection === 'SELL' && lBull && pBull);
+    if (bothAgainst && bRatio > 0.55) { entryCandlePenalty = true; confidence = Math.max(0, confidence - 10); if (confidence < OTC_CONFIDENCE_FLOOR) { finalDirection = 'NO_TRADE'; confidence = 0; } }
+  }
+
+  if (exotic) confidence = Math.max(20, confidence - OTC_EXOTIC_PENALTY);
+
+  var belowFloor = false;
+  if (finalDirection !== 'NO_TRADE' && confidence < OTC_CONFIDENCE_FLOOR) { belowFloor = true; finalDirection = 'NO_TRADE'; }
+
+  var filtersApplied = [];
+  if (belowFloor)          filtersApplied.push('OTC_BELOW_FLOOR (' + OTC_CONFIDENCE_FLOOR + '%)');
+  if (alignment === 'MIXED') filtersApplied.push('MIXED_ALIGNMENT');
+  if (entryCandlePenalty)  filtersApplied.push('ENTRY_CANDLE_PENALTY (-10)');
+  if (consistencyMult < 1) filtersApplied.push('CANDLE_INCONSISTENCY (x' + consistencyMult + ')');
+  if (exotic)              filtersApplied.push('EXOTIC_OTC_PENALTY (-' + OTC_EXOTIC_PENALTY + ')');
+  if (otcPatterns.otcSignals.length > 0) filtersApplied.push('OTC_PATTERNS: ' + otcPatterns.otcSignals.join(', '));
+
+  const best = findBestTimeframe(tfResults, finalDirection);
+  const recommendations = {};
+  const recKeys = Object.keys(tfResults);
+  for (let r = 0; r < recKeys.length; r++) {
+    const rtf = recKeys[r]; const rec = tfResults[rtf];
+    recommendations[rtf] = { direction: rec.direction, score: rec.score, confluence: rec.confluence + '/11', expiry: rec.expiry, entry: rec.entry, patterns: (rec.categoryScores && rec.categoryScores.patterns && rec.categoryScores.patterns.detected) ? rec.categoryScores.patterns.detected : [] };
+  }
+
+  const avgConf  = votes.reduce(function(s,v){return s+(v.confluence||0);},0) / Math.max(votes.length,1);
+  var bestTFAn   = tfResults[best.timeframe] || null;
+  var entryReason = generateEntryReason(finalDirection, bestTFAn ? bestTFAn.categoryScores : {}, bestTFAn ? bestTFAn.indicators : {}, alignment, null, 'RANGING');
+  if (otcPatterns.otcSignals.length > 0) entryReason += ' · OTC: ' + otcPatterns.otcSignals.slice(0, 3).join(', ');
+
+  var aiValidation = { status: 'SKIPPED' };
+  if (finalDirection !== 'NO_TRADE') {
+    var snapshot = buildIndicatorSnapshot(tfResults, candleData, finalDirection, best.timeframe);
+    var engSig   = { direction: finalDirection, confidence: confidence + '%', alignment: alignment, bestTF: best.timeframe };
+    aiValidation = await callCerebrasValidationOTC(pair, engSig, snapshot, otcPatterns, env);
+    if (aiValidation.status === 'OK') {
+      const aiAgreed = aiValidation.signal === finalDirection;
+      aiValidation.agrees = aiAgreed;
+      if (aiAgreed) {
+        if (!aiValidation.concerns) { confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + 8); filtersApplied.push('OTC_AI_BOOST: agrees (' + aiValidation.signal + ' ' + aiValidation.confidence + '%)'); }
+        else { confidence = Math.max(0, confidence - 5); filtersApplied.push('OTC_AI_AGREE_WITH_CONCERNS: ' + aiValidation.concerns); }
+      } else if (aiValidation.signal !== 'NO_TRADE') {
+        confidence = Math.max(0, confidence - 20);
+        filtersApplied.push('OTC_AI_PENALTY: disagrees (AI=' + aiValidation.signal + ')');
+        if (confidence < OTC_CONFIDENCE_FLOOR) { finalDirection = 'NO_TRADE'; confidence = 0; filtersApplied.push('OTC_BELOW_FLOOR_AFTER_AI'); }
+      } else { confidence = Math.max(0, confidence - 10); filtersApplied.push('OTC_AI_SOFT_PENALTY: uncertain'); }
+    }
+  }
+
+  const finalGrade = getSignalGrade(confidence, avgConf, alignment);
+  return {
+    finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
+    assetType: ASSET_TYPE_OTC, isOTC: true,
+    otcNote: 'Synthetic pair — mean reversion + price action. Olymp Trade.',
+    marketRegime: 'OTC_SYNTHETIC',
+    regimeAdvice: finalDirection === 'NO_TRADE' ? 'OTC — wait for clearer pattern' : 'OTC — short expiry (2-3 candles), price action based',
+    marketCondition: ['OTC_SYNTHETIC'], alignment: alignment,
+    higherTFTrend: htfContext || 'N/A (OTC — not used)',
+    entryReason: entryReason, filtersApplied: filtersApplied, newsBlackout: null,
+    aiValidation: aiValidation,
+    session: { sessions: ['OTC_24/7'], quality: 'N/A' },
+    otcPatterns: { consecutiveCandles: otcPatterns.consecutiveCandles, wickRejection: otcPatterns.wickRejection, roundNumber: otcPatterns.roundNumber, sizeAnomaly: otcPatterns.sizeAnomaly, timeContext: otcPatterns.timeContext, signals: otcPatterns.otcSignals, confluenceBonus: otcPatterns.confluenceBonus },
+    recommendations: recommendations, bestTimeframe: best,
+    votes: { BUY: votes.filter(function(v){return v.direction==='BUY';}).length, SELL: votes.filter(function(v){return v.direction==='SELL';}).length, NO_TRADE: votes.filter(function(v){return v.direction==='NO_TRADE';}).length, total: votes.length, weightedBuy: r2(weightedBuy), weightedSell: r2(weightedSell), weightedNoTrade: r2(weightedNoTrade) },
+    averageConfluence: Math.round(avgConf * 10) / 10,
+    timeframeAnalysis: tfResults, method: 'OTC_HYBRID_v6.7.0', generatedAt: now.toISOString(),
+  };
+}
+
+async function handleSignalRawOTC(pair, env, ctx) {
+  const basePair = getOTCBasePair(pair);
+  const exotic   = isExoticPair(basePair);
+  const session  = detectTradingSession();
+  const timeframes = ['1min', '5min', '15min'];
+  const candleData = {}; const errors = {};
+  let totalFailures = 0; let cacheHits = 0;
+
+  const tfFetches = await Promise.all(timeframes.map(function(tf) {
+    return fetchCandlesWithCache(basePair, tf, 100, env, ctx, ASSET_TYPE.FOREX);
+  }));
+
+  for (let i = 0; i < timeframes.length; i++) {
+    const tf = timeframes[i]; const data = tfFetches[i];
+    if (data.error) { errors[tf] = data.error; totalFailures++; }
+    else { if (data._fromCache) cacheHits++; candleData[tf] = data.candles || data; }
+  }
+
+  if (totalFailures === timeframes.length) {
+    return { pair: pair, assetType: ASSET_TYPE_OTC, isOTC: true, signal: generateDummySignal(pair), source: 'DUMMY_FALLBACK', errors: errors, timestamp: new Date().toISOString() };
+  }
+
+  const signal = await buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, env);
+  if (exotic) signal.exoticWarning = 'Exotic OTC pair. Very high spreads. Confidence heavily reduced.';
+
+  const dataStatus = {};
+  for (let j = 0; j < timeframes.length; j++) {
+    const tfk = timeframes[j];
+    dataStatus[tfk] = candleData[tfk] ? candleData[tfk].length + ' candles (from ' + basePair + ')' : 'FAILED: ' + (errors[tfk] || 'unknown');
+  }
+
+  return {
+    pair: pair, basePair: basePair, assetType: ASSET_TYPE_OTC, isOTC: true,
+    otcBroker: 'Olymp Trade (synthetic price)',
+    marketStatus: 'OPEN (OTC 24/7)',
+    session: session, isExoticPair: exotic, signal: signal,
+    source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
+    dataNote: 'Candle data from ' + basePair + ' (real market). OTC price may differ.',
+    timestamp: new Date().toISOString(),
+    nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
+    cacheHits: cacheHits, dataStatus: dataStatus,
   };
 }
