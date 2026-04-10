@@ -49,11 +49,23 @@
  * O7. OTC confidence cap 88%, floor 60%
  *
  * v6.8.0 — Phase 1 Enhancements:
- * P1. Candle Quality Filter — body strength weights signal score
- * P2. Session-specific Weights — pair+session dynamic weights
- * P3. Correlation Filter — warns when correlated pairs conflict in batch
- * P4. Dual AI Validation — Groq as second validator (parallel with Cerebras)
- * P5. Camarilla Pivot Points — extra S/R levels alongside standard pivots
+ * P1. Candle Quality Filter — body/wick ratio weights TF vote strength
+ *     Strong body ×1.15, Doji ×0.75, wick-heavy ×0.82 (skips dead-market TFs)
+ * P2. Session-specific Weights — pair currency × active session multiplier
+ *     EUR/GBP best in London, JPY best in Asian, CAD/USD best in NY
+ * P3. Correlation Filter — batch detects positive/negative correlation conflicts
+ * P4. Dual AI Validation — Cerebras + Groq run in parallel
+ *     Both agree + no concerns → +8 boost | Both agree + concerns → -5
+ *     Disagree → combined NO_TRADE + -10 penalty
+ * P5. Camarilla Pivot Points — H1-H4 / L1-L4 levels
+ *     Applied after volMult×srPenalty (market-quality aware)
+ *     OTC weight 1.5 (broker respects round number levels)
+ *
+ * Bug fixes in v6.8.0:
+ * F1. checkNewsBlackout — OTC pairs now correctly bypass news blackout
+ * F2. Camarilla score — now applied after volMult×srPenalty (was before)
+ * F3. analyzeTimeframeOTC — camarilla included in reweight loop
+ * F4. Candle Quality — dead-market TFs skipped (1min dead → use 5min/15min)
  * D1. buildIndicatorSnapshot() now includes 20 compact candles per TF (1min/5min/15min)
  * D2. Compact format: U/B:O/H/L/C — token efficient (~525 extra tokens, ~975 signals/day)
  * D3. Price structure summary per TF: HH-HL / LH-LL / Consolidation / Expanding
@@ -160,17 +172,18 @@ const OTC_SUPPORTED_BASE_PAIRS = [
 ];
 
 const OTC_CATEGORY_WEIGHTS = {
-  trend:      0.4,
-  momentum:   2.2,
-  macd:       0.5,
-  stochastic: 2.0,
-  bands:      1.8,
-  adx:        0.3,
-  patterns:   2.5,
-  divergence: 1.8,
-  pivots:     1.2,
-  volume:     0.0,
-  sr:         2.0,
+  trend:      0.4,   // EMA trend — OTC ignores macro trend
+  momentum:   2.2,   // RSI/Williams/CCI — mean reversion core
+  macd:       0.5,   // Lagging — weak in OTC
+  stochastic: 2.0,   // Extreme bounce — very reliable OTC
+  bands:      1.8,   // BB touch/rejection — OTC respects bands
+  adx:        0.3,   // Trend strength — irrelevant OTC
+  patterns:   2.5,   // Price action — PRIMARY signal
+  divergence: 1.8,   // Reversal divergence — useful
+  pivots:     1.2,   // S/R bounce — broker respects levels
+  volume:     0.0,   // Skip — meaningless OTC
+  sr:         2.0,   // Swing S/R — core OTC signal
+  camarilla:  1.5,   // Round number levels — broker uses these
 };
 
 const OTC_SCORE_THRESHOLD = 2.2;
@@ -569,7 +582,9 @@ function isExoticPair(pair) {
 // ============================================
 
 function checkNewsBlackout(assetType) {
+  // OTC and Crypto trade 24/7 — no news blackout applies
   if (assetType === ASSET_TYPE.CRYPTO) return null;
+  if (assetType === ASSET_TYPE_OTC)    return null;
 
   const now = new Date();
   const day = now.getUTCDay();       // 0=Sun, 1=Mon … 6=Sat
@@ -604,6 +619,7 @@ function checkNewsBlackout(assetType) {
 // ============================================
 
 function isVolumeSpikeAnomaly(candles, assetType) {
+  // Only meaningful for Crypto — Forex volume unreliable, OTC volume meaningless
   if (assetType !== ASSET_TYPE.CRYPTO) return false;
   if (!candles || candles.length < 21) return false;
 
@@ -2522,9 +2538,16 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
   }
 
   // [v6.8.0] P1+P2: Candle Quality + Session Weight multipliers
-  var sessionMult  = getSessionWeightMultiplier(pair, session);
-  var primaryCandlesForQuality = candleData['1min'] || candleData['5min'] || candleData['15min'] || [];
-  var candleQualityMult = getCandleQualityMultiplier(primaryCandlesForQuality);
+  var sessionMult = getSessionWeightMultiplier(pair, session);
+
+  // P1: Skip dead market TFs for candle quality check — dead candles are misleadingly Doji-like
+  var qualityCandles = [];
+  if (candleData['1min']  && tfResults['1min']  && !tfResults['1min'].deadMarket)  qualityCandles = candleData['1min'];
+  else if (candleData['5min']  && tfResults['5min']  && !tfResults['5min'].deadMarket)  qualityCandles = candleData['5min'];
+  else if (candleData['15min'] && tfResults['15min'] && !tfResults['15min'].deadMarket) qualityCandles = candleData['15min'];
+  else qualityCandles = candleData['1min'] || candleData['5min'] || candleData['15min'] || [];
+
+  var candleQualityMult = getCandleQualityMultiplier(qualityCandles);
 
   // Step 2: Weighted Multi-TF Voting
   let weightedBuy = 0; let weightedSell = 0; let weightedNoTrade = 0; let totalWeight = 0;
@@ -3312,16 +3335,6 @@ function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTre
   if (srContext === 'BETWEEN') srPenalty = 0.85;
   else if (srContext === 'NO_LEVEL') srPenalty = 0.90;
 
-  // === [v6.8.0] P5: CAMARILLA PIVOT SCORING ===
-  var camScore = { up: 0, down: 0, level: 'NONE' };
-  if (indicators.camarilla && atr !== null) {
-    camScore = scoreCamarillaLevels(indicators.camarilla, lastClose, atr);
-    var camW = weights.sr || 1.4; // reuse S/R weight
-    upScore   += camScore.up   * camW * 0.6; // 60% of sr weight (additive not replacement)
-    downScore += camScore.down * camW * 0.6;
-  }
-  catScores.camarilla = { up: r2(camScore.up), down: r2(camScore.down), level: camScore.level };
-
   // === [v6.3] FVG CONTEXT in analyzeTimeframe ===
   // [v6.3.1] Score penalty removed — hard block in buildMultiTimeframeSignal is sufficient.
   // Double-penalizing (score cut + hard block) was over-filtering strong signals.
@@ -3340,6 +3353,17 @@ function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTre
   }
   // [v6.3.1] Apply srPenalty + volMult here — isolated from category score accumulation
   upScore *= volMult * srPenalty; downScore *= volMult * srPenalty;
+
+  // === [v6.8.0] P5: CAMARILLA PIVOT SCORING ===
+  // Applied AFTER volMult+srPenalty so dead/choppy market naturally reduces Camarilla influence
+  var camScore = { up: 0, down: 0, level: 'NONE' };
+  if (indicators.camarilla && atr !== null) {
+    camScore = scoreCamarillaLevels(indicators.camarilla, lastClose, atr);
+    var camW = (weights.sr || 1.4) * volMult * srPenalty; // scale with market quality
+    upScore   += camScore.up   * camW * 0.6;
+    downScore += camScore.down * camW * 0.6;
+  }
+  catScores.camarilla = { up: r2(camScore.up), down: r2(camScore.down), level: camScore.level };
 
   // === HIGHER-TF PENALTY ===
   var htfPenalty = 1.0;
@@ -3862,10 +3886,13 @@ function calculateOTCCandleDuration(indicators, direction, candles, timeframe) {
 
 function analyzeTimeframeOTC(indicators, candles, timeframe) {
   var result = analyzeTimeframe(indicators, candles, timeframe, ASSET_TYPE.FOREX, null, 'RANGING');
-  var rangingWeights = { trend: 0.8, momentum: 1.8, macd: 0.8, stochastic: 1.8, bands: 1.4, adx: 0.8, patterns: 1.3, divergence: 1.8, pivots: 1.2, volume: 0.5, sr: 2.2 };
+  // rangingWeights = base weights used in analyzeTimeframe('RANGING') — used to reverse-scale scores
+  var rangingWeights = { trend: 0.8, momentum: 1.8, macd: 0.8, stochastic: 1.8, bands: 1.4, adx: 0.8, patterns: 1.3, divergence: 1.8, pivots: 1.2, volume: 0.5, sr: 2.2, camarilla: 0.84 };
+  // camarilla base = sr_weight(2.2) * 0.6 * volMult(~0.64 avg) ≈ 0.84
   var otcW = OTC_CATEGORY_WEIGHTS;
   var newUpScore = 0; var newDownScore = 0;
-  var cats = ['trend','momentum','macd','stochastic','bands','adx','patterns','divergence','pivots','volume','sr'];
+  // [v6.8.0] camarilla included — OTC respects round S/R levels strongly
+  var cats = ['trend','momentum','macd','stochastic','bands','adx','patterns','divergence','pivots','volume','sr','camarilla'];
 
   for (var ci = 0; ci < cats.length; ci++) {
     var cat = cats[ci];
@@ -4024,7 +4051,8 @@ async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, e
   let weightedBuy = 0; let weightedSell = 0; let weightedNoTrade = 0;
   const activeDirs = [];
   for (let v = 0; v < votes.length; v++) {
-    const vote = votes[v]; const w = CONFIG.TF_WEIGHTS[vote.tf] || 1.0;
+    const vote = votes[v];
+    const w    = (CONFIG.TF_WEIGHTS[vote.tf] || 1.0) * otcCandleQuality; // candle quality applied
     if (vote.direction === 'BUY')       { weightedBuy      += w * (vote.score.up   || 1); activeDirs.push('BUY');  }
     else if (vote.direction === 'SELL') { weightedSell     += w * (vote.score.down || 1); activeDirs.push('SELL'); }
     else                                { weightedNoTrade  += w; }
@@ -4059,10 +4087,14 @@ async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, e
   if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
   confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);
 
+  // Primary candles for OTC pattern analysis — prefer 1min for freshness
   const primaryCandles = candleData['1min'] || candleData['5min'] || candleData['15min'] || [];
   const lastClose      = primaryCandles.length > 0 ? primaryCandles[primaryCandles.length - 1].close : 0;
   const atrVal         = primaryCandles.length > 0 ? safeLastValue(calculateATR(primaryCandles, CONFIG.ATR_PERIOD)) : null;
   const otcPatterns    = analyzeOTCPatterns(primaryCandles, atrVal, lastClose);
+
+  // [v6.8.0] Candle quality also applied in OTC voting
+  var otcCandleQuality = getCandleQualityMultiplier(primaryCandles);
 
   if (finalDirection !== 'NO_TRADE') {
     const pb = finalDirection === 'BUY' ? otcPatterns.otcBonusUp - otcPatterns.otcBonusDown : otcPatterns.otcBonusDown - otcPatterns.otcBonusUp;
@@ -4102,11 +4134,12 @@ async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, e
   if (finalDirection !== 'NO_TRADE' && confidence < OTC_CONFIDENCE_FLOOR) { belowFloor = true; finalDirection = 'NO_TRADE'; }
 
   var filtersApplied = [];
-  if (belowFloor)          filtersApplied.push('OTC_BELOW_FLOOR (' + OTC_CONFIDENCE_FLOOR + '%)');
-  if (alignment === 'MIXED') filtersApplied.push('MIXED_ALIGNMENT');
-  if (entryCandlePenalty)  filtersApplied.push('ENTRY_CANDLE_PENALTY (-10)');
-  if (consistencyMult < 1) filtersApplied.push('CANDLE_INCONSISTENCY (x' + consistencyMult + ')');
-  if (exotic)              filtersApplied.push('EXOTIC_OTC_PENALTY (-' + OTC_EXOTIC_PENALTY + ')');
+  if (belowFloor)              filtersApplied.push('OTC_BELOW_FLOOR (' + OTC_CONFIDENCE_FLOOR + '%)');
+  if (alignment === 'MIXED')   filtersApplied.push('MIXED_ALIGNMENT');
+  if (entryCandlePenalty)      filtersApplied.push('ENTRY_CANDLE_PENALTY (-10)');
+  if (consistencyMult < 1)     filtersApplied.push('CANDLE_INCONSISTENCY (x' + consistencyMult + ')');
+  if (exotic)                  filtersApplied.push('EXOTIC_OTC_PENALTY (-' + OTC_EXOTIC_PENALTY + ')');
+  if (otcCandleQuality !== 1.0) filtersApplied.push('OTC_CANDLE_QUALITY (x' + otcCandleQuality.toFixed(2) + ')');
   if (otcPatterns.otcSignals.length > 0) filtersApplied.push('OTC_PATTERNS: ' + otcPatterns.otcSignals.join(', '));
 
   const best = findBestTimeframe(tfResults, finalDirection);
@@ -4157,7 +4190,7 @@ async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, e
     recommendations: recommendations, bestTimeframe: best,
     votes: { BUY: votes.filter(function(v){return v.direction==='BUY';}).length, SELL: votes.filter(function(v){return v.direction==='SELL';}).length, NO_TRADE: votes.filter(function(v){return v.direction==='NO_TRADE';}).length, total: votes.length, weightedBuy: r2(weightedBuy), weightedSell: r2(weightedSell), weightedNoTrade: r2(weightedNoTrade) },
     averageConfluence: Math.round(avgConf * 10) / 10,
-    timeframeAnalysis: tfResults, method: 'OTC_HYBRID_v6.7.0', generatedAt: now.toISOString(),
+    timeframeAnalysis: tfResults, method: 'OTC_HYBRID_v6.8.0', generatedAt: now.toISOString(),
   };
 }
 
