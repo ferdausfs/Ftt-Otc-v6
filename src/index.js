@@ -47,6 +47,13 @@
  * O5. OTC Cerebras prompt — mean reversion focused
  * O6. 24/7 trading — no market hours restriction
  * O7. OTC confidence cap 88%, floor 60%
+ *
+ * v6.8.0 — Phase 1 Enhancements:
+ * P1. Candle Quality Filter — body strength weights signal score
+ * P2. Session-specific Weights — pair+session dynamic weights
+ * P3. Correlation Filter — warns when correlated pairs conflict in batch
+ * P4. Dual AI Validation — Groq as second validator (parallel with Cerebras)
+ * P5. Camarilla Pivot Points — extra S/R levels alongside standard pivots
  * D1. buildIndicatorSnapshot() now includes 20 compact candles per TF (1min/5min/15min)
  * D2. Compact format: U/B:O/H/L/C — token efficient (~525 extra tokens, ~975 signals/day)
  * D3. Price structure summary per TF: HH-HL / LH-LL / Consolidation / Expanding
@@ -177,6 +184,39 @@ const OTC_DURATION_CONFIG = {
   '5min':  { base: 2, min: 2, max: 2 },
   '15min': { base: 1, min: 1, max: 2 },
 };
+
+// ============================================
+// [v6.8.0] PHASE 1 — CONSTANTS
+// ============================================
+
+// P2: Session-specific pair weights
+// Pair currency → best session → weight boost map
+const SESSION_PAIR_WEIGHTS = {
+  EUR: { LONDON: 1.3, LONDON_NY: 1.4, NEW_YORK: 1.1, ASIAN: 0.8, SYDNEY: 0.7 },
+  GBP: { LONDON: 1.4, LONDON_NY: 1.3, NEW_YORK: 1.1, ASIAN: 0.7, SYDNEY: 0.7 },
+  JPY: { ASIAN: 1.4, ASIAN_LONDON: 1.3, LONDON: 1.1, NEW_YORK: 0.9, SYDNEY: 1.2 },
+  AUD: { SYDNEY: 1.3, ASIAN: 1.2, ASIAN_LONDON: 1.1, LONDON: 0.9, NEW_YORK: 0.8 },
+  NZD: { SYDNEY: 1.3, ASIAN: 1.2, ASIAN_LONDON: 1.1, LONDON: 0.9, NEW_YORK: 0.8 },
+  CAD: { NEW_YORK: 1.3, LONDON_NY: 1.4, LONDON: 1.0, ASIAN: 0.8, SYDNEY: 0.7 },
+  CHF: { LONDON: 1.2, LONDON_NY: 1.3, NEW_YORK: 1.0, ASIAN: 0.8, SYDNEY: 0.7 },
+  USD: { LONDON_NY: 1.4, NEW_YORK: 1.3, LONDON: 1.1, ASIAN: 0.8, SYDNEY: 0.7 },
+};
+
+// P3: Correlation groups — pairs that move together
+const CORRELATION_GROUPS = [
+  ['EUR/USD', 'GBP/USD', 'AUD/USD', 'NZD/USD'],   // USD quote — positive correlation
+  ['USD/JPY', 'USD/CHF', 'USD/CAD'],               // USD base — positive correlation
+  ['EUR/USD', 'USD/CHF'],                           // EUR/USD vs USD/CHF — negative correlation
+  ['GBP/USD', 'EUR/GBP'],                          // GBP pairs
+  ['AUD/USD', 'NZD/USD', 'AUD/NZD'],               // Commodity currencies
+];
+
+// Negative correlation pairs — opposite directions expected
+const NEGATIVE_CORRELATIONS = [
+  ['EUR/USD', 'USD/CHF'],
+  ['GBP/USD', 'USD/JPY'],
+  ['AUD/USD', 'USD/CAD'],
+];
 
 // ============================================
 // [v6.2] HIGH-IMPACT NEWS WINDOWS (UTC recurring schedule)
@@ -350,7 +390,7 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.6.1 — Forex + Crypto Multi-Timeframe',
+          message: 'FTT Signal Worker v6.8.0 — Forex + Crypto Multi-Timeframe',
           endpoints: {
             health: '/',
             signal: '/api/signal?pair=EUR/USD',
@@ -815,7 +855,7 @@ function handleHealth(env) {
 
   return jsonResponse({
     status: 'healthy',
-    version: '6.6.1',
+    version: '6.8.0',
     timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
     bindings: {
@@ -960,6 +1000,16 @@ async function handleBatch(url, env, ctx) {
     summary[r.pair] = r.signal || { error: r.error };
   }
 
+  // [v6.8.0] P3: Correlation analysis across batch results
+  var pairDirections = {};
+  for (var cr = 0; cr < results.length; cr++) {
+    var rr = results[cr];
+    if (rr.signal && rr.signal.signal) {
+      pairDirections[rr.pair] = rr.signal.signal.finalSignal || 'NO_TRADE';
+    }
+  }
+  var correlationAnalysis = detectCorrelationConflicts(pairDirections);
+
   return jsonResponse({
     batch: true,
     requestedPairs: pairList.length,
@@ -967,6 +1017,7 @@ async function handleBatch(url, env, ctx) {
     cappedAt: CONFIG.BATCH_MAX_PAIRS,
     invalidPairs: invalidPairs,
     skippedPairs: validPairs.slice(CONFIG.BATCH_MAX_PAIRS),
+    correlationAnalysis: correlationAnalysis,
     results: summary,
     timestamp: new Date().toISOString(),
   });
@@ -1958,9 +2009,10 @@ function calculateAllIndicators(candles) {
     cci:        calculateCCI(candles, CONFIG.CCI_PERIOD),
     mfi:        calculateMFI(candles, CONFIG.MFI_PERIOD),
     pivots:     calculatePivotPoints(candles),
+    camarilla:  calculateCamarillaPivots(candles),   // [v6.8.0] P5
     patterns:   detectCandlestickPatterns(candles),
-    sr:         detectSRLevels(candles, atrLast),   // [v6.3] S/R levels
-    fvg:        detectFVG(candles),                  // [v6.3] Fair Value Gaps
+    sr:         detectSRLevels(candles, atrLast),
+    fvg:        detectFVG(candles),
   };
 }
 
@@ -2469,17 +2521,23 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
     votes.push({ direction: analysis.direction, score: analysis.score, confluence: analysis.confluence, tf: tf, alignedWithHTF: analysis.alignedWithHTF });
   }
 
+  // [v6.8.0] P1+P2: Candle Quality + Session Weight multipliers
+  var sessionMult  = getSessionWeightMultiplier(pair, session);
+  var primaryCandlesForQuality = candleData['1min'] || candleData['5min'] || candleData['15min'] || [];
+  var candleQualityMult = getCandleQualityMultiplier(primaryCandlesForQuality);
+
   // Step 2: Weighted Multi-TF Voting
   let weightedBuy = 0; let weightedSell = 0; let weightedNoTrade = 0; let totalWeight = 0;
   const activeDirs = [];
 
   for (let v = 0; v < votes.length; v++) {
     const vote = votes[v];
-    const w = CONFIG.TF_WEIGHTS[vote.tf] || 1.0;
+    // [v6.8.0] Apply session + candle quality multipliers to TF weight
+    const w = (CONFIG.TF_WEIGHTS[vote.tf] || 1.0) * sessionMult * candleQualityMult;
     totalWeight += w;
     if (vote.direction === 'BUY')  { weightedBuy      += w * (vote.score.up   || 1); activeDirs.push('BUY');  }
     else if (vote.direction === 'SELL') { weightedSell += w * (vote.score.down || 1); activeDirs.push('SELL'); }
-    else { weightedNoTrade += w; } // [v6.4] track NO_TRADE weight for confidence denominator
+    else { weightedNoTrade += w; }
   }
 
   // Alignment — [v6.6.0] bonus reduced for RANGING/VOLATILE (misleading in those regimes)
@@ -2726,8 +2784,10 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
   if (consistencyMult < 1.0) filtersApplied.push('CANDLE_INCONSISTENCY (mult=' + consistencyMult + ')');
   if (alignment === 'MIXED') filtersApplied.push('MIXED_ALIGNMENT');
   if (entryCandlePenalty)  filtersApplied.push('ENTRY_CANDLE_PENALTY (-10 confidence)');
+  if (sessionMult !== 1.0) filtersApplied.push('SESSION_WEIGHT (x' + sessionMult.toFixed(2) + ' — ' + (session.overlap !== 'NONE' ? session.overlap : session.sessions[0]) + ')');
+  if (candleQualityMult !== 1.0) filtersApplied.push('CANDLE_QUALITY (x' + candleQualityMult.toFixed(2) + ')');
 
-  // [v6.5.0] CEREBRAS AI VALIDATION
+  // [v6.8.0] P4 — DUAL AI VALIDATION (Cerebras + Groq in parallel)
   var aiValidation = { status: 'SKIPPED' };
   var aiAgreed = null;
 
@@ -2742,36 +2802,46 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
       bestTF:          best.timeframe,
     };
 
-    aiValidation = await callCerebrasValidation(pair, assetType, engineSignalSummary, snapshot, env);
+    // Run both AIs in parallel — whichever finishes first used, no serial wait
+    var aiResults = await Promise.all([
+      callCerebrasValidation(pair, assetType, engineSignalSummary, snapshot, env),
+      callGroqValidation(pair, assetType, engineSignalSummary, snapshot, env),
+    ]);
 
-    if (aiValidation.status === 'OK') {
-      aiAgreed = (aiValidation.signal === finalDirection);
+    var cerebrasResult = aiResults[0];
+    var groqResult     = aiResults[1];
+    var dualResult     = combineDualAIResults(cerebrasResult, groqResult, finalDirection);
+
+    aiValidation = dualResult; // full dual result in response
+
+    var combinedAI = dualResult.combined;
+    if (combinedAI && combinedAI.status === 'OK') {
+      aiAgreed = dualResult.combinedAgreed;
 
       if (aiAgreed) {
-        // [v6.6.0] AI agrees — boost ONLY if no concerns
-        if (!aiValidation.concerns) {
-          confidence = Math.min(92, confidence + 5);
-          filtersApplied.push('AI_BOOST: Cerebras agrees (' + aiValidation.signal + ' ' + aiValidation.confidence + '%)');
+        if (!combinedAI.concerns) {
+          // Both agree, no concerns — stronger boost if both agreed
+          var boost = (combinedAI.agreement === 'BOTH_AGREE') ? 8 : 5;
+          confidence = Math.min(92, confidence + boost);
+          filtersApplied.push('DUAL_AI_BOOST: ' + combinedAI.agreement + ' → +' + boost + ' (' + combinedAI.signal + ' ' + combinedAI.confidence + '%)');
         } else {
-          // Agrees but has concerns → no boost, small penalty
           confidence = Math.max(0, confidence - 5);
-          filtersApplied.push('AI_AGREE_WITH_CONCERNS: ' + aiValidation.signal + ' but concerned — ' + aiValidation.concerns);
+          filtersApplied.push('DUAL_AI_AGREE_WITH_CONCERNS: ' + combinedAI.concerns);
         }
-      } else if (aiValidation.signal !== 'NO_TRADE') {
-        // AI gives opposite direction → meaningful penalty
+      } else if (combinedAI.signal !== 'NO_TRADE') {
         confidence = Math.max(0, confidence - 15);
-        filtersApplied.push('AI_PENALTY: Cerebras disagrees (AI=' + aiValidation.signal + ' ' + aiValidation.confidence + '%)');
+        filtersApplied.push('DUAL_AI_PENALTY: disagrees (AI=' + combinedAI.signal + ' ' + combinedAI.confidence + '%)');
         if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
           finalDirection = 'NO_TRADE';
           confidence = 0;
-          filtersApplied.push('CONFIDENCE_BELOW_FLOOR_AFTER_AI (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
+          filtersApplied.push('BELOW_FLOOR_AFTER_DUAL_AI (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
         }
       } else {
-        // AI says NO_TRADE while engine has signal → soft penalty
-        confidence = Math.max(0, confidence - 8);
-        filtersApplied.push('AI_SOFT_PENALTY: Cerebras uncertain (NO_TRADE ' + aiValidation.confidence + '%)');
+        // AIs disagree or NO_TRADE
+        confidence = Math.max(0, confidence - 10);
+        filtersApplied.push('DUAL_AI_SOFT_PENALTY: AIs uncertain/conflicting');
       }
-      aiValidation.agrees = aiAgreed;
+      if (aiValidation.combinedAgreed !== undefined) aiValidation.agrees = aiValidation.combinedAgreed;
     }
   }
 
@@ -2806,7 +2876,9 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
     },
     averageConfluence: Math.round(avgConf * 10) / 10,
     timeframeAnalysis: tfResults,
-    method:      'WEIGHTED_MULTI_TF_v6.6.1',
+    sessionWeight:    sessionMult,
+    candleQuality:    candleQualityMult,
+    method:      'WEIGHTED_MULTI_TF_v6.8.0',
     generatedAt: now.toISOString(),
   };
 }
@@ -3235,11 +3307,20 @@ function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTre
   else if (srD > srU && Math.abs(srD - srU) >= CONFIG.MIN_CATEGORY_SCORE) downCat++;
   catScores.sr = { up: r2(srU), down: r2(srD), context: srContext };
 
-  // [v6.3.1] S/R context penalty — isolated variable, applied only at decision stage
-  // Does NOT mutate cumulative category scores (trend, MACD etc. stay clean)
+  // [v6.3.1] S/R context penalty
   var srPenalty = 1.0;
   if (srContext === 'BETWEEN') srPenalty = 0.85;
   else if (srContext === 'NO_LEVEL') srPenalty = 0.90;
+
+  // === [v6.8.0] P5: CAMARILLA PIVOT SCORING ===
+  var camScore = { up: 0, down: 0, level: 'NONE' };
+  if (indicators.camarilla && atr !== null) {
+    camScore = scoreCamarillaLevels(indicators.camarilla, lastClose, atr);
+    var camW = weights.sr || 1.4; // reuse S/R weight
+    upScore   += camScore.up   * camW * 0.6; // 60% of sr weight (additive not replacement)
+    downScore += camScore.down * camW * 0.6;
+  }
+  catScores.camarilla = { up: r2(camScore.up), down: r2(camScore.down), level: camScore.level };
 
   // === [v6.3] FVG CONTEXT in analyzeTimeframe ===
   // [v6.3.1] Score penalty removed — hard block in buildMultiTimeframeSignal is sufficient.
@@ -3316,6 +3397,325 @@ function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTre
     },
     timeframe: timeframe,
   };
+}
+
+
+// ============================================
+// [v6.8.0] P1 — CANDLE QUALITY FILTER
+// Body strength বিশ্লেষণ করে signal weight adjust করে
+// Strong body = বেশি weight, Doji/wick heavy = কম weight
+// ============================================
+
+function getCandleQualityMultiplier(candles) {
+  if (!candles || candles.length < 3) return 1.0;
+
+  var last  = candles[candles.length - 1];
+  var prev1 = candles[candles.length - 2];
+  var prev2 = candles[candles.length - 3];
+
+  function bodyRatio(c) {
+    var body  = Math.abs(c.close - c.open);
+    var range = (c.high - c.low) || 0.00001;
+    return body / range;
+  }
+
+  function wickRatio(c) {
+    var body      = Math.abs(c.close - c.open);
+    var range     = (c.high - c.low) || 0.00001;
+    var upperWick = c.high - Math.max(c.open, c.close);
+    var lowerWick = Math.min(c.open, c.close) - c.low;
+    var totalWick = upperWick + lowerWick;
+    return range > 0 ? totalWick / range : 0;
+  }
+
+  var br0 = bodyRatio(last);
+  var br1 = bodyRatio(prev1);
+  var wr0 = wickRatio(last);
+
+  // Strong body last 2 candles — high quality
+  if (br0 >= 0.65 && br1 >= 0.55) return 1.15;
+
+  // Good body, low wick
+  if (br0 >= 0.55 && wr0 <= 0.35) return 1.08;
+
+  // Moderate
+  if (br0 >= 0.40) return 1.0;
+
+  // Doji or wick-heavy — reduce quality
+  if (br0 < 0.15) return 0.75; // Doji
+  if (wr0 >= 0.70) return 0.82; // Wick dominant
+
+  return 0.92;
+}
+
+// ============================================
+// [v6.8.0] P2 — SESSION-SPECIFIC WEIGHT MULTIPLIER
+// Pair এর currency আর current session দেখে weight adjust করে
+// ============================================
+
+function getSessionWeightMultiplier(pair, session) {
+  if (!pair || !session) return 1.0;
+
+  var parts = pair.replace('-OTC', '').split('/');
+  var base  = parts[0] || '';
+  var quote = parts[1] || '';
+
+  // Active session — single or overlap
+  var activeSession = session.overlap !== 'NONE' ? session.overlap : (session.sessions[0] || 'UNKNOWN');
+
+  // Check base currency weight
+  var baseWeights  = SESSION_PAIR_WEIGHTS[base]  || {};
+  var quoteWeights = SESSION_PAIR_WEIGHTS[quote] || {};
+
+  var baseW  = baseWeights[activeSession]  || 1.0;
+  var quoteW = quoteWeights[activeSession] || 1.0;
+
+  // Average of both currencies — if either is active, boost
+  var mult = Math.max(baseW, quoteW);
+
+  // Cap between 0.7 and 1.4
+  return Math.max(0.7, Math.min(1.4, mult));
+}
+
+// ============================================
+// [v6.8.0] P3 — CORRELATION FILTER
+// Batch signal এ correlated pairs detect করে
+// Same direction correlated = ok
+// Opposite direction correlated = warning + confidence penalty
+// ============================================
+
+function detectCorrelationConflicts(pairSignals) {
+  // pairSignals = { 'EUR/USD': 'BUY', 'GBP/USD': 'SELL', ... }
+  var conflicts = [];
+  var warnings  = [];
+
+  // Check positive correlation groups
+  for (var gi = 0; gi < CORRELATION_GROUPS.length; gi++) {
+    var group = CORRELATION_GROUPS[gi];
+    var groupSignals = [];
+    for (var pi = 0; pi < group.length; pi++) {
+      var p = group[pi];
+      if (pairSignals[p] && pairSignals[p] !== 'NO_TRADE') {
+        groupSignals.push({ pair: p, dir: pairSignals[p] });
+      }
+    }
+    if (groupSignals.length >= 2) {
+      var dirs = groupSignals.map(function(s) { return s.dir; });
+      var hasBuy  = dirs.indexOf('BUY')  !== -1;
+      var hasSell = dirs.indexOf('SELL') !== -1;
+      if (hasBuy && hasSell) {
+        conflicts.push({
+          type:    'POSITIVE_CORRELATION_CONFLICT',
+          group:   group,
+          signals: groupSignals,
+          message: 'Correlated pairs disagree — signal reliability reduced',
+        });
+      }
+    }
+  }
+
+  // Check negative correlations — here opposite is EXPECTED, same is warning
+  for (var ni = 0; ni < NEGATIVE_CORRELATIONS.length; ni++) {
+    var negPair = NEGATIVE_CORRELATIONS[ni];
+    var s1 = pairSignals[negPair[0]];
+    var s2 = pairSignals[negPair[1]];
+    if (s1 && s2 && s1 !== 'NO_TRADE' && s2 !== 'NO_TRADE') {
+      if (s1 === s2) {
+        warnings.push({
+          type:    'NEGATIVE_CORRELATION_SAME_DIR',
+          pairs:   negPair,
+          signals: [s1, s2],
+          message: negPair[0] + ' and ' + negPair[1] + ' both ' + s1 + ' — unusual (negative correlation)',
+        });
+      }
+    }
+  }
+
+  return { conflicts: conflicts, warnings: warnings, hasConflict: conflicts.length > 0 };
+}
+
+// ============================================
+// [v6.8.0] P4 — GROQ AI VALIDATION
+// Second AI validator — parallel with Cerebras
+// Model: llama-3.1-8b-instant (fast, free tier available)
+// ============================================
+
+async function callGroqValidation(pair, assetType, engineSignal, indicatorSnapshot, env) {
+  if (!env.GROQ_API_KEY) return { status: 'NO_KEY' };
+
+  var prompt = [
+    'Expert binary options analyst. Analyze ' + pair + ' (' + assetType + ').',
+    'Engine says: ' + engineSignal.direction + ' @ ' + engineSignal.confidence + ' confidence.',
+    'Alignment: ' + engineSignal.alignment + ' | HTF: ' + (engineSignal.higherTFTrend || 'N/A'),
+    '',
+    'Indicators:',
+    'EMA: ' + indicatorSnapshot.emaAlignment + ' | RSI: ' + indicatorSnapshot.rsi,
+    'MACD hist: ' + indicatorSnapshot.macdHist + ' | ADX: ' + indicatorSnapshot.adx,
+    'Stoch K/D: ' + indicatorSnapshot.stochK + '/' + indicatorSnapshot.stochD,
+    'BB %B: ' + indicatorSnapshot.bbPercentB + ' BW: ' + indicatorSnapshot.bbBandwidth,
+    'Williams: ' + indicatorSnapshot.williamsR + ' | CCI: ' + indicatorSnapshot.cci,
+    'Patterns: ' + (indicatorSnapshot.patterns.length ? indicatorSnapshot.patterns.join(',') : 'NONE'),
+    'RSI div: ' + indicatorSnapshot.rsiDiv + ' | S/R: ' + indicatorSnapshot.srContext,
+    'Structure 1min: ' + indicatorSnapshot.structure1min,
+    'Structure 5min: ' + indicatorSnapshot.structure5min,
+    '',
+    'Candles 1min: ' + indicatorSnapshot.candles1min,
+    'Candles 5min: ' + indicatorSnapshot.candles5min,
+    '',
+    'Respond ONLY in JSON: {"signal":"BUY"|"SELL"|"NO_TRADE","confidence":0-100,"reason":"max 15 words","concerns":"max 10 words or null"}',
+  ].join('\n');
+
+  try {
+    var controller = new AbortController();
+    var tid = setTimeout(function() { controller.abort(); }, 6000);
+    var res;
+    try {
+      res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        signal: controller.signal,
+        headers: {
+          'Content-Type':  'application/json',
+          'Authorization': 'Bearer ' + env.GROQ_API_KEY,
+        },
+        body: JSON.stringify({
+          model:       'llama-3.1-8b-instant',
+          max_tokens:  100,
+          temperature: 0.05,
+          messages:    [{ role: 'user', content: prompt }],
+        }),
+      });
+    } finally { clearTimeout(tid); }
+
+    if (!res.ok) return { status: 'API_ERROR', httpStatus: res.status };
+
+    var data = await res.json();
+    var text = (data.choices && data.choices[0] && data.choices[0].message)
+      ? data.choices[0].message.content.trim() : null;
+    if (!text) return { status: 'EMPTY_RESPONSE' };
+    text = text.replace(/```json|```/g, '').trim();
+    var jm = text.match(/\{[\s\S]*\}/);
+    if (!jm) return { status: 'PARSE_ERROR' };
+    var parsed  = JSON.parse(jm[0]);
+    var valid   = ['BUY', 'SELL', 'NO_TRADE'];
+    var aiSig   = typeof parsed.signal === 'string' ? parsed.signal.toUpperCase() : 'NO_TRADE';
+    if (!valid.includes(aiSig)) aiSig = 'NO_TRADE';
+    var aiConf  = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.confidence))) : 50;
+    return { status: 'OK', signal: aiSig, confidence: aiConf, reason: parsed.reason || null, concerns: parsed.concerns || null, model: 'groq/llama-3.1-8b-instant' };
+  } catch(e) {
+    if (e.name === 'AbortError') return { status: 'TIMEOUT' };
+    return { status: 'ERROR', message: e.message };
+  }
+}
+
+// Dual AI result combiner
+// Cerebras + Groq দুটোর result মিলিয়ে final AI verdict দেয়
+function combineDualAIResults(cerebras, groq, engineDirection) {
+  var result = { cerebras: cerebras, groq: groq, combined: null, combinedAgreed: null };
+
+  var cOk = cerebras && cerebras.status === 'OK';
+  var gOk = groq     && groq.status     === 'OK';
+
+  if (!cOk && !gOk) {
+    result.combined = { status: 'BOTH_UNAVAILABLE', signal: 'NO_TRADE', confidence: 0 };
+    return result;
+  }
+
+  if (cOk && !gOk) {
+    result.combined = cerebras;
+    result.combinedAgreed = cerebras.signal === engineDirection;
+    return result;
+  }
+
+  if (!cOk && gOk) {
+    result.combined = groq;
+    result.combinedAgreed = groq.signal === engineDirection;
+    return result;
+  }
+
+  // Both OK — combine
+  if (cerebras.signal === groq.signal) {
+    // Both agree — average confidence, stronger signal
+    var avgConf = Math.round((cerebras.confidence + groq.confidence) / 2);
+    result.combined = {
+      status:     'OK',
+      signal:     cerebras.signal,
+      confidence: avgConf,
+      reason:     cerebras.reason || groq.reason,
+      concerns:   cerebras.concerns || groq.concerns,
+      agreement:  'BOTH_AGREE',
+      model:      'dual (Cerebras + Groq)',
+    };
+  } else {
+    // Disagree — conservative: use NO_TRADE or lower confidence one
+    var lowerConf = Math.min(cerebras.confidence, groq.confidence);
+    result.combined = {
+      status:     'OK',
+      signal:     'NO_TRADE',
+      confidence: lowerConf,
+      reason:     'Cerebras=' + cerebras.signal + ' vs Groq=' + groq.signal + ' — AIs disagree',
+      concerns:   'Conflicting AI signals — skip trade',
+      agreement:  'AIs_DISAGREE',
+      model:      'dual (Cerebras + Groq)',
+    };
+  }
+
+  result.combinedAgreed = result.combined.signal === engineDirection;
+  return result;
+}
+
+// ============================================
+// [v6.8.0] P5 — CAMARILLA PIVOT POINTS
+// Regular pivot এর পাশাপাশি Camarilla levels
+// OTC এবং short expiry trading এ বেশি accurate
+// ============================================
+
+function calculateCamarillaPivots(candles) {
+  if (!candles || candles.length < 2) return null;
+
+  var lb  = Math.min(20, candles.length - 1);
+  var sc  = candles.slice(-lb - 1, -1);
+  var sh  = -Infinity; var sl = Infinity; var scl = sc[sc.length - 1].close;
+
+  for (var i = 0; i < sc.length; i++) {
+    if (sc[i].high > sh) sh = sc[i].high;
+    if (sc[i].low  < sl) sl = sc[i].low;
+  }
+
+  var rng = sh - sl;
+
+  return {
+    h4: scl + rng * 1.1 / 2,
+    h3: scl + rng * 1.1 / 4,
+    h2: scl + rng * 1.1 / 6,
+    h1: scl + rng * 1.1 / 12,
+    l1: scl - rng * 1.1 / 12,
+    l2: scl - rng * 1.1 / 6,
+    l3: scl - rng * 1.1 / 4,
+    l4: scl - rng * 1.1 / 2,
+    close: scl,
+  };
+}
+
+// Camarilla level থেকে signal score দেয়
+function scoreCamarillaLevels(camPivots, lastClose, atr) {
+  if (!camPivots || !lastClose || !atr || atr <= 0) return { up: 0, down: 0, level: 'NONE' };
+
+  var thresh = atr * 0.4;
+  var up = 0; var down = 0; var level = 'NONE';
+
+  // Near L3/L4 = strong BUY (support bounce)
+  if (Math.abs(lastClose - camPivots.l4) < thresh) { up += 1.8; level = 'L4_SUPPORT'; }
+  else if (Math.abs(lastClose - camPivots.l3) < thresh) { up += 1.3; level = 'L3_SUPPORT'; }
+  else if (Math.abs(lastClose - camPivots.l2) < thresh) { up += 0.7; level = 'L2_SUPPORT'; }
+  else if (Math.abs(lastClose - camPivots.l1) < thresh) { up += 0.4; level = 'L1_SUPPORT'; }
+
+  // Near H3/H4 = strong SELL (resistance bounce)
+  if (Math.abs(lastClose - camPivots.h4) < thresh) { down += 1.8; level = 'H4_RESISTANCE'; }
+  else if (Math.abs(lastClose - camPivots.h3) < thresh) { down += 1.3; level = 'H3_RESISTANCE'; }
+  else if (Math.abs(lastClose - camPivots.h2) < thresh) { down += 0.7; level = 'H2_RESISTANCE'; }
+  else if (Math.abs(lastClose - camPivots.h1) < thresh) { down += 0.4; level = 'H1_RESISTANCE'; }
+
+  return { up: up, down: down, level: level };
 }
 
 // ============================================
