@@ -61,6 +61,15 @@
  *     Applied after volMult×srPenalty (market-quality aware)
  *     OTC weight 1.5 (broker respects round number levels)
  *
+ * v6.9.0 — Phase 2: Signal History & Win/Loss Tracking:
+ * H1. saveSignalToHistory() — KV store e signal automatically save
+ * H2. scheduledTracker() — Cron job: expired signal fetch + win/loss record
+ * H3. Dynamic confidence per pair — last 20 signal win rate e adjust
+ * H4. /api/history?pair=EUR/USD — stored signal history endpoint
+ * H5. /api/stats — pair/session/TF wise win rate stats
+ * H6. /api/report — manual OTC win/loss report endpoint
+ * H7. wrangler.toml cron: "* * * * *" (every minute)
+ *
  * Bug fixes in v6.8.0:
  * F1. checkNewsBlackout — OTC pairs now correctly bypass news blackout
  * F2. Camarilla score — now applied after volMult×srPenalty (was before)
@@ -196,6 +205,23 @@ const OTC_DURATION_CONFIG = {
   '1min':  { base: 2, min: 2, max: 3 },
   '5min':  { base: 2, min: 2, max: 2 },
   '15min': { base: 1, min: 1, max: 2 },
+};
+
+// ============================================
+// [v6.9.0] PHASE 2 — HISTORY & TRACKING CONSTANTS
+// ============================================
+
+const HISTORY_CONFIG = {
+  MAX_SIGNALS_PER_PAIR: 50,      // KV তে per pair কতটা signal রাখব
+  WIN_RATE_LOOKBACK:    20,       // Dynamic confidence এ কতটা signal দেখব
+  RESULT_CHECK_DELAY:   90,       // Signal expiry এর কত সেকেন্ড পরে result check করব
+  CONFIDENCE_BONUS_THRESHOLD: 0.65,  // Win rate এর উপরে → bonus
+  CONFIDENCE_PENALTY_THRESHOLD: 0.45, // Win rate এর নিচে → penalty
+  CONFIDENCE_BONUS:    6,         // Max bonus points
+  CONFIDENCE_PENALTY: -10,        // Max penalty points
+  KV_SIGNAL_PREFIX:   'sig:',     // Signal KV key prefix
+  KV_STATS_PREFIX:    'stats:',   // Stats KV key prefix
+  KV_PENDING_PREFIX:  'pending:', // Pending result check prefix
 };
 
 // ============================================
@@ -355,6 +381,11 @@ const POPULAR_CRYPTO_PAIRS = [
 // ============================================
 
 export default {
+  // [v6.9.0] Cron trigger — runs every minute to check expired signals
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(scheduledTracker(env));
+  },
+
   async fetch(request, env, ctx) {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
@@ -400,18 +431,31 @@ export default {
         response = await handleBatch(url, env, ctx);
       } else if (path === '/api/pairs') {
         response = handlePairs();
+      } else if (path === '/api/history') {
+        // [v6.9.0] Signal history endpoint
+        response = await handleHistory(url, env);
+      } else if (path === '/api/stats') {
+        // [v6.9.0] Win rate stats endpoint
+        response = await handleStats(url, env);
+      } else if (path === '/api/report') {
+        // [v6.9.0] Manual OTC win/loss report
+        response = await handleReport(url, env);
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.8.0 — Forex + Crypto Multi-Timeframe',
+          message: 'FTT Signal Worker v6.9.0 — Forex + Crypto + OTC + History Tracking',
           endpoints: {
-            health: '/',
-            signal: '/api/signal?pair=EUR/USD',
-            signalCrypto: '/api/signal?pair=BTC/USD',
-            batch: '/api/batch?pairs=EUR/USD,GBP/JPY,BTC/USD',
-            pairs: '/api/pairs',
+            health:    '/',
+            signal:    '/api/signal?pair=EUR/USD',
+            signalOTC: '/api/signal?pair=EURUSD-OTC',
+            crypto:    '/api/signal?pair=BTC/USD',
+            batch:     '/api/batch?pairs=EUR/USD,GBP/JPY,BTC/USD',
+            pairs:     '/api/pairs',
+            history:   '/api/history?pair=EUR/USD&limit=20',
+            stats:     '/api/stats?pair=EUR/USD',
+            report:    '/api/report?id=SIGNAL_ID&result=WIN',
           },
-          supportedAssets: ['FOREX (40+ currencies)', 'CRYPTO (Top 10)'],
+          supportedAssets: ['FOREX (40+ currencies)', 'CRYPTO (Top 10)', 'OTC (Olymp Trade)'],
           timestamp: new Date().toISOString(),
         });
       }
@@ -871,7 +915,7 @@ function handleHealth(env) {
 
   return jsonResponse({
     status: 'healthy',
-    version: '6.8.0',
+    version: '6.9.0',
     timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
     bindings: {
@@ -901,6 +945,18 @@ function handleHealth(env) {
       volumeSpikeMultiplier: CONFIG.VOLUME_SPIKE_FILTER_MULTIPLIER + 'x',
       newsBlackoutMargin: CONFIG.NEWS_BLACKOUT_MINUTES + ' min',
       batchMaxPairs: CONFIG.BATCH_MAX_PAIRS,
+    },
+    history: {
+      enabled:          env.SIGNAL_CACHE ? true : false,
+      maxPerPair:       HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
+      winRateLookback:  HISTORY_CONFIG.WIN_RATE_LOOKBACK,
+      resultCheckDelay: HISTORY_CONFIG.RESULT_CHECK_DELAY + 's after expiry',
+      cronRequired:     'Add to wrangler.toml: [triggers] crons = ["* * * * *"]',
+      endpoints: {
+        history: '/api/history?pair=EUR/USD&limit=20',
+        stats:   '/api/stats?pair=EUR/USD',
+        report:  '/api/report?id=SIGNAL_ID&result=WIN (OTC manual)',
+      },
     },
     indicators: [
       'EMA(5/10/20)', 'SMA(50)', 'RSI(14)', 'MACD(12,26,9)',
@@ -1146,7 +1202,7 @@ async function handleSignalRaw(pair, env, ctx) {
       : 'FAILED: ' + (errors[tfk] || 'unknown');
   }
 
-  return {
+  const result = {
     pair: pair,
     assetType: assetType,
     marketStatus: 'OPEN',
@@ -1159,6 +1215,13 @@ async function handleSignalRaw(pair, env, ctx) {
     cacheHits: cacheHits,
     dataStatus: dataStatus,
   };
+
+  // [v6.9.0] Save signal to history (async, non-blocking)
+  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_CACHE && ctx) {
+    ctx.waitUntil(saveSignalToHistory(result, env));
+  }
+
+  return result;
 }
 
 // ============================================
@@ -2760,6 +2823,21 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
     // Keep confidence value visible so user sees why it was blocked
   }
 
+  // [v6.9.0] H3 — Dynamic confidence adjustment from historical win rate
+  if (finalDirection !== 'NO_TRADE' && env && env.SIGNAL_CACHE) {
+    var dynAdj = await getDynamicConfidenceAdjustment(pair, env);
+    if (dynAdj !== 0) {
+      confidence = Math.max(0, Math.min(92, confidence + dynAdj));
+      filtersApplied.push('DYNAMIC_CONF_ADJ: ' + (dynAdj > 0 ? '+' : '') + dynAdj + ' (historical win rate)');
+      // Re-check floor after dynamic adjustment
+      if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR && finalDirection !== 'NO_TRADE') {
+        finalDirection = 'NO_TRADE';
+        confidence     = 0;
+        filtersApplied.push('BELOW_FLOOR_AFTER_DYN_ADJ');
+      }
+    }
+  }
+
   // Best timeframe
   const best = findBestTimeframe(tfResults, finalDirection);
 
@@ -2901,7 +2979,7 @@ async function buildMultiTimeframeSignal(candleData, pair, assetType, session, e
     timeframeAnalysis: tfResults,
     sessionWeight:    sessionMult,
     candleQuality:    candleQualityMult,
-    method:      'WEIGHTED_MULTI_TF_v6.8.0',
+    method:      'WEIGHTED_MULTI_TF_v6.9.0',
     generatedAt: now.toISOString(),
   };
 }
@@ -4225,7 +4303,7 @@ async function handleSignalRawOTC(pair, env, ctx) {
     dataStatus[tfk] = candleData[tfk] ? candleData[tfk].length + ' candles (from ' + basePair + ')' : 'FAILED: ' + (errors[tfk] || 'unknown');
   }
 
-  return {
+  const otcResult = {
     pair: pair, basePair: basePair, assetType: ASSET_TYPE_OTC, isOTC: true,
     otcBroker: 'Olymp Trade (synthetic price)',
     marketStatus: 'OPEN (OTC 24/7)',
@@ -4236,4 +4314,514 @@ async function handleSignalRawOTC(pair, env, ctx) {
     nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
     cacheHits: cacheHits, dataStatus: dataStatus,
   };
+
+  // [v6.9.0] Save OTC signal to history (manual result reporting via /api/report)
+  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_CACHE && ctx) {
+    ctx.waitUntil(saveSignalToHistory(otcResult, env));
+  }
+
+  return otcResult;
+}
+
+// ============================================================
+// [v6.9.0] PHASE 2 — SIGNAL HISTORY & WIN/LOSS TRACKING
+// ============================================================
+
+// Generate unique signal ID
+function generateSignalId(pair, timestamp) {
+  var ts   = new Date(timestamp).getTime();
+  var hash = pair.replace(/[^A-Z]/g, '').slice(0, 6);
+  var rand = Math.floor(Math.random() * 9000 + 1000);
+  return hash + '_' + ts + '_' + rand;
+}
+
+// ============================================================
+// H1 — Save signal to KV history
+// ============================================================
+async function saveSignalToHistory(result, env) {
+  if (!env.SIGNAL_CACHE) return;
+
+  try {
+    var pair      = result.pair;
+    var signal    = result.signal;
+    var isOTC     = result.isOTC || false;
+    var now       = result.timestamp || new Date().toISOString();
+    var signalId  = generateSignalId(pair, now);
+
+    // Best TF expiry time — used for result checking
+    var expiryTime = null;
+    var bestTF     = signal.bestTimeframe;
+    if (bestTF && bestTF.expiry && bestTF.expiry.expiryTime) {
+      expiryTime = bestTF.expiry.expiryTime;
+    }
+
+    // Entry price from best TF
+    var entryPrice = null;
+    if (bestTF && bestTF.expiry) {
+      var btfKey = bestTF.timeframe;
+      var btfRec = signal.recommendations && signal.recommendations[btfKey];
+      if (btfRec && btfRec.entry) entryPrice = btfRec.entry.price;
+    }
+
+    var record = {
+      id:           signalId,
+      pair:         pair,
+      isOTC:        isOTC,
+      direction:    signal.finalSignal,
+      confidence:   signal.confidence,
+      grade:        signal.grade ? signal.grade.grade : 'N/A',
+      entryPrice:   entryPrice,
+      expiryTime:   expiryTime,
+      bestTF:       bestTF ? bestTF.timeframe : 'N/A',
+      alignment:    signal.alignment,
+      marketRegime: signal.marketRegime,
+      session:      result.session ? result.session.sessions : [],
+      sessionQuality: result.session ? result.session.quality : 'N/A',
+      aiAgreed:     signal.aiValidation ? signal.aiValidation.combinedAgreed : null,
+      timestamp:    now,
+      result:       null,   // WIN / LOSS / UNKNOWN — filled later
+      exitPrice:    null,
+      checkedAt:    null,
+    };
+
+    // Save to pair history list
+    var histKey  = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pair.replace(/\//g, '_').replace(/-/g, '_');
+    var existing = null;
+    try {
+      existing = await env.SIGNAL_CACHE.get(histKey, 'json');
+    } catch(e) { existing = null; }
+
+    var history = Array.isArray(existing) ? existing : [];
+    history.unshift(record); // newest first
+    if (history.length > HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR) {
+      history = history.slice(0, HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR);
+    }
+
+    await env.SIGNAL_CACHE.put(histKey, JSON.stringify(history), {
+      expirationTtl: 60 * 60 * 24 * 30, // 30 days
+    });
+
+    // Save to pending queue (for result checking) — only non-OTC
+    if (!isOTC && expiryTime) {
+      var pendingKey = HISTORY_CONFIG.KV_PENDING_PREFIX + signalId;
+      await env.SIGNAL_CACHE.put(pendingKey, JSON.stringify(record), {
+        expirationTtl: 60 * 60 * 2, // 2 hours — auto cleanup
+      });
+    }
+
+    console.log('Signal saved:', signalId, pair, signal.finalSignal);
+  } catch(e) {
+    console.warn('saveSignalToHistory error:', e.message);
+  }
+}
+
+// ============================================================
+// H2 — Scheduled Cron Tracker
+// Runs every minute — checks expired pending signals
+// ============================================================
+async function scheduledTracker(env) {
+  if (!env.SIGNAL_CACHE) return;
+
+  try {
+    // List all pending signal keys
+    var pendingList = await env.SIGNAL_CACHE.list({ prefix: HISTORY_CONFIG.KV_PENDING_PREFIX });
+    if (!pendingList || !pendingList.keys || pendingList.keys.length === 0) return;
+
+    var now = Date.now();
+    var checked = 0;
+
+    for (var ki = 0; ki < pendingList.keys.length; ki++) {
+      var kvKey = pendingList.keys[ki].name;
+      try {
+        var record = await env.SIGNAL_CACHE.get(kvKey, 'json');
+        if (!record || !record.expiryTime) {
+          await env.SIGNAL_CACHE.delete(kvKey);
+          continue;
+        }
+
+        var expiryMs  = new Date(record.expiryTime).getTime();
+        var checkAfterMs = expiryMs + (HISTORY_CONFIG.RESULT_CHECK_DELAY * 1000);
+
+        // Not expired yet — skip
+        if (now < checkAfterMs) continue;
+
+        // Expired — fetch result candle price
+        var exitPrice = await fetchExpiryPrice(record.pair, record.expiryTime, env);
+        if (exitPrice === null) {
+          // Price fetch failed — mark UNKNOWN and remove pending
+          await updateSignalResult(record, 'UNKNOWN', null, env);
+          await env.SIGNAL_CACHE.delete(kvKey);
+          continue;
+        }
+
+        // Determine WIN / LOSS
+        var winLoss = 'UNKNOWN';
+        if (record.entryPrice !== null && exitPrice !== null) {
+          if (record.direction === 'BUY') {
+            winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
+          } else if (record.direction === 'SELL') {
+            winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
+          }
+        }
+
+        await updateSignalResult(record, winLoss, exitPrice, env);
+        await env.SIGNAL_CACHE.delete(kvKey); // Remove from pending
+        await updatePairStats(record.pair, winLoss, record, env); // Update stats
+
+        checked++;
+        if (checked >= 10) break; // Max 10 per cron run to avoid timeout
+      } catch(e) {
+        console.warn('Cron check error for ' + kvKey + ':', e.message);
+        try { await env.SIGNAL_CACHE.delete(kvKey); } catch(e2) {}
+      }
+    }
+
+    if (checked > 0) console.log('Cron: checked ' + checked + ' expired signals');
+  } catch(e) {
+    console.warn('scheduledTracker error:', e.message);
+  }
+}
+
+// Fetch the close price of the candle at expiry time
+async function fetchExpiryPrice(pair, expiryTimeISO, env) {
+  try {
+    var apiKeys = getApiKeys(env);
+    if (apiKeys.length === 0) return null;
+
+    // Use 1min candle — fetch 5 candles around expiry to find the right one
+    var symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
+    var apiKey   = apiKeys[0];
+    var u = new URL('/time_series', CONFIG.API_BASE_URL);
+    u.searchParams.set('symbol',     symbol);
+    u.searchParams.set('interval',   '1min');
+    u.searchParams.set('outputsize', '5');
+    u.searchParams.set('apikey',     apiKey);
+    u.searchParams.set('format',     'JSON');
+
+    var controller = new AbortController();
+    var tid = setTimeout(function() { controller.abort(); }, 8000);
+    var res;
+    try {
+      res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } });
+    } finally { clearTimeout(tid); }
+
+    if (!res.ok) return null;
+    var data = await res.json();
+    if (!data.values || !Array.isArray(data.values) || data.values.length === 0) return null;
+
+    // Find candle closest to expiry time
+    var expiryMs = new Date(expiryTimeISO).getTime();
+    var closest  = null;
+    var minDiff  = Infinity;
+
+    for (var i = 0; i < data.values.length; i++) {
+      var c    = data.values[i];
+      var cMs  = new Date(c.datetime).getTime();
+      var diff = Math.abs(cMs - expiryMs);
+      if (diff < minDiff) { minDiff = diff; closest = c; }
+    }
+
+    // Accept if within 2 minutes of expiry
+    if (closest && minDiff <= 120000) {
+      return parseFloat(closest.close);
+    }
+    return null;
+  } catch(e) {
+    console.warn('fetchExpiryPrice error:', e.message);
+    return null;
+  }
+}
+
+// Update signal result in pair history KV
+async function updateSignalResult(record, winLoss, exitPrice, env) {
+  try {
+    var histKey  = HISTORY_CONFIG.KV_SIGNAL_PREFIX + record.pair.replace(/\//g, '_').replace(/-/g, '_');
+    var existing = await env.SIGNAL_CACHE.get(histKey, 'json');
+    if (!Array.isArray(existing)) return;
+
+    for (var i = 0; i < existing.length; i++) {
+      if (existing[i].id === record.id) {
+        existing[i].result    = winLoss;
+        existing[i].exitPrice = exitPrice;
+        existing[i].checkedAt = new Date().toISOString();
+        break;
+      }
+    }
+
+    await env.SIGNAL_CACHE.put(histKey, JSON.stringify(existing), {
+      expirationTtl: 60 * 60 * 24 * 30,
+    });
+  } catch(e) {
+    console.warn('updateSignalResult error:', e.message);
+  }
+}
+
+// ============================================================
+// H3 — Dynamic Confidence Adjustment per Pair
+// Last N signal এর win rate দেখে confidence adjust করে
+// ============================================================
+async function getDynamicConfidenceAdjustment(pair, env) {
+  if (!env.SIGNAL_CACHE) return 0;
+
+  try {
+    var statsKey = HISTORY_CONFIG.KV_STATS_PREFIX + pair.replace(/\//g, '_').replace(/-/g, '_');
+    var stats    = await env.SIGNAL_CACHE.get(statsKey, 'json');
+    if (!stats || typeof stats.winRate !== 'number' || stats.sampleSize < 5) return 0;
+
+    var wr = stats.winRate;
+
+    if (wr >= 0.70) return HISTORY_CONFIG.CONFIDENCE_BONUS;          // 70%+ → +6
+    if (wr >= HISTORY_CONFIG.CONFIDENCE_BONUS_THRESHOLD) return 3;   // 65-70% → +3
+    if (wr <= 0.35) return HISTORY_CONFIG.CONFIDENCE_PENALTY;        // 35%- → -10
+    if (wr <= HISTORY_CONFIG.CONFIDENCE_PENALTY_THRESHOLD) return -5; // 35-45% → -5
+    return 0; // 45-65% → neutral
+  } catch(e) {
+    return 0;
+  }
+}
+
+// Update pair stats after result
+async function updatePairStats(pair, winLoss, record, env) {
+  if (!env.SIGNAL_CACHE || winLoss === 'UNKNOWN') return;
+  try {
+    var statsKey = HISTORY_CONFIG.KV_STATS_PREFIX + pair.replace(/\//g, '_').replace(/-/g, '_');
+    var stats    = await env.SIGNAL_CACHE.get(statsKey, 'json');
+
+    if (!stats) {
+      stats = {
+        pair:       pair,
+        totalSignals: 0,
+        wins:       0,
+        losses:     0,
+        winRate:    0,
+        sampleSize: 0,
+        bySession:  {},
+        byTF:       {},
+        byRegime:   {},
+        lastUpdated: null,
+      };
+    }
+
+    stats.totalSignals++;
+    if (winLoss === 'WIN')  stats.wins++;
+    if (winLoss === 'LOSS') stats.losses++;
+
+    var decided = stats.wins + stats.losses;
+    stats.winRate    = decided > 0 ? Math.round((stats.wins / decided) * 1000) / 1000 : 0;
+    stats.sampleSize = Math.min(decided, HISTORY_CONFIG.WIN_RATE_LOOKBACK);
+    stats.lastUpdated = new Date().toISOString();
+
+    // Session breakdown
+    var sessions = record.session || [];
+    for (var si = 0; si < sessions.length; si++) {
+      var sess = sessions[si];
+      if (!stats.bySession[sess]) stats.bySession[sess] = { wins: 0, losses: 0, winRate: 0 };
+      if (winLoss === 'WIN')  stats.bySession[sess].wins++;
+      if (winLoss === 'LOSS') stats.bySession[sess].losses++;
+      var sd = stats.bySession[sess].wins + stats.bySession[sess].losses;
+      stats.bySession[sess].winRate = sd > 0 ? Math.round((stats.bySession[sess].wins / sd) * 1000) / 1000 : 0;
+    }
+
+    // TF breakdown
+    var tf = record.bestTF || 'N/A';
+    if (!stats.byTF[tf]) stats.byTF[tf] = { wins: 0, losses: 0, winRate: 0 };
+    if (winLoss === 'WIN')  stats.byTF[tf].wins++;
+    if (winLoss === 'LOSS') stats.byTF[tf].losses++;
+    var td = stats.byTF[tf].wins + stats.byTF[tf].losses;
+    stats.byTF[tf].winRate = td > 0 ? Math.round((stats.byTF[tf].wins / td) * 1000) / 1000 : 0;
+
+    // Regime breakdown
+    var regime = record.marketRegime || 'UNKNOWN';
+    if (!stats.byRegime[regime]) stats.byRegime[regime] = { wins: 0, losses: 0, winRate: 0 };
+    if (winLoss === 'WIN')  stats.byRegime[regime].wins++;
+    if (winLoss === 'LOSS') stats.byRegime[regime].losses++;
+    var rd = stats.byRegime[regime].wins + stats.byRegime[regime].losses;
+    stats.byRegime[regime].winRate = rd > 0 ? Math.round((stats.byRegime[regime].wins / rd) * 1000) / 1000 : 0;
+
+    await env.SIGNAL_CACHE.put(statsKey, JSON.stringify(stats), {
+      expirationTtl: 60 * 60 * 24 * 90, // 90 days
+    });
+  } catch(e) {
+    console.warn('updatePairStats error:', e.message);
+  }
+}
+
+// ============================================================
+// H4 — History Endpoint Handler
+// GET /api/history?pair=EUR/USD&limit=20
+// ============================================================
+async function handleHistory(url, env) {
+  if (!env.SIGNAL_CACHE) {
+    return jsonResponse({ error: true, message: 'SIGNAL_CACHE KV not configured.' }, 503);
+  }
+
+  var rawPair = url.searchParams.get('pair') || 'EUR/USD';
+  var pair    = sanitizePair(rawPair);
+  if (!pair) return jsonResponse({ error: true, message: 'Invalid pair: ' + rawPair }, 400);
+
+  var limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 50);
+
+  try {
+    var histKey = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pair.replace(/\//g, '_').replace(/-/g, '_');
+    var history = await env.SIGNAL_CACHE.get(histKey, 'json');
+    if (!Array.isArray(history)) history = [];
+
+    var limited  = history.slice(0, limit);
+    var decided  = limited.filter(function(s) { return s.result === 'WIN' || s.result === 'LOSS'; });
+    var wins     = decided.filter(function(s) { return s.result === 'WIN'; }).length;
+    var winRate  = decided.length > 0 ? Math.round((wins / decided.length) * 1000) / 1000 : null;
+
+    return jsonResponse({
+      pair:      pair,
+      total:     history.length,
+      showing:   limited.length,
+      decided:   decided.length,
+      pending:   limited.filter(function(s) { return s.result === null; }).length,
+      winRate:   winRate,
+      signals:   limited,
+      timestamp: new Date().toISOString(),
+    });
+  } catch(e) {
+    return jsonResponse({ error: true, message: 'History fetch error: ' + e.message }, 500);
+  }
+}
+
+// ============================================================
+// H5 — Stats Endpoint Handler
+// GET /api/stats?pair=EUR/USD (pair optional — all pairs if omitted)
+// ============================================================
+async function handleStats(url, env) {
+  if (!env.SIGNAL_CACHE) {
+    return jsonResponse({ error: true, message: 'SIGNAL_CACHE KV not configured.' }, 503);
+  }
+
+  var rawPair = url.searchParams.get('pair');
+
+  try {
+    if (rawPair) {
+      // Single pair stats
+      var pair = sanitizePair(rawPair);
+      if (!pair) return jsonResponse({ error: true, message: 'Invalid pair: ' + rawPair }, 400);
+
+      var statsKey = HISTORY_CONFIG.KV_STATS_PREFIX + pair.replace(/\//g, '_').replace(/-/g, '_');
+      var stats    = await env.SIGNAL_CACHE.get(statsKey, 'json');
+
+      if (!stats) {
+        return jsonResponse({
+          pair:    pair,
+          message: 'No stats yet. Signal history will build up over time.',
+          stats:   null,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Add dynamic confidence adjustment info
+      var confAdj = await getDynamicConfidenceAdjustment(pair, env);
+      stats.dynamicConfidenceAdjustment = confAdj > 0 ? '+' + confAdj : String(confAdj);
+
+      return jsonResponse({ pair: pair, stats: stats, timestamp: new Date().toISOString() });
+    } else {
+      // All pairs — list all stats keys
+      var allStats = await env.SIGNAL_CACHE.list({ prefix: HISTORY_CONFIG.KV_STATS_PREFIX });
+      if (!allStats || !allStats.keys || allStats.keys.length === 0) {
+        return jsonResponse({ message: 'No stats yet.', pairs: [], timestamp: new Date().toISOString() });
+      }
+
+      var summary = [];
+      for (var ki = 0; ki < allStats.keys.length; ki++) {
+        try {
+          var st = await env.SIGNAL_CACHE.get(allStats.keys[ki].name, 'json');
+          if (st) summary.push({
+            pair:         st.pair,
+            winRate:      st.winRate,
+            totalSignals: st.totalSignals,
+            wins:         st.wins,
+            losses:       st.losses,
+            lastUpdated:  st.lastUpdated,
+          });
+        } catch(e) {}
+      }
+
+      summary.sort(function(a, b) { return (b.winRate || 0) - (a.winRate || 0); });
+
+      return jsonResponse({
+        totalPairs: summary.length,
+        pairs:      summary,
+        timestamp:  new Date().toISOString(),
+      });
+    }
+  } catch(e) {
+    return jsonResponse({ error: true, message: 'Stats error: ' + e.message }, 500);
+  }
+}
+
+// ============================================================
+// H6 — Manual OTC Report Endpoint
+// GET /api/report?id=SIGNAL_ID&result=WIN
+// OTC এর জন্য — manual win/loss report
+// ============================================================
+async function handleReport(url, env) {
+  if (!env.SIGNAL_CACHE) {
+    return jsonResponse({ error: true, message: 'SIGNAL_CACHE KV not configured.' }, 503);
+  }
+
+  var signalId = url.searchParams.get('id');
+  var result   = (url.searchParams.get('result') || '').toUpperCase();
+
+  if (!signalId) return jsonResponse({ error: true, message: 'Signal ID required: ?id=SIGNAL_ID' }, 400);
+  if (!['WIN', 'LOSS'].includes(result)) {
+    return jsonResponse({ error: true, message: 'result must be WIN or LOSS' }, 400);
+  }
+
+  try {
+    // Search through all history keys to find this signal ID
+    var allKeys = await env.SIGNAL_CACHE.list({ prefix: HISTORY_CONFIG.KV_SIGNAL_PREFIX });
+    if (!allKeys || !allKeys.keys || allKeys.keys.length === 0) {
+      return jsonResponse({ error: true, message: 'Signal ID not found: ' + signalId }, 404);
+    }
+
+    var found = false;
+    var foundRecord = null;
+
+    for (var ki = 0; ki < allKeys.keys.length; ki++) {
+      try {
+        var histKey = allKeys.keys[ki].name;
+        var history = await env.SIGNAL_CACHE.get(histKey, 'json');
+        if (!Array.isArray(history)) continue;
+
+        for (var i = 0; i < history.length; i++) {
+          if (history[i].id === signalId) {
+            foundRecord          = history[i];
+            history[i].result   = result;
+            history[i].checkedAt = new Date().toISOString();
+            history[i].reportedManually = true;
+            await env.SIGNAL_CACHE.put(histKey, JSON.stringify(history), {
+              expirationTtl: 60 * 60 * 24 * 30,
+            });
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      } catch(e) {}
+    }
+
+    if (!found) return jsonResponse({ error: true, message: 'Signal ID not found: ' + signalId }, 404);
+
+    // Update stats for this pair
+    if (foundRecord) {
+      await updatePairStats(foundRecord.pair, result, foundRecord, env);
+    }
+
+    return jsonResponse({
+      success:  true,
+      signalId: signalId,
+      pair:     foundRecord ? foundRecord.pair : 'N/A',
+      result:   result,
+      message:  'Result recorded. Stats updated.',
+      timestamp: new Date().toISOString(),
+    });
+  } catch(e) {
+    return jsonResponse({ error: true, message: 'Report error: ' + e.message }, 500);
+  }
 }
