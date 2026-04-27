@@ -1,5 +1,5 @@
 /**
- * FTT Signal Worker v6.9.1 — Accuracy-focused for 2-5min Binary (Forex + Crypto + OTC)
+ * FTT  Signal Worker v6.9.1 — Accuracy-focused for 2-5min Binary (Forex + Crypto + OTC)
  *
  * v6.9.1 changes (accuracy boost for short expiry):
  * 1. MIN_CONFIDENCE_FLOOR raised to 72 (OTC to 68)
