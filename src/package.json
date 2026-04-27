@@ -1,0 +1,16 @@
+{
+  "name": "ftt-signal-worker",
+  "version": "6.9.0",
+  "description": "Multi-Timeframe Binary Trading Signal — Forex + Crypto + OTC (Olymp Trade)",
+  "private": true,
+  "scripts": {
+    "dev":     "wrangler dev",
+    "deploy":  "wrangler deploy",
+    "tail":    "wrangler tail",
+    "kv:list": "wrangler kv key list --binding SIGNAL_CACHE",
+    "secret":  "wrangler secret put"
+  },
+  "devDependencies": {
+    "wrangler": "^3.99.0"
+  }
+}
