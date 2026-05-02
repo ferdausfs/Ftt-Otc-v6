@@ -144,6 +144,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     finalDirection = tie.direction; confidence = tie.confidence;
   }
 
+  // Save raw (pre-filter) direction — AI will use this if filters block the signal
+  const rawDirection = finalDirection;
+  const rawConfidence = confidence;
+
   // ── HTF HARD BLOCK ──
   if (higherTFTrend !== null && finalDirection !== 'NO_TRADE' && finalDirection !== higherTFTrend) {
     const htf15 = tfResults['15min'];
@@ -215,8 +219,12 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     marketContext = (!isNaN(adxH) && adxH !== null) ? (adxH >= 25 ? 'TRENDING' : 'RANGING') : 'UNKNOWN';
   }
 
-  if (finalDirection !== 'NO_TRADE' && marketCondition.includes('DEAD_MARKET') && confidence < 75) {
+  // ── DEAD_MARKET soft block (pre-AI) ──
+  // Only hard-block if confidence is very low — AI gets a chance to rescue borderline signals
+  const isDeadMarket = marketCondition.includes('DEAD_MARKET');
+  if (finalDirection !== 'NO_TRADE' && isDeadMarket && confidence < 65) {
     finalDirection = 'NO_TRADE'; confidence = Math.min(confidence, 30);
+    filtersApplied.push('DEAD_MARKET_HARD_BLOCK (conf<65)');
   }
 
   // ── CONFIDENCE FLOOR ──
@@ -244,6 +252,72 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
       if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR && finalDirection !== 'NO_TRADE') {
         finalDirection = 'NO_TRADE'; confidence = 0;
         filtersApplied.push('BELOW_FLOOR_AFTER_DYN_ADJ');
+      }
+    }
+  }
+
+  // ── AI VALIDATION ──
+  // Runs on: (a) valid signal, OR (b) rawDirection is valid and was blocked by soft filters
+  // AI can rescue a borderline signal that got filtered (DEAD_MARKET / below floor)
+  const aiTargetDir = finalDirection !== 'NO_TRADE'
+    ? finalDirection
+    : (rawDirection !== 'NO_TRADE' && rawConfidence >= 60 ? rawDirection : null);
+
+  let aiValidation = { status: 'SKIPPED' }; let aiAgreed = null;
+  if (aiTargetDir) {
+    const aiUseConf = finalDirection !== 'NO_TRADE' ? confidence : rawConfidence;
+    const best_snap = findBestTimeframe(tfResults, aiTargetDir);
+    const snapshot  = buildIndicatorSnapshot(tfResults, candleData, aiTargetDir, best_snap.timeframe);
+    const engineSig = {
+      direction: aiTargetDir, confidence: aiUseConf + '%', alignment,
+      higherTFTrend: higherTFTrend || 'NEUTRAL', marketCondition, bestTF: best_snap.timeframe,
+    };
+    const [cerebrasResult, groqResult] = await Promise.all([
+      callCerebrasValidation(pair, assetType, engineSig, snapshot, env),
+      callGroqValidation(pair, assetType, engineSig, snapshot, env),
+    ]);
+    const dualResult = combineDualAIResults(cerebrasResult, groqResult, aiTargetDir);
+    aiValidation = dualResult;
+    const combinedAI = dualResult.combined;
+    if (combinedAI && combinedAI.status === 'OK') {
+      aiAgreed = combinedAI.signal === aiTargetDir;
+      aiValidation.agrees = aiAgreed;
+
+      // ── AI RESCUE: signal was blocked by soft filter but AI strongly agrees ──
+      if (finalDirection === 'NO_TRADE' && aiTargetDir !== 'NO_TRADE' && aiAgreed) {
+        const aiConfNum = combinedAI.confidence || 0;
+        // Rescue only if AI is confident and no concerns
+        if (aiConfNum >= 70 && !combinedAI.concerns) {
+          finalDirection = aiTargetDir;
+          confidence = Math.min(92, Math.round((rawConfidence + aiConfNum) / 2));
+          filtersApplied.push('AI_RESCUE: engine=' + aiTargetDir + ' ' + rawConfidence + '% + AI=' + aiConfNum + '% → ' + confidence + '%');
+          belowFloor = false;
+        } else if (aiConfNum >= 60 && !combinedAI.concerns) {
+          // Partial rescue — softer boost
+          finalDirection = aiTargetDir;
+          confidence = Math.min(85, rawConfidence + 5);
+          filtersApplied.push('AI_SOFT_RESCUE: ' + aiTargetDir + ' @ ' + confidence + '%');
+          belowFloor = false;
+        } else {
+          filtersApplied.push('AI_RESCUE_FAILED: AI conf=' + aiConfNum + '% concerns=' + (combinedAI.concerns || 'none'));
+        }
+      }
+
+      // ── Normal AI flow (signal was not blocked) ──
+      if (finalDirection !== 'NO_TRADE' && finalDirection === aiTargetDir) {
+        if (aiAgreed) {
+          if (!combinedAI.concerns) {
+            const boost = combinedAI.agreement === 'BOTH_AGREE' ? 8 : 5;
+            confidence = Math.min(92, confidence + boost);
+            filtersApplied.push('DUAL_AI_BOOST: ' + (combinedAI.agreement || 'AGREE') + ' → +' + boost);
+          } else {
+            confidence = Math.max(0, confidence - 5);
+            filtersApplied.push('DUAL_AI_AGREE_WITH_CONCERNS: ' + combinedAI.concerns);
+          }
+        } else {
+          finalDirection = 'NO_TRADE'; confidence = 0;
+          filtersApplied.push('DUAL_AI_DISAGREE_BLOCK (AI=' + combinedAI.signal + ')');
+        }
       }
     }
   }
@@ -277,37 +351,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (alignment === 'MIXED')  filtersApplied.push('MIXED_ALIGNMENT');
   if (sessionMult !== 1.0)    filtersApplied.push('SESSION_WEIGHT (x' + sessionMult.toFixed(2) + ')');
   if (candleQualityMult !== 1.0) filtersApplied.push('CANDLE_QUALITY (x' + candleQualityMult.toFixed(2) + ')');
-
-  // ── AI VALIDATION ──
-  let aiValidation = { status: 'SKIPPED' }; let aiAgreed = null;
-  if (finalDirection !== 'NO_TRADE') {
-    const snapshot = buildIndicatorSnapshot(tfResults, candleData, finalDirection, best.timeframe);
-    const engineSig = { direction: finalDirection, confidence: confidence + '%', alignment, higherTFTrend: higherTFTrend || 'NEUTRAL', marketCondition, bestTF: best.timeframe };
-    const [cerebrasResult, groqResult] = await Promise.all([
-      callCerebrasValidation(pair, assetType, engineSig, snapshot, env),
-      callGroqValidation(pair, assetType, engineSig, snapshot, env),
-    ]);
-    const dualResult = combineDualAIResults(cerebrasResult, groqResult, finalDirection);
-    aiValidation = dualResult;
-    const combinedAI = dualResult.combined;
-    if (combinedAI && combinedAI.status === 'OK') {
-      aiAgreed = dualResult.combinedAgreed;
-      if (aiAgreed) {
-        if (!combinedAI.concerns) {
-          const boost = combinedAI.agreement === 'BOTH_AGREE' ? 8 : 5;
-          confidence = Math.min(92, confidence + boost);
-          filtersApplied.push('DUAL_AI_BOOST: ' + combinedAI.agreement + ' → +' + boost);
-        } else {
-          confidence = Math.max(0, confidence - 5);
-          filtersApplied.push('DUAL_AI_AGREE_WITH_CONCERNS: ' + combinedAI.concerns);
-        }
-      } else {
-        finalDirection = 'NO_TRADE'; confidence = 0;
-        filtersApplied.push('DUAL_AI_DISAGREE_BLOCK (AI=' + combinedAI.signal + ')');
-      }
-      if (aiValidation.combinedAgreed !== undefined) aiValidation.agrees = aiValidation.combinedAgreed;
-    }
-  }
+  if (isDeadMarket && finalDirection !== 'NO_TRADE') filtersApplied.push('DEAD_MARKET_WARN (AI rescued)');
 
   const finalGrade = getSignalGrade(confidence, avgConf, alignment);
 

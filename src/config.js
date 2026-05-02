@@ -141,11 +141,13 @@ export const VOLATILITY_THRESHOLDS = {
     minTradableATR:0.015,
   },
   CRYPTO: {
-    atrVeryHigh:5.0, atrHigh:3.0, atrLow:1.0, atrDead:0.3,
-    atrVolatile:5.0, atrDeadMarket:0.3,
-    bbSqueeze:2.0, bbHighVol:10.0,
-    bbFilterDead:1.0, bbFilterLow:2.0, bbFilterMed:3.0,
-    minTradableATR:0.1,
+    atrVeryHigh:5.0, atrHigh:3.0, atrLow:1.0, atrDead:0.15,
+    atrVolatile:5.0, atrDeadMarket:0.15,  // was 0.3 — BTC at $78k has ~0.17% ATR normally
+    bbSqueeze:0.3, bbHighVol:3.0,          // was 2.0/10.0 — BTC squeeze is ~0.2-0.4%
+    bbFilterDead:0.12,  // <0.12% = truly dead (almost no movement)
+    bbFilterLow:0.25,   // <0.25% = very tight squeeze
+    bbFilterMed:0.50,   // <0.50% = mild squeeze
+    minTradableATR:0.05,  // was 0.1 — BTC $39/78k = 0.05%, still tradable
   },
 };
 
