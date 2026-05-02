@@ -1,12 +1,10 @@
 name = "fttotcv6"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
-account_id = "${CLOUDFLARE_ACCOUNT_ID}"
 
 [[kv_namespaces]]
 binding = "SIGNAL_CACHE"
 id = "f553a3f10915478fa1b8165dd58ff6ea"
-preview_id = "f553a3f10915478fa1b8165dd58ff6ea"
 
 [triggers]
 crons = ["* * * * *"]
