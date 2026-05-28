@@ -37,15 +37,17 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
   let weightedScore = 0;
   let totalWeight = 0;
   
+  // FIX: '1M' = 1 Month, 'Mi' = 1 Minute (avoid duplicate key)
   const weights = {
-    '1W': 0.30, '1M': 0.30,
-    '1D': 0.25, 'D': 0.25,
+    '1Mo': 0.35, 'Monthly': 0.35,
+    '1W': 0.30, 'Weekly': 0.30,
+    '1D': 0.25, 'Daily': 0.25,
     '4H': 0.20, 'H4': 0.20,
     '1H': 0.15, 'H1': 0.15,
     '30M': 0.10, 'M30': 0.10,
     '15M': 0.08, 'M15': 0.08,
     '5M': 0.05, 'M5': 0.05,
-    '1M': 0.03, 'M1': 0.03
+    '1Mi': 0.03, 'M1': 0.03  // FIX: '1Mi' instead of '1M'
   };
   
   for (const [tf, candles] of Object.entries(tfData)) {
@@ -78,7 +80,7 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
   }
   
   // Normalize weighted score
-  const finalScore = totalWeight > 0 ? weightedScore / totalWeight : 50;
+  let finalScore = totalWeight > 0 ? weightedScore / totalWeight : 50;  // FIX: let instead of const
   
   // Determine direction
   let direction = 'NEUTRAL';
@@ -93,12 +95,12 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
     // If HTF bearish and signal says BUY → Weak signal / No trade
     if (direction === 'BUY' && htStructure.trend === 'BEARISH' && htStructure.score < 40) {
       direction = 'NEUTRAL';
-      finalScore = 50;
+      finalScore = 50;  // Now works with let
     }
     // If HTF bullish and signal says SELL → Weak signal / No trade
     if (direction === 'SELL' && htStructure.trend === 'BULLISH' && htStructure.score > 60) {
       direction = 'NEUTRAL';
-      finalScore = 50;
+      finalScore = 50;  // Now works with let
     }
   }
   
@@ -133,7 +135,7 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
   
   if (newsImpact.impact === 'MEDIUM') {
     // Reduce confidence for medium impact news
-    finalScore *= 0.85;
+    finalScore *= 0.85;  // Now works with let
   }
   
   // Grade and confidence

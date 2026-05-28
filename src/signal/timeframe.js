@@ -10,8 +10,9 @@ import { analyzeVolumeProfile } from '../indicators/volumeProfile.js';
 import { analyzeRegime } from '../indicators/regime.js';
 import { safeLastValue, r2 } from '../utils/helpers.js';
 
+// FIX: '1Mo' for Monthly, '1Mi' for 1 Minute (avoid duplicate '1M')
 const TF_WEIGHTS = {
-  '1M': 0.35, 'Monthly': 0.35,
+  '1Mo': 0.35, 'Monthly': 0.35,
   '1W': 0.30, 'Weekly': 0.30,
   '1D': 0.25, 'Daily': 0.25,
   '4H': 0.20, 'H4': 0.20,
@@ -19,10 +20,10 @@ const TF_WEIGHTS = {
   '30M': 0.10, 'M30': 0.10,
   '15M': 0.08, 'M15': 0.08,
   '5M': 0.05, 'M5': 0.05,
-  '1M': 0.03, 'M1': 0.03
+  '1Mi': 0.03, 'M1': 0.03  // FIX: '1Mi' instead of '1M'
 };
 
-const TF_HIERARCHY = ['1M', '1W', '1D', '4H', '1H', '30M', '15M', '5M', '1M'];
+const TF_HIERARCHY = ['1Mo', '1W', '1D', '4H', '1H', '30M', '15M', '5M', '1Mi'];
 
 /**
  * Analyze single timeframe with full context
