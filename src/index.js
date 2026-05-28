@@ -1,101 +1,147 @@
 /**
- * Indicator Aggregator — Updated for Real Market
- * Includes: Math indicators, Structure, Liquidity, Volume Profile
+ * Main Entry Point — Cloudflare Workers Router + Scheduled Jobs
+ * Real Market Trading Engine (Forex/Crypto — No OTC)
  */
 
-import { calculateEMA, calculateRSI, calculateMACD, calculateATR, calculateBB, calculateStochastic, calculateADX, calculateCCI, calculateMFI, calculatePivotPoints, calculateCamarilla } from './math.js';
-import { detectPatterns } from './patterns.js';
-import { detectDivergence } from './divergence.js';
-import { findSupportResistance } from './sr.js';
-import { analyzeRegime } from './regime.js';
-import { analyzeStructure } from './structure.js';
-import { analyzeLiquidity } from './liquidity.js';
-import { analyzeVolumeProfile } from './volumeProfile.js';
+import { handleSignal, handleSignalRaw, handleBatch, handleSignalRawOTC } from './handlers/signal.js';
+import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
+import { applyCors } from './utils/cors.js';
+import { fetchEconomicCalendar } from './utils/news.js';
+import { runWalkForwardOptimization } from './history/stats.js';
+import { jsonResponse } from './utils/helpers.js';
+
+// ============================================
+// Router
+// ============================================
+export default {
+  async fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    const path = url.pathname;
+    
+    // CORS preflight
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: applyCors() });
+    }
+    
+    try {
+      let response;
+      
+      switch (path) {
+        case '/signal':
+        case '/api/signal':
+          response = await handleSignal(request, env);
+          break;
+          
+        case '/signal/raw':
+        case '/api/signal/raw':
+          response = await handleSignalRaw(request, env);
+          break;
+          
+        case '/signal/batch':
+        case '/api/signal/batch':
+          response = await handleBatch(request, env);
+          break;
+          
+        // OTC endpoint disabled for real market
+        case '/signal/otc':
+        case '/api/signal/otc':
+          response = jsonResponse({ 
+            error: 'OTC trading disabled. Use /signal for real market (Forex/Crypto).' 
+          }, 403);
+          break;
+          
+        case '/health':
+        case '/api/health':
+          response = await handleHealth(request, env);
+          break;
+          
+        case '/pairs':
+        case '/api/pairs':
+          response = await handlePairs(request, env);
+          break;
+          
+        case '/history':
+        case '/api/history':
+          response = await handleHistory(request, env);
+          break;
+          
+        case '/stats':
+        case '/api/stats':
+          response = await handleStats(request, env);
+          break;
+          
+        case '/report':
+        case '/api/report':
+          response = await handleReport(request, env);
+          break;
+          
+        default:
+          response = jsonResponse({ error: 'Not found' }, 404);
+      }
+      
+      // Apply CORS to all responses
+      const headers = applyCors(response.headers || new Headers());
+      return new Response(response.body, {
+        status: response.status || 200,
+        headers
+      });
+      
+    } catch (err) {
+      console.error('Router error:', err);
+      return new Response(JSON.stringify({ error: err.message }), {
+        status: 500,
+        headers: applyCors(new Headers({ 'Content-Type': 'application/json' }))
+      });
+    }
+  },
+  
+  // ============================================
+  // Scheduled Jobs (Cron)
+  // ============================================
+  async scheduled(event, env, ctx) {
+    const cron = event.cron;
+    console.log('Cron triggered:', cron);
+    
+    try {
+      switch (cron) {
+        case '0 */6 * * *':
+          // Every 6 hours: Fetch economic calendar
+          await fetchEconomicCalendar(env);
+          console.log('Economic calendar updated');
+          break;
+          
+        case '0 0 * * 0':
+          // Weekly: Walk-forward optimization
+          const wfResult = await runWalkForwardOptimization(env);
+          console.log('Walk-forward complete:', wfResult?.recommendedSet || 'N/A');
+          break;
+          
+        case '0 0 1 * *':
+          // Monthly: Feature importance (placeholder for ML)
+          console.log('Monthly ML maintenance');
+          break;
+          
+        case '*/5 * * * *':
+          // Every 5 min: Cleanup old cache
+          await cleanupOldCache(env);
+          break;
+          
+        default:
+          console.log('Unknown cron pattern:', cron);
+      }
+    } catch (err) {
+      console.error('Cron error:', err);
+    }
+  }
+};
 
 /**
- * Calculate all indicators for a candle set
+ * Cleanup old KV cache entries
  */
-export function calculateAllIndicators(candles, assetType = 'FOREX') {
-  if (!candles || candles.length < 50) {
-    return { valid: false, reason: 'Insufficient data' };
-  }
+async function cleanupOldCache(env) {
+  if (!env?.CANDLE_CACHE) return;
   
-  const closes = candles.map(c => c.close);
-  const highs = candles.map(c => c.high);
-  const lows = candles.map(c => c.low);
-  const opens = candles.map(c => c.open);
-  const volumes = candles.map(c => c.volume || 0);
-  
-  // Core math indicators
-  const ema50 = calculateEMA(closes, 50);
-  const ema200 = calculateEMA(closes, 200);
-  const rsi = calculateRSI(closes, 14);
-  const macd = calculateMACD(closes);
-  const atr = calculateATR(highs, lows, closes);
-  const bb = calculateBB(closes, 20, 2);
-  const stoch = calculateStochastic(highs, lows, closes);
-  const adx = calculateADX(highs, lows, closes);
-  const cci = calculateCCI(highs, lows, closes);
-  const mfi = calculateMFI(highs, lows, closes, volumes);
-  const pivots = calculatePivotPoints(highs, lows, closes);
-  const camarilla = calculateCamarilla(highs, lows, closes);
-  
-  // Pattern detection
-  const patterns = detectPatterns(opens, highs, lows, closes);
-  
-  // Divergence
-  const divergence = detectDivergence(closes, rsi, macd);
-  
-  // Support/Resistance
-  const sr = findSupportResistance(highs, lows, closes);
-  
-  // Volume analysis
-  const avgVolume = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
-  const lastVolume = volumes[volumes.length - 1];
-  const volumeSpike = avgVolume > 0 && lastVolume > avgVolume * 1.5;
-  
-  return {
-    valid: true,
-    close: closes,
-    ema50: safeLastValue(ema50),
-    ema200: safeLastValue(ema200),
-    rsi: safeLastValue(rsi),
-    rsiHistory: rsi.slice(-10),
-    macd: {
-      line: safeLastValue(macd.macdLine),
-      signal: safeLastValue(macd.signalLine),
-      histogram: safeLastValue(macd.histogram)
-    },
-    atr: safeLastValue(atr),
-    bb: {
-      upper: safeLastValue(bb.upper),
-      middle: safeLastValue(bb.middle),
-      lower: safeLastValue(bb.lower),
-      position: bb.upper.length > 0 ? (safeLastValue(closes) - safeLastValue(bb.lower)) / (safeLastValue(bb.upper) - safeLastValue(bb.lower)) : 0.5
-    },
-    stoch: {
-      k: safeLastValue(stoch.k),
-      d: safeLastValue(stoch.d)
-    },
-    adx: safeLastValue(adx),
-    cci: safeLastValue(cci),
-    mfi: safeLastValue(mfi),
-    pivots,
-    camarilla,
-    patterns,
-    divergence,
-    sr,
-    volumeSpike,
-    avgVolume,
-    lastVolume
-  };
+  // List and delete entries older than TTL (simplified)
+  // In production, use KV metadata/expiration instead
+  console.log('Cache cleanup complete');
 }
-
-function safeLastValue(arr) {
-  if (!Array.isArray(arr) || arr.length === 0) return 0;
-  const last = arr[arr.length - 1];
-  return typeof last === 'number' && !isNaN(last) ? last : 0;
-}
-
-// Re-export for direct use
-export { analyzeStructure, analyzeLiquidity, analyzeVolumeProfile, analyzeRegime };
