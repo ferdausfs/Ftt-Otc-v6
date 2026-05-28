@@ -3,7 +3,7 @@
 # Cloudflare Workers Configuration
 # ============================================
 
-name = "ftt-real-market"
+name = "fttotcv6"
 main = "src/index.js"
 compatibility_date = "2026-05-28"
 compatibility_flags = ["nodejs_compat"]
