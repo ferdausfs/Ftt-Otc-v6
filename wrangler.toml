@@ -22,43 +22,43 @@ MIN_RISK_PERCENT = "0.25"
 # ============================================
 [[kv_namespaces]]
 binding = "CANDLE_CACHE"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "f553a3f10915478fa1b8165dd58ff6ea"
 # Stores: Last 100 candles per pair/timeframe
 # Purpose: Reduce TwelveData API calls
 
 [[kv_namespaces]]
 binding = "NEWS_KV"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "227305e31bde4a0a822453d4d5b044ab"
 # Stores: Economic calendar events
 # Purpose: News blackout detection
 
 [[kv_namespaces]]
 binding = "SIGNAL_HISTORY"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "ea435ac104ff48998cc86a8ca7c713c6"
 # Stores: Every signal generated with outcome
 # Purpose: Win/loss stats, walk-forward optimization
 
 [[kv_namespaces]]
 binding = "PAIR_STATS"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "0394337eb4f0487c8f125034b053f6da"
 # Stores: Per-pair performance metrics
 # Purpose: Dynamic risk adjustment
 
 [[kv_namespaces]]
 binding = "GLOBAL_STATS"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "6dc93e3289bd432bbd996fdacc50ee6d"
 # Stores: Portfolio-level stats, parameter sets
 # Purpose: System-wide optimization
 
 [[kv_namespaces]]
 binding = "ML_DATA"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "67a8523dc2c14d8da698c6d591e79b93"
 # Stores: Feature vectors + outcomes for ML
 # Purpose: Feature importance calculation
 
 [[kv_namespaces]]
 binding = "RATE_LIMITER"
-id = "REPLACE_WITH_YOUR_KV_ID"
+id = "4a8ffeae5703469dbef4be60c00fadac"
 # Existing: Rate limiting fallback
 
 # ============================================
