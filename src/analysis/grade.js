@@ -1,5 +1,15 @@
 import { CONFIG } from '../config.js';
 
+export function gradeSignal(score, direction, regime) {
+  if (direction === 'NEUTRAL') return 'F';
+  if (score >= 80) return 'A+';
+  if (score >= 70) return 'A';
+  if (score >= 60) return 'B';
+  if (score >= 45) return 'C';
+  if (score >= 35) return 'D';
+  return 'F';
+}
+
 export function getSignalGrade(confidence, avgConf, alignment) {
   let sc = 0;
   sc += Math.min(40, confidence * 0.4);

@@ -1,6 +1,12 @@
 import { DURATION_CONFIG, OTC_DURATION_CONFIG, VOLATILITY_THRESHOLDS, CONFIG } from '../config.js';
 import { safeLastValue } from '../utils/helpers.js';
 
+export function calculateDuration(atr, assetType, regime) {
+  const base = assetType === 'CRYPTO' ? 10 : 5;
+  const factor = regime === 'TRENDING' ? 2 : regime === 'RANGING' ? 1 : 1.5;
+  return Math.round(base * factor);
+}
+
 export function calculateCandleDuration(indicators, direction, candles, timeframe, assetType) {
   const durCfg = DURATION_CONFIG[assetType] || DURATION_CONFIG.FOREX;
   const cfg = durCfg[timeframe] || { base: 3, min: 1, max: 10 };

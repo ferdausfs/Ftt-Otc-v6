@@ -1,3 +1,4 @@
+import { ASSET_TYPE } from '../config.js';
 /**
  * Multi-Timeframe Analysis with Weighted Scoring
  * Higher timeframes get more weight — prevents trading against the tide
@@ -18,9 +19,9 @@ const TF_WEIGHTS = {
   '4H': 0.20, 'H4': 0.20,
   '1H': 0.15, 'H1': 0.15,
   '30M': 0.10, 'M30': 0.10,
-  '15M': 0.08, 'M15': 0.08,
-  '5M': 0.05, 'M5': 0.05,
-  '1Mi': 0.03, 'M1': 0.03  // FIX: '1Mi' instead of '1M'
+  '15min': 0.08, '15M': 0.08, 'M15': 0.08,
+  '5min': 0.05, '5M': 0.05, 'M5': 0.05,
+  '1min': 0.03, '1Mi': 0.03, 'M1': 0.03
 };
 
 const TF_HIERARCHY = ['1Mo', '1W', '1D', '4H', '1H', '30M', '15M', '5M', '1Mi'];
@@ -28,12 +29,12 @@ const TF_HIERARCHY = ['1Mo', '1W', '1D', '4H', '1H', '30M', '15M', '5M', '1Mi'];
 /**
  * Analyze single timeframe with full context
  */
-export async function analyzeTimeframe(pair, tf, candles, assetType) {
+export async function analyzeTimeframe(pair, tf, candles, assetType = ASSET_TYPE.FOREX) {
   if (!candles || candles.length < 50) {
     return { score: 50, regime: 'UNKNOWN', valid: false, reason: 'Insufficient data' };
   }
   
-  const indicators = calculateAllIndicators(candles, assetType);
+  const indicators = calculateAllIndicators(candles, assetType = ASSET_TYPE.FOREX);
   const structure = analyzeStructure(candles);
   const liquidity = analyzeLiquidity(candles);
   const volumeProfile = analyzeVolumeProfile(candles);

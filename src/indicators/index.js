@@ -1,3 +1,4 @@
+import { ASSET_TYPE } from '../config.js';
 import { CONFIG } from '../config.js';
 import { safeLastValue } from '../utils/helpers.js';
 import {
@@ -8,8 +9,9 @@ import {
 } from './math.js';
 import { detectCandlestickPatterns } from './patterns.js';
 import { detectSRLevels, detectFVG } from './sr.js';
+import { detectRSIDivergence, detectMACDDivergence } from './divergence.js';
 
-export function calculateAllIndicators(candles) {
+export function calculateAllIndicators(candles, assetType = ASSET_TYPE.FOREX) {
   const closes = candles.map(c => c.close);
   const atrArr  = calculateATR(candles, CONFIG.ATR_PERIOD);
   const atrLast = atrArr[atrArr.length - 1] || null;
@@ -32,5 +34,9 @@ export function calculateAllIndicators(candles) {
     patterns:   detectCandlestickPatterns(candles),
     sr:         detectSRLevels(candles, atrLast),
     fvg:        detectFVG(candles),
+    divergence: {
+      rsi:  detectRSIDivergence(candles, calculateRSI(closes, CONFIG.RSI_PERIOD)),
+      macd: detectMACDDivergence(candles, calculateMACD(closes).histogram),
+    },
   };
 }

@@ -20,8 +20,8 @@ import { checkNewsImpact } from '../utils/news.js';
 /**
  * Build multi-timeframe signal for REAL market (Forex/Crypto)
  */
-export async function buildMultiTimeframeSignal(pair, timeframes, env) {
-  const assetType = getAssetType(pair);
+export async function buildMultiTimeframeSignal(pair, timeframes, assetTypePassed, env) {
+  const assetType = assetTypePassed || getAssetType(pair);
   const session = detectTradingSession();
   const sessionParams = getSessionParams(session);
   const newsImpact = await checkNewsImpact(pair, env);
@@ -37,7 +37,7 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
   let weightedScore = 0;
   let totalWeight = 0;
   
-  // FIX: '1M' = 1 Month, 'Mi' = 1 Minute (avoid duplicate key)
+  // FIX: '1Mo' = 1 Month, '1min' = 1 Minute
   const weights = {
     '1Mo': 0.35, 'Monthly': 0.35,
     '1W': 0.30, 'Weekly': 0.30,
@@ -45,9 +45,9 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
     '4H': 0.20, 'H4': 0.20,
     '1H': 0.15, 'H1': 0.15,
     '30M': 0.10, 'M30': 0.10,
-    '15M': 0.08, 'M15': 0.08,
-    '5M': 0.05, 'M5': 0.05,
-    '1Mi': 0.03, 'M1': 0.03  // FIX: '1Mi' instead of '1M'
+    '15min': 0.08, '15M': 0.08, 'M15': 0.08,
+    '5min': 0.05, '5M': 0.05, 'M5': 0.05,
+    '1min': 0.03, '1Mi': 0.03, 'M1': 0.03
   };
   
   for (const [tf, candles] of Object.entries(tfData)) {
@@ -148,7 +148,7 @@ export async function buildMultiTimeframeSignal(pair, timeframes, env) {
   const riskParams = calculateRiskParameters(entryPrice, atr, direction, higherTF?.structure, entryTF?.liquidity);
   
   // Apply filters
-  const filterResult = applyFilters(analyses, direction, pair, assetType);
+  const filterResult = applyFilters(analyses, direction, pair, assetType, session);
   
   if (!filterResult.passed) {
     return {
@@ -343,9 +343,30 @@ function generateReasons(analyses, direction, structure, liquidity) {
   return reasons;
 }
 
+/**
+ * Find best timeframe for the signal
+ */
+export function findBestTimeframe(tfResults, direction) {
+  let bestTF = '1min';
+  let bestScore = 0;
+
+  for (const [tf, result] of Object.entries(tfResults)) {
+    const score = direction === 'BUY' ? (result.score.up || 0) : (result.score.down || 0);
+    if (score > bestScore) {
+      bestScore = score;
+      bestTF = tf;
+    }
+  }
+
+  return { timeframe: bestTF, score: bestScore };
+}
+
+import { fetchCandlesWithCache } from '../fetch/candles.js';
+
 // Placeholder - integrate with your existing fetch/candles.js
 async function fetchCandlesForTF(pair, tf, env) {
-  // This should call your existing candle fetch logic
-  // Return array of { open, high, low, close, volume, datetime }
-  return [];
+  // Mock ctx for fetchCandlesWithCache
+  const ctx = { waitUntil: () => {} };
+  const res = await fetchCandlesWithCache(pair, tf, 100, env, ctx, 'FOREX');
+  return res.candles || [];
 }

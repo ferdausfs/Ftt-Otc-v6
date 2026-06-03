@@ -15,16 +15,16 @@ import { getSignalGrade, resolveTieWithTolerance } from '../analysis/grade.js';
 import { callCerebrasValidationOTC } from '../ai/cerebras.js';
 import { buildIndicatorSnapshot } from '../ai/combine.js';
 
-function analyzeTimeframeOTC(indicators, candles, timeframe) {
-  const result = analyzeTimeframe(indicators, candles, timeframe, ASSET_TYPE.FOREX, null, 'RANGING');
+async function analyzeTimeframeOTC(indicators, candles, timeframe) {
+  const result = await analyzeTimeframe(null, timeframe, candles, ASSET_TYPE.FOREX);
   const rangingW = { trend:0.8, momentum:1.8, macd:0.8, stochastic:1.8, bands:1.4, adx:0.8, patterns:1.3, divergence:1.8, pivots:1.2, volume:0.5, sr:2.2, camarilla:0.84 };
   const otcW = OTC_CATEGORY_WEIGHTS;
   let newUp = 0; let newDown = 0;
   const cats = ['trend','momentum','macd','stochastic','bands','adx','patterns','divergence','pivots','volume','sr','camarilla'];
 
+  result.categoryScores = result.categoryScores || {};
   for (const cat of cats) {
-    const cd = result.categoryScores[cat];
-    if (!cd) continue;
+    const cd = result.categoryScores[cat] || { up: 0, down: 0 };
     const rW  = rangingW[cat] || 1.0;
     const otW = otcW[cat] !== undefined ? otcW[cat] : 0;
     if (rW > 0) {
@@ -41,8 +41,8 @@ function analyzeTimeframeOTC(indicators, candles, timeframe) {
   for (const cat of cats) {
     const cd = result.categoryScores[cat];
     if (!cd) continue;
-    if ((cd.up||0) > (cd.down||0) && Math.abs((cd.up||0)-(cd.down||0)) >= CONFIG.MIN_CATEGORY_SCORE) upCat++;
-    else if ((cd.down||0) > (cd.up||0) && Math.abs((cd.down||0)-(cd.up||0)) >= CONFIG.MIN_CATEGORY_SCORE) downCat++;
+    if ((cd.up||0) > (cd.down||0) && Math.abs((cd.up||0)-(cd.down||0)) >= (CONFIG.MIN_CATEGORY_SCORE || 0.3)) upCat++;
+    else if ((cd.down||0) > (cd.up||0) && Math.abs((cd.down||0)-(cd.up||0)) >= (CONFIG.MIN_CATEGORY_SCORE || 0.3)) downCat++;
   }
   const confluence = Math.max(upCat, downCat);
   let direction;
@@ -73,7 +73,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     const candles = candleData[tf];
     if (!candles || candles.length === 0) continue;
     const indicators = calculateAllIndicators(candles);
-    const analysis   = analyzeTimeframeOTC(indicators, candles, tf);
+    const analysis   = await analyzeTimeframeOTC(indicators, candles, tf);
     const dur  = calculateOTCCandleDuration(indicators, analysis.direction, candles, tf);
     const cMin = CANDLE_MINUTES[tf] || 1;
     const dMin = dur * cMin;

@@ -4,8 +4,29 @@
  */
 
 import { getSessionSpreadEstimate } from '../utils/session.js';
+import { getApiKeys } from './keys.js';
 import { detectTradingSession } from '../utils/session.js';
 import { r2 } from '../utils/helpers.js';
+
+/**
+ * Main function used by handlers
+ */
+export async function fetchCandlesWithCache(pair, timeframe, count, env, ctx, assetType) {
+  // Try cache first
+  const cached = await getCachedCandles(env, pair, timeframe);
+  if (cached) return { candles: cached, _fromCache: true };
+
+  // Fetch fresh
+  const result = await fetchTwelveDataCandles(pair, timeframe, env);
+  if (!result || result.error) return { error: result?.error || 'Fetch failed' };
+
+  // Cache it
+  if (env.CANDLE_CACHE) {
+    ctx.waitUntil(cacheCandles(env, pair, timeframe, result));
+  }
+
+  return { candles: result, _fromCache: false };
+}
 
 /**
  * Fetch candles with execution modeling
@@ -100,7 +121,8 @@ function calculateATR(candles, period = 14) {
 async function fetchTwelveDataCandles(pair, timeframe, env) {
   // Integrate with your existing src/fetch/candles.js logic
   // This is a placeholder showing the interface
-  const apiKey = env?.TWELVE_DATA_API_KEY;
+  const apiKeys = getApiKeys(env);
+  const apiKey = apiKeys[0];
   if (!apiKey) return null;
   
   try {

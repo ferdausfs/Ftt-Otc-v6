@@ -1,0 +1,15 @@
+{
+  "name": "fttotcv6",
+  "version": "6.9.1",
+  "description": "Cloudflare Workers-based multi-timeframe binary options signal engine",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  }
+}

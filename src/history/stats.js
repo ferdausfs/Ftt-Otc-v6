@@ -13,6 +13,43 @@ const DRAWDOWN_THRESHOLD = 10; // 10% max drawdown before reducing risk
 /**
  * Save signal to history
  */
+export async function saveSignalToHistory(signal, pair, isOTC, env) {
+  if (!env?.SIGNAL_HISTORY) return;
+
+  const record = {
+    id: `sig_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+    pair,
+    isOTC,
+    signal,
+    result: null,
+    createdAt: new Date().toISOString()
+  };
+
+  const key = `sig:${pair.replace(/\//g,'_').replace(/-/g,'_')}`;
+  let history = await env.SIGNAL_HISTORY.get(key, 'json') || [];
+  if (!Array.isArray(history)) history = [];
+
+  history.unshift(record);
+  if (history.length > 50) history = history.slice(0, 50);
+
+  await env.SIGNAL_HISTORY.put(key, JSON.stringify(history), { expirationTtl: 60*60*24*30 });
+}
+
+export async function getDynamicConfidenceAdjustment(pair, env) {
+  const kv = env?.PAIR_STATS || env?.SIGNAL_HISTORY;
+  if (!kv) return 0;
+  const key = `stats:${pair.replace(/\//g,'_').replace(/-/g,'_')}`;
+  const stats = await kv.get(key, 'json');
+  if (!stats || stats.totalSignals < 10) return 0;
+
+  if (stats.winRate > 0.65) return 6;
+  if (stats.winRate < 0.45) return -10;
+  return 0;
+}
+
+/**
+ * Save signal to history
+ */
 export async function saveSignal(env, signal, outcome = null) {
   if (!env?.SIGNAL_HISTORY) return;
   
@@ -29,7 +66,7 @@ export async function saveSignal(env, signal, outcome = null) {
   await env.SIGNAL_HISTORY.put(key, JSON.stringify(record));
   
   // Update pair stats
-  await updatePairStats(env, signal.pair, outcome, signal);
+  await updatePairStats(signal.pair, outcome, signal, env);
 }
 
 /**
@@ -48,18 +85,18 @@ export async function closeSignal(env, signalId, outcome, exitPrice, pips) {
   data.closedAt = new Date().toISOString();
   
   await env.SIGNAL_HISTORY.put(signalId, JSON.stringify(data));
-  await updatePairStats(env, data.pair, outcome, data, pips);
+  await updatePairStats(data.pair, outcome, data, env, pips);
 }
 
 /**
  * Update pair-specific statistics
  */
-export async function updatePairStats(env, pair, outcome, signal = null, pips = 0) {
-  if (!env?.PAIR_STATS) return;
+export async function updatePairStats(pair, outcome, signal = null, env = null, pips = 0) {
+  if (!env?.PAIR_STATS && !env?.SIGNAL_HISTORY) return;
+  const kv = env.PAIR_STATS || env.SIGNAL_HISTORY;
   
-  const key = `stats:${pair}`;
-  const existing = await env.PAIR_STATS.get(key);
-  let stats = existing ? JSON.parse(existing) : {
+  const key = `stats:${pair.replace(/\//g,'_').replace(/-/g,'_')}`;
+  const stats = await kv.get(key, 'json') || {
     pair,
     totalSignals: 0,
     wins: 0,
@@ -105,8 +142,8 @@ export async function updatePairStats(env, pair, outcome, signal = null, pips = 
   }
   
   // Win rate
-  const decidedTrades = stats.wins + stats.losses;
-  stats.winRate = decidedTrades > 0 ? r2((stats.wins / decidedTrades) * 100) : 0;
+  const decideTrades = (stats.wins || 0) + (stats.losses || 0);
+  stats.winRate = decideTrades > 0 ? r2((stats.wins / decideTrades) * 100) : 0;
   
   // Profit factor
   const grossProfit = stats.wins * stats.avgWinPips;
@@ -122,7 +159,7 @@ export async function updatePairStats(env, pair, outcome, signal = null, pips = 
   
   stats.lastUpdated = new Date().toISOString();
   
-  await env.PAIR_STATS.put(key, JSON.stringify(stats));
+  await kv.put(key, JSON.stringify(stats), { expirationTtl: 60*60*24*90 });
   
   // Update global stats
   await updateGlobalStats(env, stats);

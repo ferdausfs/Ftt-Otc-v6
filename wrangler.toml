@@ -27,6 +27,11 @@ id = "f553a3f10915478fa1b8165dd58ff6ea"
 # Purpose: Reduce TwelveData API calls
 
 [[kv_namespaces]]
+binding = "SIGNAL_CACHE"
+id = "f553a3f10915478fa1b8165dd58ff6ea"
+# Shared ID with CANDLE_CACHE as per README/wrangler conflict
+
+[[kv_namespaces]]
 binding = "NEWS_KV"
 id = "227305e31bde4a0a822453d4d5b044ab"
 # Stores: Economic calendar events

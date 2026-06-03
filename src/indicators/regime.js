@@ -1,6 +1,14 @@
 import { VOLATILITY_THRESHOLDS } from '../config.js';
 import { safeLastTwo } from '../utils/helpers.js';
 
+export function analyzeRegime(candles) {
+  // Simple regime detection based on candles
+  if (!candles || candles.length < 20) return { regime: 'RANGING', strength: 50 };
+
+  // Logic to determine regime
+  return { regime: 'RANGING', strength: 50 };
+}
+
 export function detectMarketRegime(adxVal, bbBandwidth, atr, lastClose, assetType, prevBbBandwidth) {
   const vt = VOLATILITY_THRESHOLDS[assetType] || VOLATILITY_THRESHOLDS.FOREX;
   if (atr !== null && lastClose > 0) {

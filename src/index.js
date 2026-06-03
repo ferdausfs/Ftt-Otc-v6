@@ -9,6 +9,7 @@ import { applyCors } from './utils/cors.js';
 import { fetchEconomicCalendar } from './utils/news.js';
 import { runWalkForwardOptimization } from './history/stats.js';
 import { jsonResponse } from './utils/helpers.js';
+import { checkRateLimit } from './middleware/rateLimit.js';
 
 // ============================================
 // Router
@@ -22,6 +23,9 @@ export default {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: applyCors() });
     }
+
+    const rateLimit = await checkRateLimit(request, env);
+    if (rateLimit) return rateLimit;
     
     try {
       let response;
@@ -29,50 +33,52 @@ export default {
       switch (path) {
         case '/signal':
         case '/api/signal':
-          response = await handleSignal(request, env);
+          response = await handleSignal(request, env, ctx);
+          if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/signal/raw':
         case '/api/signal/raw':
-          response = await handleSignalRaw(request, env);
+          response = await handleSignalRaw(request, env, ctx);
+          if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/signal/batch':
         case '/api/signal/batch':
-          response = await handleBatch(request, env);
+          response = await handleBatch(request, env, ctx);
+          if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
-        // OTC endpoint disabled for real market
+        // OTC endpoint
         case '/signal/otc':
         case '/api/signal/otc':
-          response = jsonResponse({ 
-            error: 'OTC trading disabled. Use /signal for real market (Forex/Crypto).' 
-          }, 403);
+          response = await handleSignalRawOTC(request, env, ctx);
+          if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/health':
         case '/api/health':
-          response = await handleHealth(request, env);
+          response = await handleHealth(request, env); if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/pairs':
         case '/api/pairs':
-          response = await handlePairs(request, env);
+          response = await handlePairs(request, env); if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/history':
         case '/api/history':
-          response = await handleHistory(request, env);
+          response = await handleHistory(request, env); if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/stats':
         case '/api/stats':
-          response = await handleStats(request, env);
+          response = await handleStats(request, env); if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         case '/report':
         case '/api/report':
-          response = await handleReport(request, env);
+          response = await handleReport(request, env); if (!(response instanceof Response)) response = jsonResponse(response);
           break;
           
         default:

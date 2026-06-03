@@ -8,14 +8,14 @@ import { getAssetType } from '../utils/pairs.js';
 /**
  * Apply all filters to signal
  */
-export function applyFilters(analyses, direction, pair, assetType) {
+export function applyFilters(analyses, direction, pair, assetType, session = 'UNKNOWN') {
   const filters = [
     checkMinimumTimeframes(analyses),
     checkTimeframeAlignment(analyses, direction),
     checkRegimeSuitability(analyses),
     checkCorrelationExposure(pair, analyses),
-    checkVolatilityFilter(analyses),
-    checkSessionFilter(analyses),
+    checkVolatilityFilter(analyses, pair, assetType),
+    checkSessionFilter(analyses, pair, session),
     checkStructureAlignment(analyses, direction)
   ];
   
@@ -108,16 +108,18 @@ function checkCorrelationExposure(pair, analyses) {
 /**
  * ATR-based volatility filter
  */
-function checkVolatilityFilter(analyses) {
+function checkVolatilityFilter(analyses, pair, assetType) {
   const htf = analyses['1D'] || analyses['4H'] || analyses['1H'];
   if (!htf?.indicators?.atr) return { name: 'VOLATILITY', passed: true, reason: null };
   
-  const atr = htf.indicators.atr;
+  const atr = safeLastValue(htf.indicators.atr);
+  if (atr === null) return { name: 'VOLATILITY', passed: true, reason: null };
   const price = safeLastValue(htf.indicators.close || []);
+  if (!price) return { name: 'VOLATILITY', passed: true, reason: null };
   const atrPercent = (atr / price) * 100;
   
   // If ATR > 2% on forex or > 5% on crypto → too volatile
-  const isCrypto = getAssetType(pair) === 'CRYPTO';
+  const isCrypto = assetType === 'CRYPTO';
   const threshold = isCrypto ? 5.0 : 2.0;
   
   return {
@@ -130,12 +132,9 @@ function checkVolatilityFilter(analyses) {
 /**
  * Session filter: Some pairs don't move in Asian session
  */
-function checkSessionFilter(analyses) {
+function checkSessionFilter(analyses, pair, session) {
   // Asian session low volatility for EUR/USD, GBP/USD
-  const session = analyses.session || 'UNKNOWN';
-  const pair = analyses.pair || '';
-  
-  const avoidAsian = ['EURUSD', 'GBPUSD', 'EURGBP'].some(p => pair.includes(p));
+  const avoidAsian = ['EURUSD', 'GBPUSD', 'EURGBP'].some(p => (pair || '').replace(/[/_-]/g, '').includes(p));
   
   return {
     name: 'SESSION',
@@ -188,4 +187,33 @@ export function checkVolumeConfirmation(candles, direction, minVolumeSpike = 1.3
     volumeSpike: r2(volumeSpike),
     reason: volumeSpike < minVolumeSpike ? `Volume spike ${r2(volumeSpike)}x below ${minVolumeSpike}x` : null
   };
+}
+
+export function generateEntryReason(direction, categoryScores, indicators, alignment, trend, regime) {
+  if (direction === 'NO_TRADE') return 'No clear signal conviction.';
+  const res = [];
+  if (alignment.includes('ALL')) res.push('Strong multi-tf alignment');
+  if (regime === 'TRENDING') res.push('Trend continuation');
+  if (regime === 'RANGING') res.push('Mean reversion setup');
+  return res.length > 0 ? res.join(' · ') : 'Technical confluence detected.';
+}
+
+export function recentCandleConsistency(candles, direction, count = 3) {
+  if (!candles || candles.length < count) return 1.0;
+  const recent = candles.slice(-count);
+  const bull = recent.filter(c => c.close > c.open).length;
+  const bear = recent.filter(c => c.close < c.open).length;
+  if (direction === 'BUY') return bull / count;
+  if (direction === 'SELL') return bear / count;
+  return 1.0;
+}
+
+export function getCandleQualityMultiplier(candles) {
+  if (!candles || candles.length < 5) return 1.0;
+  // Placeholder
+  return 1.0;
+}
+
+export function detectCorrelationConflicts(pairDirs) {
+  return { status: 'OK', conflicts: [] };
 }

@@ -12,12 +12,21 @@ import {
   HISTORY_CONFIG,
 } from '../config.js';
 
-export async function handleSignal(pair, env, ctx) {
+export async function handleSignal(request, env, ctx) {
+  const url = new URL(request.url);
+  const pair = url.searchParams.get('pair') || 'EUR/USD';
   const result = await handleSignalRaw(pair, env, ctx);
   return jsonResponse(result);
 }
 
-export async function handleSignalRaw(pair, env, ctx) {
+export async function handleSignalRaw(requestOrPair, env, ctx) {
+  let pair;
+  if (typeof requestOrPair === 'string') {
+    pair = requestOrPair;
+  } else {
+    const url = new URL(requestOrPair.url);
+    pair = url.searchParams.get('pair') || 'EUR/USD';
+  }
   const assetType = getAssetType(pair);
   if (assetType === ASSET_TYPE_OTC) return await handleSignalRawOTC(pair, env, ctx);
 
@@ -78,13 +87,20 @@ export async function handleSignalRaw(pair, env, ctx) {
     cacheHits, dataStatus,
   };
 
-  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_CACHE && ctx)
+  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_HISTORY && ctx)
     ctx.waitUntil(saveSignalToHistory(signal, pair, false, env));
 
   return result;
 }
 
-async function handleSignalRawOTC(pair, env, ctx) {
+export async function handleSignalRawOTC(requestOrPair, env, ctx) {
+  let pair;
+  if (typeof requestOrPair === 'string') {
+    pair = requestOrPair;
+  } else {
+    const url = new URL(requestOrPair.url);
+    pair = url.searchParams.get('pair') || 'EUR/USD-OTC';
+  }
   const basePair = getOTCBasePair(pair);
   const exotic   = isExoticPair(basePair);
   const session  = detectTradingSession();
@@ -120,13 +136,14 @@ async function handleSignalRawOTC(pair, env, ctx) {
     cacheHits, dataStatus,
   };
 
-  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_CACHE && ctx)
+  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_HISTORY && ctx)
     ctx.waitUntil(saveSignalToHistory(signal, pair, true, env));
 
   return otcResult;
 }
 
-export async function handleBatch(url, env, ctx) {
+export async function handleBatch(request, env, ctx) {
+  const url = new URL(request.url);
   const rawPairs = url.searchParams.get('pairs') || '';
   const pairList = rawPairs.split(',').map(p => p.trim()).filter(p => p.length > 0);
   if (pairList.length === 0)

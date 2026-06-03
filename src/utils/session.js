@@ -1,3 +1,4 @@
+import { ASSET_TYPE } from '../config.js';
 /**
  * Trading Session Detection & Session-Specific Parameters
  */
@@ -90,7 +91,38 @@ export function getSessionSpreadEstimate(pair, session) {
 /**
  * Check if major news blackout period
  */
-export function checkNewsBlackout(minutesBefore = 30, minutesAfter = 30) {
+export function checkNewsBlackout(assetType = ASSET_TYPE.FOREX, minutesBefore = 30, minutesAfter = 30) {
   // This is a placeholder - integrate with utils/news.js
   return { inBlackout: false, nextEvent: null };
+}
+
+export function isForexMarketOpen() {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0: Sun, 1: Mon, ..., 5: Fri, 6: Sat
+  const hour = now.getUTCHours();
+
+  // Sunday 22:00 UTC to Friday 22:00 UTC
+  if (day === 0) return hour >= 22;
+  if (day >= 1 && day <= 4) return true;
+  if (day === 5) return hour < 22;
+  return false;
+}
+
+export function getForexHoliday() {
+  return null; // Placeholder
+}
+
+export function getNextForexOpen() {
+  const now = new Date();
+  const nextOpen = new Date(now);
+  nextOpen.setUTCHours(22, 0, 0, 0);
+
+  const day = now.getUTCDay();
+  if (day === 5 || day === 6) {
+    nextOpen.setUTCDate(now.getUTCDate() + (7 - day) % 7);
+  } else if (day === 0 && now.getUTCHours() >= 22) {
+    nextOpen.setUTCDate(now.getUTCDate() + 7);
+  }
+
+  return nextOpen;
 }

@@ -5,12 +5,20 @@ export const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400',
 };
 
-export function applyCors(response, corsHeaders = CORS_HEADERS) {
-  const h = new Headers(response.headers);
-  for (const [k, v] of Object.entries(corsHeaders)) h.set(k, v);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: h,
+export function applyCors(input, corsHeaders = CORS_HEADERS) {
+  let headers;
+  if (!input || input instanceof Headers) {
+    headers = input || new Headers();
+    for (const [k, v] of Object.entries(corsHeaders)) headers.set(k, v);
+    return headers;
+  }
+
+  headers = new Headers(input.headers);
+  for (const [k, v] of Object.entries(corsHeaders)) headers.set(k, v);
+
+  return new Response(input.body, {
+    status: input.status,
+    statusText: input.statusText,
+    headers: headers,
   });
 }

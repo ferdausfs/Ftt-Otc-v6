@@ -9,35 +9,45 @@ import { r2 } from '../utils/helpers.js';
 /**
  * Build indicator snapshot for AI prompts
  */
-export function buildIndicatorSnapshot(indicators, structure, liquidity, volumeProfile, regime) {
+export function buildIndicatorSnapshot(tfResults, candleData, direction, bestTF) {
+  const best = tfResults[bestTF] || Object.values(tfResults)[0];
+  if (!best) return {};
+
   return {
-    price: indicators.close?.[indicators.close.length - 1],
-    ema50: indicators.ema50,
-    ema200: indicators.ema200,
-    rsi: indicators.rsi,
-    macd: indicators.macd,
-    adx: indicators.adx,
-    atr: indicators.atr,
-    bb: indicators.bb,
-    structure: {
-      trend: structure.trend,
-      bos: structure.bos?.type || null,
-      choch: structure.choch?.type || null,
-      support: structure.isAtSupport,
-      resistance: structure.isAtResistance
-    },
-    liquidity: {
-      sweep: liquidity.sweepDetected ? liquidity.sweepType : null,
-      level: liquidity.liquidityLevel
-    },
-    volume: {
-      spike: volumeProfile?.volumeSpike,
-      nearPOC: volumeProfile?.nearPOC
-    },
-    regime: regime.regime,
-    regimeStrength: regime.strength
+    emaAlignment: best.ema5 > best.ema20 ? 'BULLISH' : 'BEARISH',
+    ema5: r2(safeLastValue(best.ema5)),
+    ema10: r2(safeLastValue(best.ema10)),
+    ema20: r2(safeLastValue(best.ema20)),
+    rsi: r2(safeLastValue(best.rsi)),
+    macdHist: r2(safeLastValue(best.macd?.histogram)),
+    adx: r2(safeLastValue(best.adx?.adx)),
+    plusDI: r2(safeLastValue(best.adx?.plusDI)),
+    minusDI: r2(safeLastValue(best.adx?.minusDI)),
+    stochK: r2(safeLastValue(best.stochastic?.k)),
+    stochD: r2(safeLastValue(best.stochastic?.d)),
+    williamsR: r2(safeLastValue(best.williamsR)),
+    cci: r2(safeLastValue(best.cci)),
+    bbPercentB: r2(safeLastValue(best.bollinger?.percentB)),
+    bbBandwidth: r2(safeLastValue(best.bollinger?.bandwidth)),
+    atr: r2(safeLastValue(best.atr)),
+    srContext: best.structure?.trend || 'NEUTRAL',
+    fvgActive: best.fvg?.length > 0,
+    patterns: best.patterns?.map(p => p.name) || [],
+    rsiDiv: !!best.divergence?.rsi,
+    macdDiv: !!best.divergence?.macd,
+    pivot: r2(best.pivots?.pivot),
+    r1: r2(best.pivots?.r1),
+    s1: r2(best.pivots?.s1),
+    structure1min: tfResults['1min']?.structure?.trend || 'N/A',
+    structure5min: tfResults['5min']?.structure?.trend || 'N/A',
+    structure15min: tfResults['15min']?.structure?.trend || 'N/A',
+    candles1min: (candleData['1min'] || []).slice(-10).map(c => c.close > c.open ? 'U' : 'B').join(''),
+    candles5min: (candleData['5min'] || []).slice(-10).map(c => c.close > c.open ? 'U' : 'B').join(''),
+    candles15min: (candleData['15min'] || []).slice(-10).map(c => c.close > c.open ? 'U' : 'B').join(''),
   };
 }
+
+import { safeLastValue } from '../utils/helpers.js';
 
 /**
  * Combine Cerebras + Groq + ML into final signal
