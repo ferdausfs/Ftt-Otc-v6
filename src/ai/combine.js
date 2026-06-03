@@ -1,167 +1,88 @@
-/**
- * Dual-AI Result Combiner + ML Ensemble
- * Combines Cerebras, Groq, and ML model into unified signal
- */
+export function combineDualAIResults(cerebras, groq, engineDirection) {
+  const result = { cerebras, groq, combined: null, combinedAgreed: null };
+  const cOk = cerebras && cerebras.status === 'OK';
+  const gOk = groq     && groq.status     === 'OK';
 
-import { predictWinProbability, ensembleScore, extractFeatures } from './ml.js';
-import { r2 } from '../utils/helpers.js';
+  if (!cOk && !gOk) {
+    result.combined = { status: 'BOTH_UNAVAILABLE', signal: 'NO_TRADE', confidence: 0 };
+    return result;
+  }
+  if (cOk && !gOk) {
+    result.combined = cerebras;
+    result.combinedAgreed = cerebras.signal === engineDirection;
+    return result;
+  }
+  if (!cOk && gOk) {
+    result.combined = groq;
+    result.combinedAgreed = groq.signal === engineDirection;
+    return result;
+  }
 
-/**
- * Build indicator snapshot for AI prompts
- */
-export function buildIndicatorSnapshot(indicators, structure, liquidity, volumeProfile, regime) {
+  if (cerebras.signal === groq.signal) {
+    result.combined = {
+      status: 'OK', signal: cerebras.signal,
+      confidence: Math.round((cerebras.confidence + groq.confidence) / 2),
+      reason: cerebras.reason || groq.reason,
+      concerns: cerebras.concerns || groq.concerns,
+      agreement: 'BOTH_AGREE', model: 'dual (Cerebras + Groq)',
+    };
+  } else {
+    result.combined = {
+      status: 'OK', signal: 'NO_TRADE',
+      confidence: Math.min(cerebras.confidence, groq.confidence),
+      reason: 'Cerebras=' + cerebras.signal + ' vs Groq=' + groq.signal + ' — AIs disagree',
+      concerns: 'Conflicting AI signals — skip trade',
+      agreement: 'AIs_DISAGREE', model: 'dual (Cerebras + Groq)',
+    };
+  }
+  result.combinedAgreed = result.combined.signal === engineDirection;
+  return result;
+}
+
+export function buildIndicatorSnapshot(tfResults, candleData, finalDirection, bestTF) {
+  const best = tfResults[bestTF] || tfResults['5min'] || tfResults['1min'] || tfResults['15min'];
+  if (!best) return null;
+  const ind = best.indicators || {};
+  const catScores = best.categoryScores || {};
+
+  function compactCandles(candles, count) {
+    if (!candles || candles.length === 0) return 'N/A';
+    return candles.slice(-count).map(c => {
+      const dir = c.close >= c.open ? 'U' : 'B';
+      return dir + ':' + c.open.toFixed(5) + '/' + c.high.toFixed(5) + '/' + c.low.toFixed(5) + '/' + c.close.toFixed(5);
+    }).join(' ');
+  }
+
+  function priceStructure(candles) {
+    if (!candles || candles.length < 6) return 'UNKNOWN';
+    const recent = candles.slice(-20);
+    const n = recent.length;
+    const highs = recent.map(c => c.high); const lows = recent.map(c => c.low);
+    const midH1 = Math.max(...highs.slice(0, Math.floor(n/2))); const midH2 = Math.max(...highs.slice(Math.floor(n/2)));
+    const midL1 = Math.min(...lows.slice(0, Math.floor(n/2)));  const midL2 = Math.min(...lows.slice(Math.floor(n/2)));
+    if (midH2 > midH1 && midL2 > midL1) return 'HH-HL (Bullish structure)';
+    if (midH2 < midH1 && midL2 < midL1) return 'LH-LL (Bearish structure)';
+    if (midH2 > midH1 && midL2 < midL1) return 'Expanding (Volatile)';
+    if (midH2 < midH1 && midL2 > midL1) return 'Contracting (Consolidation)';
+    return 'Mixed structure';
+  }
+
+  const c1 = candleData['1min'] || []; const c5 = candleData['5min'] || []; const c15 = candleData['15min'] || [];
   return {
-    price: indicators.close?.[indicators.close.length - 1],
-    ema50: indicators.ema50,
-    ema200: indicators.ema200,
-    rsi: indicators.rsi,
-    macd: indicators.macd,
-    adx: indicators.adx,
-    atr: indicators.atr,
-    bb: indicators.bb,
-    structure: {
-      trend: structure.trend,
-      bos: structure.bos?.type || null,
-      choch: structure.choch?.type || null,
-      support: structure.isAtSupport,
-      resistance: structure.isAtResistance
-    },
-    liquidity: {
-      sweep: liquidity.sweepDetected ? liquidity.sweepType : null,
-      level: liquidity.liquidityLevel
-    },
-    volume: {
-      spike: volumeProfile?.volumeSpike,
-      nearPOC: volumeProfile?.nearPOC
-    },
-    regime: regime.regime,
-    regimeStrength: regime.strength
-  };
-}
-
-/**
- * Combine Cerebras + Groq + ML into final signal
- */
-export function combineAIResults(cerebrasResult, groqResult, technicalScore, mlFeatures, historicalStats) {
-  // Parse AI responses (they return text like "BULLISH 75%" or "BEARISH 60%")
-  const cerebras = parseAIResponse(cerebrasResult);
-  const groq = parseAIResponse(groqResult);
-  
-  // ML prediction
-  const mlProb = predictWinProbability(mlFeatures, historicalStats);
-  
-  // Direction consensus
-  const directions = [cerebras.direction, groq.direction].filter(Boolean);
-  const bullishCount = directions.filter(d => d === 'BUY' || d === 'BULLISH').length;
-  const bearishCount = directions.filter(d => d === 'SELL' || d === 'BEARISH').length;
-  
-  let aiDirection = 'NEUTRAL';
-  if (bullishCount > bearishCount) aiDirection = 'BUY';
-  if (bearishCount > bullishCount) aiDirection = 'SELL';
-  
-  // Average AI confidence
-  const aiConfidences = [cerebras.confidence, groq.confidence].filter(v => v > 0);
-  const avgAIConfidence = aiConfidences.length > 0 
-    ? aiConfidences.reduce((a, b) => a + b, 0) / aiConfidences.length 
-    : 50;
-  
-  // Ensemble final score
-  const finalScore = ensembleScore(technicalScore, mlProb, avgAIConfidence);
-  
-  // Determine final direction
-  let finalDirection = 'NEUTRAL';
-  if (finalScore >= 65) finalDirection = 'BUY';
-  else if (finalScore <= 35) finalDirection = 'SELL';
-  
-  // Override if AIs strongly disagree with technical
-  const aiTechnicalDisagreement = (
-    (aiDirection === 'SELL' && technicalScore > 60) ||
-    (aiDirection === 'BUY' && technicalScore < 40)
-  );
-  
-  let warning = null;
-  let adjustedScore = finalScore;
-  
-  if (aiTechnicalDisagreement && Math.abs(avgAIConfidence - 50) > 20) {
-    // AI strongly disagrees with technical → reduce confidence
-    adjustedScore = finalScore * 0.8;
-    warning = `AI (${aiDirection}) disagrees with technical (${technicalScore > 60 ? 'BUY' : 'SELL'})`;
-  }
-  
-  // If ML probability < 45% despite good technical → caution
-  if (mlProb < 0.45 && finalScore > 55) {
-    adjustedScore = Math.min(finalScore, 55);
-    warning = warning ? `${warning}; ML probability low (${r2(mlProb * 100)}%)` : `ML probability low (${r2(mlProb * 100)}%)`;
-  }
-  
-  return {
-    direction: finalDirection,
-    score: r2(adjustedScore),
-    rawScore: r2(finalScore),
-    mlProbability: r2(mlProb * 100),
-    aiDirection,
-    aiConfidence: r2(avgAIConfidence),
-    aiAgreement: bullishCount === bearishCount ? 'DISAGREE' : 'AGREE',
-    technicalScore,
-    warning,
-    reasoning: generateReasoning(cerebras, groq, mlFeatures, technicalScore)
-  };
-}
-
-function parseAIResponse(response) {
-  if (!response) return { direction: null, confidence: 0 };
-  
-  const text = typeof response === 'string' ? response.toUpperCase() : '';
-  
-  let direction = null;
-  if (text.includes('BULLISH') || text.includes('BUY')) direction = 'BUY';
-  else if (text.includes('BEARISH') || text.includes('SELL')) direction = 'SELL';
-  
-  // Extract confidence number
-  const match = text.match(/(\d{1,3})%/);
-  const confidence = match ? parseInt(match[1]) : 50;
-  
-  return { direction, confidence };
-}
-
-function generateReasoning(cerebras, groq, mlFeatures, technicalScore) {
-  const reasons = [];
-  
-  if (cerebras.direction) reasons.push(`Cerebras: ${cerebras.direction} (${cerebras.confidence}%)`);
-  if (groq.direction) reasons.push(`Groq: ${groq.direction} (${groq.confidence}%)`);
-  
-  if (mlFeatures.structureTrend > 0) reasons.push('Structure: Bullish');
-  if (mlFeatures.structureTrend < 0) reasons.push('Structure: Bearish');
-  if (mlFeatures.sweepDetected > 0) reasons.push('Liquidity sweep detected');
-  if (mlFeatures.adx > 25) reasons.push(`Strong trend (ADX: ${r2(mlFeatures.adx)})`);
-  
-  reasons.push(`Technical base score: ${technicalScore}`);
-  
-  return reasons;
-}
-
-/**
- * Validate AI result against structure (prevent AI hallucinations)
- */
-export function validateAIAgainstStructure(aiResult, structure) {
-  const issues = [];
-  
-  if (aiResult.direction === 'BUY' && structure.trend === 'BEARISH' && structure.score < 35) {
-    issues.push('AI suggests BUY in strong bearish structure');
-  }
-  if (aiResult.direction === 'SELL' && structure.trend === 'BULLISH' && structure.score > 65) {
-    issues.push('AI suggests SELL in strong bullish structure');
-  }
-  if (aiResult.direction === 'BUY' && structure.isAtResistance) {
-    issues.push('AI suggests BUY at resistance');
-  }
-  if (aiResult.direction === 'SELL' && structure.isAtSupport) {
-    issues.push('AI suggests SELL at support');
-  }
-  
-  return {
-    valid: issues.length === 0,
-    issues,
-    adjustedConfidence: issues.length > 0 ? Math.max(30, aiResult.confidence - issues.length * 15) : aiResult.confidence
+    emaAlignment: ind.emaAlignment  || 'UNKNOWN',
+    ema5: ind.ema5 || 'N/A', ema10: ind.ema10 || 'N/A', ema20: ind.ema20 || 'N/A',
+    rsi: ind.rsi || 'N/A', macdHist: ind.macdHist || 'N/A',
+    adx: ind.adx || 'N/A', plusDI: ind.plusDI || 'N/A', minusDI: ind.minusDI || 'N/A',
+    stochK: ind.stochK || 'N/A', stochD: ind.stochD || 'N/A',
+    williamsR: ind.williamsR || 'N/A', cci: ind.cci || 'N/A',
+    bbPercentB: ind.bbPercentB || 'N/A', bbBandwidth: ind.bbBandwidth || 'N/A',
+    atr: ind.atr || 'N/A', pivot: ind.pivot || 'N/A', r1: ind.r1 || 'N/A', s1: ind.s1 || 'N/A',
+    srContext:  (catScores.sr        && catScores.sr.context)            || 'NO_LEVEL',
+    fvgActive:  (catScores.fvg       && catScores.fvg.active)            || 'NONE',
+    patterns:   (catScores.patterns  && catScores.patterns.detected)     || [],
+    rsiDiv:     (catScores.divergence && catScores.divergence.rsi)       || 'NONE',
+    macdDiv:    (catScores.divergence && catScores.divergence.macd)      || 'NONE',
+    candles1min: compactCandles(c1, 20), candles5min: compactCandles(c5, 20), candles15min: compactCandles(c15, 20),
+    structure1min: priceStructure(c1), structure5min: priceStructure(c5), structure15min: priceStructure(c15),
   };
 }

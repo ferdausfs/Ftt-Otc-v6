@@ -1,73 +1,10 @@
-# ============================================
-# Ftt-Otc-v6 → Real Market Trading Engine
-# Cloudflare Workers Configuration
-# ============================================
-
 name = "fttotcv6"
 main = "src/index.js"
-compatibility_date = "2026-05-28"
-compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2024-01-01"
 
-# ============================================
-# Environment Variables (Public)
-# ============================================
-[vars]
-ENVIRONMENT = "production"
-DEFAULT_RISK_PERCENT = "1.0"
-MAX_RISK_PERCENT = "2.0"
-MIN_RISK_PERCENT = "0.25"
-
-# ============================================
-# KV Namespaces — Create these first (see commands below)
-# ============================================
 [[kv_namespaces]]
-binding = "CANDLE_CACHE"
+binding = "SIGNAL_CACHE"
 id = "f553a3f10915478fa1b8165dd58ff6ea"
-# Stores: Last 100 candles per pair/timeframe
-# Purpose: Reduce TwelveData API calls
 
-[[kv_namespaces]]
-binding = "NEWS_KV"
-id = "227305e31bde4a0a822453d4d5b044ab"
-# Stores: Economic calendar events
-# Purpose: News blackout detection
-
-[[kv_namespaces]]
-binding = "SIGNAL_HISTORY"
-id = "ea435ac104ff48998cc86a8ca7c713c6"
-# Stores: Every signal generated with outcome
-# Purpose: Win/loss stats, walk-forward optimization
-
-[[kv_namespaces]]
-binding = "PAIR_STATS"
-id = "0394337eb4f0487c8f125034b053f6da"
-# Stores: Per-pair performance metrics
-# Purpose: Dynamic risk adjustment
-
-[[kv_namespaces]]
-binding = "GLOBAL_STATS"
-id = "6dc93e3289bd432bbd996fdacc50ee6d"
-# Stores: Portfolio-level stats, parameter sets
-# Purpose: System-wide optimization
-
-[[kv_namespaces]]
-binding = "ML_DATA"
-id = "67a8523dc2c14d8da698c6d591e79b93"
-# Stores: Feature vectors + outcomes for ML
-# Purpose: Feature importance calculation
-
-[[kv_namespaces]]
-binding = "RATE_LIMITER"
-id = "4a8ffeae5703469dbef4be60c00fadac"
-# Existing: Rate limiting fallback
-
-# ============================================
-# Cron Triggers — Scheduled Jobs
-# ============================================
 [triggers]
-crons = [
-  "0 */6 * * *",   # Every 6 hours: Fetch economic calendar
-  "0 0 * * 0",     # Weekly Sunday: Walk-forward optimization
-  "0 0 1 * *",     # Monthly 1st: Feature importance recalculation
-  "*/5 * * * *"    # Every 5 min: Cleanup old KV entries
-]
+crons = ["* * * * *"]

@@ -1,96 +1,84 @@
-/**
- * Trading Session Detection & Session-Specific Parameters
- */
+import { ASSET_TYPE, ASSET_TYPE_OTC, HIGH_IMPACT_NEWS_WINDOWS, CONFIG } from '../config.js';
+import { formatTimeUntil } from './helpers.js';
 
-const SESSIONS = {
-  ASIAN: { name: 'Asian', start: 0, end: 8, volatilityFactor: 0.6, spreadFactor: 1.2 }, // UTC
-  LONDON: { name: 'London', start: 8, end: 16, volatilityFactor: 1.3, spreadFactor: 1.0 },
-  NY: { name: 'New York', start: 13, end: 21, volatilityFactor: 1.4, spreadFactor: 1.0 },
-  OVERLAP: { name: 'London-NY Overlap', start: 13, end: 16, volatilityFactor: 1.6, spreadFactor: 0.9 }
-};
-
-/**
- * Detect current trading session based on UTC hour
- */
 export function detectTradingSession() {
   const now = new Date();
   const hour = now.getUTCHours();
-  
-  // London-NY overlap (highest volatility)
-  if (hour >= 13 && hour < 16) return 'OVERLAP';
-  if (hour >= 8 && hour < 16) return 'LONDON';
-  if (hour >= 13 && hour < 21) return 'NY';
-  return 'ASIAN';
+  const sessions = [];
+
+  if (hour >= 0 && hour < 9)   sessions.push('ASIAN');
+  if (hour >= 7 && hour < 16)  sessions.push('LONDON');
+  if (hour >= 12 && hour < 21) sessions.push('NEW_YORK');
+  if (hour >= 21 || hour < 6)  sessions.push('SYDNEY');
+
+  let overlap = 'NONE';
+  if (sessions.includes('LONDON') && sessions.includes('NEW_YORK')) overlap = 'LONDON_NY';
+  else if (sessions.includes('ASIAN') && sessions.includes('LONDON')) overlap = 'ASIAN_LONDON';
+
+  let quality = 'LOW';
+  if (overlap === 'LONDON_NY')           quality = 'HIGHEST';
+  else if (sessions.includes('LONDON'))  quality = 'HIGH';
+  else if (sessions.includes('NEW_YORK')) quality = 'HIGH';
+  else if (overlap === 'ASIAN_LONDON')   quality = 'MEDIUM';
+  else if (sessions.includes('ASIAN'))   quality = 'MEDIUM';
+
+  return { sessions, overlap, quality, hour };
 }
 
-/**
- * Get session-specific trading parameters
- */
-export function getSessionParams(sessionName) {
-  const session = SESSIONS[sessionName] || SESSIONS.ASIAN;
-  
-  return {
-    name: session.name,
-    volatilityFactor: session.volatilityFactor,
-    spreadFactor: session.spreadFactor,
-    // Parameter adjustments
-    rsiThreshold: {
-      oversold: session.volatilityFactor > 1.2 ? 25 : 30,
-      overbought: session.volatilityFactor > 1.2 ? 75 : 70
-    },
-    atrMultiplier: {
-      stopLoss: session.volatilityFactor > 1.2 ? 1.8 : 1.5,
-      takeProfit: session.volatilityFactor > 1.2 ? 2.5 : 2.0
-    },
-    adxThreshold: session.volatilityFactor > 1.2 ? 20 : 25,
-    // Time-based filters
-    isHighVolatilitySession: session.volatilityFactor >= 1.3,
-    isLowVolatilitySession: session.volatilityFactor < 0.8,
-    // Best pairs for this session
-    recommendedPairs: getRecommendedPairs(sessionName)
-  };
+export function isForexMarketOpen() {
+  const now = new Date();
+  const day = now.getUTCDay();
+  const hour = now.getUTCHours();
+  if (day === 6) return false;
+  if (day === 5 && hour >= 22) return false;
+  if (day === 0 && hour < 22)  return false;
+  return true;
 }
 
-function getRecommendedPairs(session) {
-  const pairs = {
-    'ASIAN': ['USDJPY', 'AUDUSD', 'NZDUSD', 'USDCNH', 'EURJPY', 'GBPJPY'],
-    'LONDON': ['EURUSD', 'GBPUSD', 'EURGBP', 'USDCHF', 'EURCHF'],
-    'NY': ['USDCAD', 'USDJPY', 'EURUSD', 'GBPUSD', 'XAUUSD', 'US30', 'US500'],
-    'OVERLAP': ['EURUSD', 'GBPUSD', 'USDCAD', 'XAUUSD', 'US30', 'US500']
-  };
-  return pairs[session] || pairs['LONDON'];
+export function getForexHoliday() {
+  const now = new Date();
+  const m = now.getUTCMonth();
+  const d = now.getUTCDate();
+  if (m === 11 && d === 25) return 'Christmas Day';
+  if (m === 0  && d === 1)  return "New Year's Day";
+  return null;
 }
 
-/**
- * Check if pair is suitable for current session
- */
-export function isPairSuitableForSession(pair, session) {
-  const recommended = getRecommendedPairs(session);
-  const base = pair.replace('/', '').replace('-', '');
-  return recommended.some(r => base.includes(r));
+export function getNextForexOpen() {
+  const now = new Date();
+  const next = new Date(now);
+  if (now.getUTCDay() === 0 && now.getUTCHours() < 22) {
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 22, 0, 0));
+  }
+  while (true) {
+    next.setUTCDate(next.getUTCDate() + 1);
+    if (next.getUTCDay() === 0) break;
+  }
+  next.setUTCHours(22, 0, 0, 0);
+  return next;
 }
 
-/**
- * Get session-based spread estimate (for slippage modeling)
- */
-export function getSessionSpreadEstimate(pair, session) {
-  const baseSpreads = {
-    'EURUSD': 0.0001, 'GBPUSD': 0.0002, 'USDJPY': 0.02,
-    'AUDUSD': 0.0002, 'USDCAD': 0.0002, 'USDCHF': 0.0002,
-    'XAUUSD': 0.5, 'BTCUSD': 50, 'ETHUSD': 3
-  };
-  
-  const cleanPair = pair.replace('/', '').replace('-', '');
-  const baseSpread = baseSpreads[cleanPair] || 0.0003;
-  const sessionMultiplier = SESSIONS[session]?.spreadFactor || 1.0;
-  
-  return baseSpread * sessionMultiplier;
-}
+export function checkNewsBlackout(assetType) {
+  if (assetType === ASSET_TYPE.CRYPTO) return null;
+  if (assetType === ASSET_TYPE_OTC)    return null;
 
-/**
- * Check if major news blackout period
- */
-export function checkNewsBlackout(minutesBefore = 30, minutesAfter = 30) {
-  // This is a placeholder - integrate with utils/news.js
-  return { inBlackout: false, nextEvent: null };
+  const now = new Date();
+  const day = now.getUTCDay();
+  const nowTotalMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const margin = CONFIG.NEWS_BLACKOUT_MINUTES;
+
+  for (const win of HIGH_IMPACT_NEWS_WINDOWS) {
+    if (!win.days.includes(day)) continue;
+    const winStart = Math.max(0, win.startHour * 60 + win.startMin - margin);
+    const winEnd   = Math.min(1439, win.endHour * 60 + win.endMin + margin);
+    if (nowTotalMin >= winStart && nowTotalMin <= winEnd) {
+      const clearMin = winEnd - nowTotalMin;
+      return {
+        blocked: true, label: win.label,
+        minutesUntilClear: clearMin,
+        message: 'Signal blocked: ' + win.label + '. Clears in ~' + clearMin + ' min.',
+      };
+    }
+  }
+  return null;
 }

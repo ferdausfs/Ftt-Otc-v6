@@ -1,147 +1,95 @@
 /**
- * Main Entry Point — Cloudflare Workers Router + Scheduled Jobs
- * Real Market Trading Engine (Forex/Crypto — No OTC)
+ * FTT Signal Worker v6.9.1
+ * Cloudflare Worker Entry Point
  */
 
-import { handleSignal, handleSignalRaw, handleBatch, handleSignalRawOTC } from './handlers/signal.js';
-import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
-import { applyCors } from './utils/cors.js';
-import { fetchEconomicCalendar } from './utils/news.js';
-import { runWalkForwardOptimization } from './history/stats.js';
+import { CORS_HEADERS, applyCors } from './utils/cors.js';
 import { jsonResponse } from './utils/helpers.js';
+import { sanitizePair } from './utils/pairs.js';
+import { checkRateLimit } from './middleware/rateLimit.js';
+import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
+import { handleSignal, handleBatch } from './handlers/signal.js';
+import { scheduledTracker } from './history/stats.js';
+import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
 
-// ============================================
-// Router
-// ============================================
 export default {
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(scheduledTracker(env));
+  },
+
   async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
-    
-    // CORS preflight
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: applyCors() });
-    }
-    
+    if (request.method === 'OPTIONS')
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+
     try {
-      let response;
-      
-      switch (path) {
-        case '/signal':
-        case '/api/signal':
-          response = await handleSignal(request, env);
-          break;
-          
-        case '/signal/raw':
-        case '/api/signal/raw':
-          response = await handleSignalRaw(request, env);
-          break;
-          
-        case '/signal/batch':
-        case '/api/signal/batch':
-          response = await handleBatch(request, env);
-          break;
-          
-        // OTC endpoint disabled for real market
-        case '/signal/otc':
-        case '/api/signal/otc':
-          response = jsonResponse({ 
-            error: 'OTC trading disabled. Use /signal for real market (Forex/Crypto).' 
-          }, 403);
-          break;
-          
-        case '/health':
-        case '/api/health':
-          response = await handleHealth(request, env);
-          break;
-          
-        case '/pairs':
-        case '/api/pairs':
-          response = await handlePairs(request, env);
-          break;
-          
-        case '/history':
-        case '/api/history':
-          response = await handleHistory(request, env);
-          break;
-          
-        case '/stats':
-        case '/api/stats':
-          response = await handleStats(request, env);
-          break;
-          
-        case '/report':
-        case '/api/report':
-          response = await handleReport(request, env);
-          break;
-          
-        default:
-          response = jsonResponse({ error: 'Not found' }, 404);
+      const url  = new URL(request.url);
+      const path = url.pathname;
+
+      // Rate limit signal + batch endpoints
+      if (path === '/api/signal' || path === '/signal' || path === '/api/batch') {
+        const rl = await checkRateLimit(request, env);
+        if (rl) return applyCors(rl);
       }
-      
-      // Apply CORS to all responses
-      const headers = applyCors(response.headers || new Headers());
-      return new Response(response.body, {
-        status: response.status || 200,
-        headers
-      });
-      
-    } catch (err) {
-      console.error('Router error:', err);
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
-        headers: applyCors(new Headers({ 'Content-Type': 'application/json' }))
-      });
+
+      let response;
+
+      if (path === '/' || path === '/health') {
+        response = handleHealth(env);
+
+      } else if (path === '/api/signal' || path === '/signal') {
+        const rawPair = url.searchParams.get('pair') || 'EUR/USD';
+        const pair    = sanitizePair(rawPair);
+        if (!pair) {
+          response = jsonResponse({
+            error: true,
+            message: 'Invalid pair: "' + rawPair + '". Use EUR/USD, EURUSD, BTC/USD, BTCUSD etc.',
+            validForexCurrencies: VALID_FOREX_CURRENCIES,
+            validCryptoBases: CRYPTO_BASES, validCryptoQuotes: CRYPTO_QUOTES,
+            examples: ['EUR/USD','GBP/JPY','BTC/USD','ETH/EUR','SOL/USDT','EURUSD-OTC'],
+          }, 400);
+        } else {
+          response = await handleSignal(pair, env, ctx);
+        }
+
+      } else if (path === '/api/batch') {
+        response = await handleBatch(url, env, ctx);
+
+      } else if (path === '/api/pairs') {
+        response = handlePairs();
+
+      } else if (path === '/api/history') {
+        response = await handleHistory(url, env);
+
+      } else if (path === '/api/stats') {
+        response = await handleStats(url, env);
+
+      } else if (path === '/api/report') {
+        response = await handleReport(url, env);
+
+      } else {
+        response = jsonResponse({
+          status: 'ok',
+          message: 'FTT Signal Worker v6.9.1 — Forex + Crypto + OTC + History Tracking',
+          endpoints: {
+            health:    '/',
+            signal:    '/api/signal?pair=EUR/USD',
+            signalOTC: '/api/signal?pair=EURUSD-OTC',
+            crypto:    '/api/signal?pair=BTC/USD',
+            batch:     '/api/batch?pairs=EUR/USD,GBP/JPY,BTC/USD',
+            pairs:     '/api/pairs',
+            history:   '/api/history?pair=EUR/USD&limit=20',
+            stats:     '/api/stats?pair=EUR/USD',
+            report:    '/api/report?id=SIGNAL_ID&result=WIN',
+          },
+          supportedAssets: ['FOREX (40+ currencies)', 'CRYPTO (Top 10)', 'OTC (Olymp Trade)'],
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      return applyCors(response);
+    } catch (error) {
+      console.error('Fatal:', error);
+      return applyCors(jsonResponse({ error: true, message: 'Internal server error' }, 500));
     }
   },
-  
-  // ============================================
-  // Scheduled Jobs (Cron)
-  // ============================================
-  async scheduled(event, env, ctx) {
-    const cron = event.cron;
-    console.log('Cron triggered:', cron);
-    
-    try {
-      switch (cron) {
-        case '0 */6 * * *':
-          // Every 6 hours: Fetch economic calendar
-          await fetchEconomicCalendar(env);
-          console.log('Economic calendar updated');
-          break;
-          
-        case '0 0 * * 0':
-          // Weekly: Walk-forward optimization
-          const wfResult = await runWalkForwardOptimization(env);
-          console.log('Walk-forward complete:', wfResult?.recommendedSet || 'N/A');
-          break;
-          
-        case '0 0 1 * *':
-          // Monthly: Feature importance (placeholder for ML)
-          console.log('Monthly ML maintenance');
-          break;
-          
-        case '*/5 * * * *':
-          // Every 5 min: Cleanup old cache
-          await cleanupOldCache(env);
-          break;
-          
-        default:
-          console.log('Unknown cron pattern:', cron);
-      }
-    } catch (err) {
-      console.error('Cron error:', err);
-    }
-  }
 };
-
-/**
- * Cleanup old KV cache entries
- */
-async function cleanupOldCache(env) {
-  if (!env?.CANDLE_CACHE) return;
-  
-  // List and delete entries older than TTL (simplified)
-  // In production, use KV metadata/expiration instead
-  console.log('Cache cleanup complete');
-}
