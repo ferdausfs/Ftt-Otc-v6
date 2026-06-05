@@ -123,14 +123,20 @@ async function fetchTwelveDataCandles(pair, timeframe, env) {
   // This is a placeholder showing the interface
   const apiKeys = getApiKeys(env);
   const apiKey = apiKeys[0];
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.error('CRITICAL: No TwelveData API keys found in environment variables.');
+    return { error: 'Missing API key' };
+  }
   
   try {
     const url = `https://api.twelvedata.com/time_series?symbol=${pair}&interval=${timeframe}&outputsize=500&apikey=${apiKey}`;
     const response = await fetch(url, { cf: { cacheTtl: 60 } });
     const data = await response.json();
     
-    if (data.status === 'error') return null;
+    if (data.status === 'error') {
+      console.error(`TwelveData API error: ${data.message || 'Unknown error'}`);
+      return { error: data.message || 'API error' };
+    }
     
     return data.values.map(v => ({
       datetime: v.datetime,

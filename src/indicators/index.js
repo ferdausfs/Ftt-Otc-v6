@@ -16,9 +16,12 @@ export function calculateAllIndicators(candles, assetType = ASSET_TYPE.FOREX) {
   const atrArr  = calculateATR(candles, CONFIG.ATR_PERIOD);
   const atrLast = atrArr[atrArr.length - 1] || null;
   return {
+    close:      closes,
     ema5:       calculateEMA(closes, 5),
     ema10:      calculateEMA(closes, 10),
     ema20:      calculateEMA(closes, 20),
+    ema50:      calculateEMA(closes, 50),
+    ema200:     calculateEMA(closes, 200),
     sma50:      calculateSMA(closes, 50),
     rsi:        calculateRSI(closes, CONFIG.RSI_PERIOD),
     macd:       calculateMACD(closes),

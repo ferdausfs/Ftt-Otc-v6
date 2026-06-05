@@ -14,23 +14,18 @@ import { calculateDuration } from '../analysis/duration.js';
 import { calculateRiskParameters } from '../analysis/risk.js';
 import { safeLastValue, fmt, r2 } from '../utils/helpers.js';
 import { getAssetType } from '../utils/pairs.js';
+import { ASSET_TYPE } from '../config.js';
 import { detectTradingSession, getSessionParams } from '../utils/session.js';
 import { checkNewsImpact } from '../utils/news.js';
 
 /**
  * Build multi-timeframe signal for REAL market (Forex/Crypto)
  */
-export async function buildMultiTimeframeSignal(pair, timeframes, assetTypePassed, env) {
+export async function buildMultiTimeframeSignal(pair, candleData, assetTypePassed, env) {
   const assetType = assetTypePassed || getAssetType(pair);
   const session = detectTradingSession();
   const sessionParams = getSessionParams(session);
   const newsImpact = await checkNewsImpact(pair, env);
-  
-  // Fetch candles for all timeframes
-  const tfData = {};
-  for (const tf of timeframes) {
-    tfData[tf] = await fetchCandlesForTF(pair, tf, env);
-  }
   
   // Analyze each timeframe
   const analyses = {};
@@ -50,7 +45,7 @@ export async function buildMultiTimeframeSignal(pair, timeframes, assetTypePasse
     '1min': 0.03, '1Mi': 0.03, 'M1': 0.03
   };
   
-  for (const [tf, candles] of Object.entries(tfData)) {
+  for (const [tf, candles] of Object.entries(candleData)) {
     if (!candles || candles.length < 50) continue;
     
     const indicators = calculateAllIndicators(candles, assetType);
@@ -143,7 +138,7 @@ export async function buildMultiTimeframeSignal(pair, timeframes, assetTypePasse
   const confidence = calculateConfidence(analyses, direction, grade);
   
   // Risk parameters
-  const entryPrice = safeLastValue(tfData['1H']?.map(c => c.close) || tfData['5M']?.map(c => c.close));
+  const entryPrice = safeLastValue(candleData['1H']?.map(c => c.close) || candleData['5M']?.map(c => c.close) || candleData['1min']?.map(c => c.close));
   const atr = higherTF?.indicators?.atr || entryTF?.indicators?.atr || 0.001;
   const riskParams = calculateRiskParameters(entryPrice, atr, direction, higherTF?.structure, entryTF?.liquidity);
   
@@ -212,7 +207,14 @@ export async function buildMultiTimeframeSignal(pair, timeframes, assetTypePasse
  * Regime-specific signal generation
  */
 function generateRegimeSpecificSignal(indicators, structure, liquidity, volumeProfile, regime, sessionParams, assetType, timeframe) {
-  const { rsi, macd, ema50, ema200, adx, bb, atr } = indicators;
+  const lastRSI = safeLastValue(indicators.rsi);
+  const lastMACDHist = safeLastValue(indicators.macd?.histogram);
+  const lastEMA50 = safeLastValue(indicators.ema50);
+  const lastEMA200 = safeLastValue(indicators.ema200);
+  const lastADX = safeLastValue(indicators.adx?.adx);
+  const bbPos = safeLastValue(indicators.bollinger?.percentB);
+  const lastATR = safeLastValue(indicators.atr);
+
   const { trend, bos, choch, isAtSupport, isAtResistance } = structure;
   const { sweepDetected, sweepType } = liquidity;
   
@@ -220,7 +222,7 @@ function generateRegimeSpecificSignal(indicators, structure, liquidity, volumePr
   let reasons = [];
   
   // Skip if ADX too low (no trend) on higher timeframes
-  if (['1D', '4H', '1H'].includes(timeframe) && adx < 15) {
+  if (['1D', '4H', '1H'].includes(timeframe) && lastADX < 15) {
     return { score: 50, reasons: ['No trend strength'], direction: 'NEUTRAL' };
   }
   
@@ -229,22 +231,22 @@ function generateRegimeSpecificSignal(indicators, structure, liquidity, volumePr
     // Only trade in direction of HTF trend/structure
     if (trend === 'BULLISH') {
       // Pullback to EMA50/EMA200 or Support/OB
-      if (rsi > 30 && rsi < 55 && macd.histogram > -0.5 && (isAtSupport || sweepDetected && sweepType === 'BEARISH_SWEEP')) {
+      if (lastRSI > 30 && lastRSI < 55 && lastMACDHist > -0.5 && (isAtSupport || sweepDetected && sweepType === 'BEARISH_SWEEP')) {
         score = 75;
         reasons.push('Trending: Bullish pullback to support');
       }
       // Breakout continuation
-      else if (bos?.type === 'BULLISH_BOS' && macd.histogram > 0) {
+      else if (bos?.type === 'BULLISH_BOS' && lastMACDHist > 0) {
         score = 80;
         reasons.push('Trending: Bullish BOS continuation');
       }
     }
     else if (trend === 'BEARISH') {
-      if (rsi < 70 && rsi > 45 && macd.histogram < 0.5 && (isAtResistance || sweepDetected && sweepType === 'BULLISH_SWEEP')) {
+      if (lastRSI < 70 && lastRSI > 45 && lastMACDHist < 0.5 && (isAtResistance || sweepDetected && sweepType === 'BULLISH_SWEEP')) {
         score = 25;
         reasons.push('Trending: Bearish pullback to resistance');
       }
-      else if (bos?.type === 'BEARISH_BOS' && macd.histogram < 0) {
+      else if (bos?.type === 'BEARISH_BOS' && lastMACDHist < 0) {
         score = 20;
         reasons.push('Trending: Bearish BOS continuation');
       }
@@ -253,16 +255,16 @@ function generateRegimeSpecificSignal(indicators, structure, liquidity, volumePr
   
   // === RANGING REGIME ===
   else if (regime.regime === 'RANGING') {
-    if (rsi < 30 && isAtSupport && bb.position < 0.1) {
+    if (lastRSI < 30 && isAtSupport && bbPos < 0.1) {
       score = 70;
       reasons.push('Ranging: Oversold at support');
     }
-    else if (rsi > 70 && isAtResistance && bb.position > 0.9) {
+    else if (lastRSI > 70 && isAtResistance && bbPos > 0.9) {
       score = 30;
       reasons.push('Ranging: Overbought at resistance');
     }
     // Mean reversion: Price near POC in value area
-    else if (volumeProfile?.nearPOC && bb.position > 0.4 && bb.position < 0.6) {
+    else if (volumeProfile?.nearPOC && bbPos > 0.4 && bbPos < 0.6) {
       score = 50;
       reasons.push('Ranging: Price at volume POC');
     }
@@ -271,11 +273,11 @@ function generateRegimeSpecificSignal(indicators, structure, liquidity, volumePr
   // === BREAKOUT REGIME ===
   else if (regime.regime === 'BREAKOUT') {
     // Only trade confirmed breakouts with volume/structure
-    if (bos?.type === 'BULLISH_BOS' && volumeProfile?.volumeSpike && adx > 25) {
+    if (bos?.type === 'BULLISH_BOS' && volumeProfile?.volumeSpike && lastADX > 25) {
       score = 78;
       reasons.push('Breakout: Confirmed bullish breakout');
     }
-    else if (bos?.type === 'BEARISH_BOS' && volumeProfile?.volumeSpike && adx > 25) {
+    else if (bos?.type === 'BEARISH_BOS' && volumeProfile?.volumeSpike && lastADX > 25) {
       score = 22;
       reasons.push('Breakout: Confirmed bearish breakout');
     }
@@ -289,7 +291,7 @@ function generateRegimeSpecificSignal(indicators, structure, liquidity, volumePr
   // === VOLATILE REGIME ===
   else if (regime.regime === 'VOLATILE') {
     // NO TRADE unless exceptional setup
-    if (atr > regime.atr * 2) {
+    if (lastATR > (regime.atr || 0) * 2) {
       score = 50;
       reasons.push('Volatile: ATR spike - no trade');
     }
@@ -362,11 +364,3 @@ export function findBestTimeframe(tfResults, direction) {
 }
 
 import { fetchCandlesWithCache } from '../fetch/candles.js';
-
-// Placeholder - integrate with your existing fetch/candles.js
-async function fetchCandlesForTF(pair, tf, env) {
-  // Mock ctx for fetchCandlesWithCache
-  const ctx = { waitUntil: () => {} };
-  const res = await fetchCandlesWithCache(pair, tf, 100, env, ctx, 'FOREX');
-  return res.candles || [];
-}

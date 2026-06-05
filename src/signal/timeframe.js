@@ -34,27 +34,48 @@ export async function analyzeTimeframe(pair, tf, candles, assetType = ASSET_TYPE
     return { score: 50, regime: 'UNKNOWN', valid: false, reason: 'Insufficient data' };
   }
   
-  const indicators = calculateAllIndicators(candles, assetType = ASSET_TYPE.FOREX);
+  const indicators = calculateAllIndicators(candles, assetType);
   const structure = analyzeStructure(candles);
   const liquidity = analyzeLiquidity(candles);
   const volumeProfile = analyzeVolumeProfile(candles);
   const regime = analyzeRegime(candles);
   
+  // Extract latest values for comparison
+  const lastRSI = safeLastValue(indicators.rsi);
+  const lastMACDHist = safeLastValue(indicators.macd?.histogram);
+  const lastEMA50 = safeLastValue(indicators.ema50);
+  const lastEMA200 = safeLastValue(indicators.ema200);
+  const lastADX = safeLastValue(indicators.adx?.adx);
+  const bbPos = safeLastValue(indicators.bollinger?.percentB);
+
   // Calculate base signal score based on regime
   let score = 50;
-  const { rsi, macd, ema50, ema200, adx, bb } = indicators;
-  
+  const categoryScores = {
+    trend: { up: 0, down: 0 },
+    momentum: { up: 0, down: 0 },
+    macd: { up: 0, down: 0 },
+    stochastic: { up: 0, down: 0 },
+    bands: { up: 0, down: 0 },
+    adx: { up: 0, down: 0 },
+    patterns: { up: 0, down: 0 },
+    divergence: { up: 0, down: 0 },
+    pivots: { up: 0, down: 0 },
+    volume: { up: 0, down: 0 },
+    sr: { up: 0, down: 0 },
+    camarilla: { up: 0, down: 0 }
+  };
+
   switch (regime.regime) {
     case 'TRENDING':
-      if (ema50 > ema200 && macd.histogram > 0 && adx > 20) score = 65;
-      else if (ema50 < ema200 && macd.histogram < 0 && adx > 20) score = 35;
+      if (lastEMA50 > lastEMA200 && lastMACDHist > 0 && lastADX > 20) score = 65;
+      else if (lastEMA50 < lastEMA200 && lastMACDHist < 0 && lastADX > 20) score = 35;
       else score = 50;
       break;
       
     case 'RANGING':
-      if (rsi < 30 && bb.position < 0.1) score = 70;
-      else if (rsi > 70 && bb.position > 0.9) score = 30;
-      else if (bb.position > 0.4 && bb.position < 0.6) score = 50;
+      if (lastRSI < 30 && bbPos < 0.1) score = 70;
+      else if (lastRSI > 70 && bbPos > 0.9) score = 30;
+      else if (bbPos > 0.4 && bbPos < 0.6) score = 50;
       break;
       
     case 'BREAKOUT':
@@ -91,9 +112,64 @@ export async function analyzeTimeframe(pair, tf, candles, assetType = ASSET_TYPE
   // Clamp
   score = Math.max(10, Math.min(90, score));
   
+  // Detailed category scoring for engine & OTC compatibility
+  // Trend
+  if (lastEMA50 && lastEMA200) {
+    if (lastEMA50 > lastEMA200) categoryScores.trend.up = 1.0;
+    else categoryScores.trend.down = 1.0;
+  }
+
+  // Momentum (RSI)
+  if (lastRSI !== null) {
+    if (lastRSI < 35) categoryScores.momentum.up = 1.2;
+    else if (lastRSI > 65) categoryScores.momentum.down = 1.2;
+    else if (lastRSI > 50) categoryScores.momentum.up = 0.5;
+    else categoryScores.momentum.down = 0.5;
+  }
+
+  // MACD
+  if (lastMACDHist !== null) {
+    if (lastMACDHist > 0) categoryScores.macd.up = 1.0;
+    else categoryScores.macd.down = 1.0;
+  }
+
+  // ADX
+  if (lastADX !== null && lastADX > 25) {
+    if (categoryScores.trend.up > 0) categoryScores.adx.up = 1.0;
+    if (categoryScores.trend.down > 0) categoryScores.adx.down = 1.0;
+  }
+
+  // Bands
+  if (bbPos !== null) {
+    if (bbPos < 0.1) categoryScores.bands.up = 1.5;
+    else if (bbPos > 0.9) categoryScores.bands.down = 1.5;
+  }
+
+  // S/R & Structure
+  if (structure.trend === 'BULLISH') categoryScores.sr.up = 1.0;
+  if (structure.trend === 'BEARISH') categoryScores.sr.down = 1.0;
+  if (structure.isAtSupport) categoryScores.sr.up += 1.5;
+  if (structure.isAtResistance) categoryScores.sr.down += 1.5;
+
+  // Patterns
+  if (indicators.patterns && indicators.patterns.length > 0) {
+    for (const p of indicators.patterns) {
+      if (p.sentiment === 'BULLISH') categoryScores.patterns.up += 1.5;
+      else if (p.sentiment === 'BEARISH') categoryScores.patterns.down += 1.5;
+    }
+  }
+
+  // Divergence
+  if (indicators.divergence?.rsi) {
+    if (indicators.divergence.rsi.direction === 'BUY') categoryScores.divergence.up = 2.0;
+    else categoryScores.divergence.down = 2.0;
+  }
+
   return {
     valid: true,
     score: r2(score),
+    categoryScores,
+    indicators,
     regime: regime.regime,
     regimeStrength: regime.strength,
     adx: r2(adx),

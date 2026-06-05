@@ -93,8 +93,11 @@ export default {
       });
       
     } catch (err) {
-      console.error('Router error:', err);
-      return new Response(JSON.stringify({ error: err.message }), {
+      console.error('CRITICAL Router error:', err.message, err.stack);
+      return new Response(JSON.stringify({
+        error: err.message,
+        stack: env.ENVIRONMENT === 'development' ? err.stack : undefined
+      }), {
         status: 500,
         headers: applyCors(new Headers({ 'Content-Type': 'application/json' }))
       });

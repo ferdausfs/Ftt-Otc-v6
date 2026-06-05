@@ -41,8 +41,8 @@ async function analyzeTimeframeOTC(indicators, candles, timeframe) {
   for (const cat of cats) {
     const cd = result.categoryScores[cat];
     if (!cd) continue;
-    if ((cd.up||0) > (cd.down||0) && Math.abs((cd.up||0)-(cd.down||0)) >= (CONFIG.MIN_CATEGORY_SCORE || 0.3)) upCat++;
-    else if ((cd.down||0) > (cd.up||0) && Math.abs((cd.down||0)-(cd.up||0)) >= (CONFIG.MIN_CATEGORY_SCORE || 0.3)) downCat++;
+    if ((cd.up||0) > (cd.down||0)) upCat++;
+    else if ((cd.down||0) > (cd.up||0)) downCat++;
   }
   const confluence = Math.max(upCat, downCat);
   let direction;
@@ -64,7 +64,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
 
   let htfContext = null;
   if (candleData['15min'] && candleData['15min'].length > 0) {
-    const htfInd  = calculateAllIndicators(candleData['15min']);
+    const htfInd  = calculateAllIndicators(candleData['15min'], ASSET_TYPE.FOREX);
     const htfEma5 = safeLastValue(htfInd.ema5); const htfEma20 = safeLastValue(htfInd.ema20);
     if (htfEma5 !== null && htfEma20 !== null) htfContext = htfEma5 > htfEma20 ? 'BUY_BIAS' : 'SELL_BIAS';
   }
@@ -72,7 +72,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   for (const tf of Object.keys(candleData)) {
     const candles = candleData[tf];
     if (!candles || candles.length === 0) continue;
-    const indicators = calculateAllIndicators(candles);
+    const indicators = calculateAllIndicators(candles, ASSET_TYPE.FOREX);
     const analysis   = await analyzeTimeframeOTC(indicators, candles, tf);
     const dur  = calculateOTCCandleDuration(indicators, analysis.direction, candles, tf);
     const cMin = CANDLE_MINUTES[tf] || 1;
