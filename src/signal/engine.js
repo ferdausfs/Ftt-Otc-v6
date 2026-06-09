@@ -406,6 +406,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     sessionWeight: sessionMult, candleQuality: candleQualityMult,
     method: 'WEIGHTED_MULTI_TF_v6.9.2_EMA5-13-55+STRUCTURE', generatedAt: now.toISOString(),
   };
+}
 
 export function findBestTimeframe(tfResults, finalDirection) {
   let bestTF = null; let bestScore = -1; let bestConf = -1;
