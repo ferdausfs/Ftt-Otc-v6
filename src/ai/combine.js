@@ -60,8 +60,8 @@ export function buildIndicatorSnapshot(tfResults, candleData, finalDirection, be
     const highs = recent.map(c => c.high); const lows = recent.map(c => c.low);
     const midH1 = Math.max(...highs.slice(0, Math.floor(n/2))); const midH2 = Math.max(...highs.slice(Math.floor(n/2)));
     const midL1 = Math.min(...lows.slice(0, Math.floor(n/2)));  const midL2 = Math.min(...lows.slice(Math.floor(n/2)));
-    if (midH2 > midH1 && midL2 > midL1) return 'HH-HL (Bullish structure)';
-    if (midH2 < midH1 && midL2 < midL1) return 'LH-LL (Bearish structure)';
+    if (midH2 > midH1 && midL2 > midL1) return 'HH-HL (Bullish)';
+    if (midH2 < midH1 && midL2 < midL1) return 'LH-LL (Bearish)';
     if (midH2 > midH1 && midL2 < midL1) return 'Expanding (Volatile)';
     if (midH2 < midH1 && midL2 > midL1) return 'Contracting (Consolidation)';
     return 'Mixed structure';
@@ -69,20 +69,27 @@ export function buildIndicatorSnapshot(tfResults, candleData, finalDirection, be
 
   const c1 = candleData['1min'] || []; const c5 = candleData['5min'] || []; const c15 = candleData['15min'] || [];
   return {
-    emaAlignment: ind.emaAlignment  || 'UNKNOWN',
-    ema5: ind.ema5 || 'N/A', ema10: ind.ema10 || 'N/A', ema20: ind.ema20 || 'N/A',
+    // EMA 5/13/55 (Fibonacci set)
+    emaAlignment: ind.emaAlignment || 'UNKNOWN',
+    ema5:  ind.ema5  || 'N/A',
+    ema13: ind.ema13 || 'N/A',
+    ema55: ind.ema55 || 'N/A',
     rsi: ind.rsi || 'N/A', macdHist: ind.macdHist || 'N/A',
     adx: ind.adx || 'N/A', plusDI: ind.plusDI || 'N/A', minusDI: ind.minusDI || 'N/A',
     stochK: ind.stochK || 'N/A', stochD: ind.stochD || 'N/A',
     williamsR: ind.williamsR || 'N/A', cci: ind.cci || 'N/A',
     bbPercentB: ind.bbPercentB || 'N/A', bbBandwidth: ind.bbBandwidth || 'N/A',
     atr: ind.atr || 'N/A', pivot: ind.pivot || 'N/A', r1: ind.r1 || 'N/A', s1: ind.s1 || 'N/A',
-    srContext:  (catScores.sr        && catScores.sr.context)            || 'NO_LEVEL',
-    fvgActive:  (catScores.fvg       && catScores.fvg.active)            || 'NONE',
-    patterns:   (catScores.patterns  && catScores.patterns.detected)     || [],
-    rsiDiv:     (catScores.divergence && catScores.divergence.rsi)       || 'NONE',
-    macdDiv:    (catScores.divergence && catScores.divergence.macd)      || 'NONE',
-    candles1min: compactCandles(c1, 20), candles5min: compactCandles(c5, 20), candles15min: compactCandles(c15, 20),
-    structure1min: priceStructure(c1), structure5min: priceStructure(c5), structure15min: priceStructure(c15),
+    srContext:  (catScores.sr        && catScores.sr.context)        || 'NO_LEVEL',
+    fvgActive:  (catScores.fvg       && catScores.fvg.active)        || 'NONE',
+    patterns:   (catScores.patterns  && catScores.patterns.detected) || [],
+    rsiDiv:     (catScores.divergence && catScores.divergence.rsi)   || 'NONE',
+    macdDiv:    (catScores.divergence && catScores.divergence.macd)  || 'NONE',
+    candles1min:  compactCandles(c1, 20),
+    candles5min:  compactCandles(c5, 20),
+    candles15min: compactCandles(c15, 20),
+    structure1min:  priceStructure(c1),
+    structure5min:  priceStructure(c5),
+    structure15min: priceStructure(c15),
   };
 }

@@ -15,7 +15,7 @@ export function handleHealth(env) {
   const holiday   = getForexHoliday();
 
   return jsonResponse({
-    status: 'healthy', version: '6.9.1', timestamp: new Date().toISOString(),
+    status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
     bindings: {
       kvCache:     env.SIGNAL_CACHE      ? 'ready' : 'NOT CONFIGURED',

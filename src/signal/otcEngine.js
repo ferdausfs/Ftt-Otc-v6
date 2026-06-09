@@ -65,8 +65,8 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   let htfContext = null;
   if (candleData['15min'] && candleData['15min'].length > 0) {
     const htfInd  = calculateAllIndicators(candleData['15min']);
-    const htfEma5 = safeLastValue(htfInd.ema5); const htfEma20 = safeLastValue(htfInd.ema20);
-    if (htfEma5 !== null && htfEma20 !== null) htfContext = htfEma5 > htfEma20 ? 'BUY_BIAS' : 'SELL_BIAS';
+    const htfEma5 = safeLastValue(htfInd.ema5); const htfEma55 = safeLastValue(htfInd.ema55);
+    if (htfEma5 !== null && htfEma55 !== null) htfContext = htfEma5 > htfEma55 ? 'BUY_BIAS' : 'SELL_BIAS';
   }
 
   for (const tf of Object.keys(candleData)) {

@@ -22,61 +22,76 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
 
   const newsBlock   = checkNewsBlackout(assetType);
   const newsBlocked = !!(newsBlock && newsBlock.blocked);
-
-  const tfResults = {};
-  const votes     = [];
   const filtersApplied = [];
 
-  // ── HTF TREND ──
+  // ── FIX: Calculate indicators ONCE per TF, cache results ──
+  // Previously: 15min was calculated 3x (HTF trend + regime + per-TF loop)
+  const indicatorCache = {};
+  for (const tf of Object.keys(candleData)) {
+    if (candleData[tf] && candleData[tf].length > 0) {
+      indicatorCache[tf] = calculateAllIndicators(candleData[tf]);
+    }
+  }
+
+  // ── HTF TREND (use cached 15min indicators) ──
   let higherTFTrend = null;
-  if (candleData['15min'] && candleData['15min'].length > 0) {
-    const htfInd  = calculateAllIndicators(candleData['15min']);
+  if (indicatorCache['15min']) {
+    const htfInd   = indicatorCache['15min'];
     const htfEma5  = safeLastValue(htfInd.ema5);
-    const htfEma20 = safeLastValue(htfInd.ema20);
+    const htfEma13 = safeLastValue(htfInd.ema13);
+    const htfEma55 = safeLastValue(htfInd.ema55);
     const htfAdx   = htfInd.adx ? safeLastValue(htfInd.adx.adx)    : null;
     const htfPDI   = htfInd.adx ? safeLastValue(htfInd.adx.plusDI)  : null;
     const htfMDI   = htfInd.adx ? safeLastValue(htfInd.adx.minusDI) : null;
-    if (htfEma5 !== null && htfEma20 !== null && htfAdx !== null && htfAdx >= 20) {
-      if (htfEma5 > htfEma20 && htfPDI !== null && htfMDI !== null && htfPDI > htfMDI) higherTFTrend = 'BUY';
-      else if (htfEma5 < htfEma20 && htfPDI !== null && htfMDI !== null && htfMDI > htfPDI) higherTFTrend = 'SELL';
+    // Fix: ADX threshold raised to 25 (was 20 — too loose)
+    if (htfEma5 !== null && htfEma55 !== null && htfAdx !== null && htfAdx >= 25) {
+      if (htfEma5 > htfEma55 && htfPDI !== null && htfMDI !== null && htfPDI > htfMDI) higherTFTrend = 'BUY';
+      else if (htfEma5 < htfEma55 && htfPDI !== null && htfMDI !== null && htfMDI > htfPDI) higherTFTrend = 'SELL';
+    }
+    // Also check EMA 5/13/55 full stack for HTF (stronger signal)
+    if (higherTFTrend === null && htfEma5 !== null && htfEma13 !== null && htfEma55 !== null) {
+      if (htfEma5 > htfEma13 && htfEma13 > htfEma55) higherTFTrend = 'BUY';
+      else if (htfEma5 < htfEma13 && htfEma13 < htfEma55) higherTFTrend = 'SELL';
     }
   }
 
-  // ── MARKET REGIME ──
+  // ── MARKET REGIME (use cached 15min indicators) ──
   let marketRegime = 'RANGING';
-  if (candleData['15min'] && candleData['15min'].length >= 3) {
-    const rCandles = candleData['15min'];
-    const rInd  = calculateAllIndicators(rCandles);
-    const rAdx  = safeLastValue(rInd.adx.adx);
-    const rBbBW = safeLastValue(rInd.bollinger.bandwidth);
-    const rBbArr = rInd.bollinger.bandwidth;
-    let rBbBWPrev = null;
+  const regimeTF = indicatorCache['15min'] || indicatorCache['5min'] || indicatorCache['1min'];
+  const regimeCandles = candleData['15min'] || candleData['5min'] || candleData['1min'];
+  if (regimeTF && regimeCandles) {
+    const rAdx  = safeLastValue(regimeTF.adx.adx);
+    const rBbArr = regimeTF.bollinger.bandwidth;
+    const bwVals = [];
     if (rBbArr) {
-      const bwVals = [];
       for (let bi = rBbArr.length - 1; bi >= 0 && bwVals.length < 2; bi--) {
         if (rBbArr[bi] !== null && !isNaN(rBbArr[bi])) bwVals.push(rBbArr[bi]);
       }
-      if (bwVals.length >= 2) rBbBWPrev = bwVals[1];
     }
-    const rAtr  = safeLastValue(rInd.atr);
-    const rLC   = rCandles[rCandles.length - 1].close;
+    const rBbBW     = bwVals[0] || null;
+    const rBbBWPrev = bwVals[1] || null;
+    const rAtr = safeLastValue(regimeTF.atr);
+    const rLC  = regimeCandles[regimeCandles.length - 1].close;
     marketRegime = detectMarketRegime(rAdx, rBbBW, rAtr, rLC, assetType, rBbBWPrev);
   }
 
-  // ── PER-TIMEFRAME ANALYSIS ──
+  // ── PER-TIMEFRAME ANALYSIS (use cached indicators) ──
+  const tfResults = {};
+  const votes     = [];
   for (const tf of Object.keys(candleData)) {
-    const candles = candleData[tf];
+    const candles    = candleData[tf];
     if (!candles || candles.length === 0) continue;
+    const indicators = indicatorCache[tf];
+    if (!indicators) continue;
 
-    const indicators = calculateAllIndicators(candles);
-    const analysis   = analyzeTimeframe(indicators, candles, tf, assetType, higherTFTrend, marketRegime);
+    const analysis = analyzeTimeframe(indicators, candles, tf, assetType, higherTFTrend, marketRegime);
 
-    const durCandles   = calculateCandleDuration(indicators, analysis.direction, candles, tf, assetType);
-    const candleMin    = CANDLE_MINUTES[tf] || 1;
-    const durMinutes   = durCandles * candleMin;
-    const expiryTime   = new Date(now.getTime() + durMinutes * 60000);
-    const nextClose    = getNextCandleClose(now, candleMin);
-    const countdown    = getCandleCountdown(candleMin);
+    const durCandles = calculateCandleDuration(indicators, analysis.direction, candles, tf, assetType);
+    const candleMin  = CANDLE_MINUTES[tf] || 1;
+    const durMinutes = durCandles * candleMin;
+    const expiryTime = new Date(now.getTime() + durMinutes * 60000);
+    const nextClose  = getNextCandleClose(now, candleMin);
+    const countdown  = getCandleCountdown(candleMin);
 
     analysis.expiry = {
       candles: durCandles, candleSize: candleMin + 'min', totalMinutes: durMinutes,
@@ -144,23 +159,29 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     finalDirection = tie.direction; confidence = tie.confidence;
   }
 
-  // Save raw (pre-filter) direction — AI will use this if filters block the signal
-  const rawDirection = finalDirection;
+  // Save raw direction BEFORE all filters (AI rescue uses this)
+  const rawDirection  = finalDirection;
   const rawConfidence = confidence;
 
   // ── HTF HARD BLOCK ──
   if (higherTFTrend !== null && finalDirection !== 'NO_TRADE' && finalDirection !== higherTFTrend) {
-    const htf15 = tfResults['15min'];
+    const htf15  = tfResults['15min'];
     const htfADX = htf15 && htf15.indicators ? parseFloat(htf15.indicators.adx) : null;
-    if (htfADX !== null && !isNaN(htfADX) && htfADX >= 25) { finalDirection = 'NO_TRADE'; confidence = 0; }
-    else confidence = Math.max(0, confidence - 18);
+    if (htfADX !== null && !isNaN(htfADX) && htfADX >= 25) {
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('HTF_HARD_BLOCK (ADX=' + htfADX.toFixed(0) + ')');
+    } else {
+      confidence = Math.max(0, confidence - 18);
+      filtersApplied.push('HTF_SOFT_PENALTY -18');
+    }
   } else if (higherTFTrend !== null && finalDirection === higherTFTrend) {
     confidence = Math.min(92, confidence + 5);
   }
-  confidence = Math.min(92, confidence + alignmentBonus);
-  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
 
-  // ── SESSION BLOCK (Forex) ──
+  confidence = Math.min(92, confidence + alignmentBonus);
+  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; filtersApplied.push('MIXED_ALIGNMENT'); }
+
+  // ── SESSION BLOCK (Forex only) ──
   if (assetType === ASSET_TYPE.FOREX) {
     if (session.quality === 'LOW') {
       finalDirection = 'NO_TRADE'; confidence = 0;
@@ -170,38 +191,39 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     }
   }
 
-  if (exotic) confidence = Math.max(20, confidence - CONFIG.EXOTIC_CONFIDENCE_PENALTY);
+  if (exotic) { confidence = Math.max(20, confidence - CONFIG.EXOTIC_CONFIDENCE_PENALTY); filtersApplied.push('EXOTIC_PENALTY -' + CONFIG.EXOTIC_CONFIDENCE_PENALTY); }
 
   // ── CANDLE CONSISTENCY ──
   const primaryCandles = candleData['5min'] || candleData['1min'] || candleData['15min'];
   let consistencyMult = 1.0;
   if (primaryCandles && finalDirection !== 'NO_TRADE') {
     consistencyMult = recentCandleConsistency(primaryCandles, finalDirection, 4);
-    if (consistencyMult < 1.0) confidence = Math.round(confidence * consistencyMult);
+    if (consistencyMult < 1.0) {
+      confidence = Math.round(confidence * consistencyMult);
+      filtersApplied.push('CANDLE_INCONSISTENCY (x' + consistencyMult + ')');
+    }
   }
 
   // ── VOLUME SPIKE FILTER ──
   let volumeSpikeBlocked = false;
   if (finalDirection !== 'NO_TRADE' && primaryCandles) {
     volumeSpikeBlocked = isVolumeSpikeAnomaly(primaryCandles, assetType);
-    if (volumeSpikeBlocked) { finalDirection = 'NO_TRADE'; confidence = 0; }
+    if (volumeSpikeBlocked) { finalDirection = 'NO_TRADE'; confidence = 0; filtersApplied.push('VOLUME_SPIKE_ANOMALY'); }
   }
 
   // ── FVG FILTER ──
-  let fvgBlocked = false; let fvgBlockDetail = '';
+  let fvgBlocked = false;
   const fvgCheckTF = tfResults['1min'] || tfResults['5min'] || tfResults['15min'];
   if (finalDirection !== 'NO_TRADE' && fvgCheckTF && fvgCheckTF.categoryScores && fvgCheckTF.categoryScores.fvg) {
     const activeFVGType = fvgCheckTF.categoryScores.fvg.active;
     if (activeFVGType && activeFVGType !== 'NONE') {
       if (finalDirection === 'BUY' && activeFVGType === 'BEARISH') {
-        fvgBlocked = true;
-        fvgBlockDetail = 'BUY confidence reduced: inside bearish FVG on ' + fvgCheckTF.timeframe;
-        confidence = Math.max(0, confidence - 20);
+        fvgBlocked = true; confidence = Math.max(0, confidence - 20);
+        filtersApplied.push('FVG_PENALTY -20 (inside bearish FVG)');
       }
       if (finalDirection === 'SELL' && activeFVGType === 'BULLISH') {
-        fvgBlocked = true;
-        fvgBlockDetail = 'SELL confidence reduced: inside bullish FVG on ' + fvgCheckTF.timeframe;
-        confidence = Math.max(0, confidence - 20);
+        fvgBlocked = true; confidence = Math.max(0, confidence - 20);
+        filtersApplied.push('FVG_PENALTY -20 (inside bullish FVG)');
       }
     }
   }
@@ -211,16 +233,15 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   let marketCondition = ['UNKNOWN']; let marketContext = 'UNKNOWN';
   if (htfTFResult) {
     const htfCandles = candleData['15min'] || candleData['5min'] || candleData['1min'];
-    const adxH  = htfTFResult.indicators ? parseFloat(htfTFResult.indicators.adx)         : null;
-    const bbBWH = htfTFResult.indicators ? parseFloat(htfTFResult.indicators.bbBandwidth)  : null;
-    const atrH  = htfTFResult.indicators ? parseFloat(htfTFResult.indicators.atr)          : null;
+    const adxH  = htfTFResult.indicators ? parseFloat(htfTFResult.indicators.adx)        : null;
+    const bbBWH = htfTFResult.indicators ? parseFloat(htfTFResult.indicators.bbBandwidth) : null;
+    const atrH  = htfTFResult.indicators ? parseFloat(htfTFResult.indicators.atr)         : null;
     const lcH   = htfCandles ? htfCandles[htfCandles.length - 1].close : null;
     if (lcH !== null) marketCondition = detectMarketCondition(isNaN(adxH)?null:adxH, isNaN(bbBWH)?null:bbBWH, isNaN(atrH)?null:atrH, lcH, assetType);
     marketContext = (!isNaN(adxH) && adxH !== null) ? (adxH >= 25 ? 'TRENDING' : 'RANGING') : 'UNKNOWN';
   }
 
-  // ── DEAD_MARKET soft block (pre-AI) ──
-  // Only hard-block if confidence is very low — AI gets a chance to rescue borderline signals
+  // ── DEAD_MARKET soft block — AI gets rescue chance for borderline ──
   const isDeadMarket = marketCondition.includes('DEAD_MARKET');
   if (finalDirection !== 'NO_TRADE' && isDeadMarket && confidence < 65) {
     finalDirection = 'NO_TRADE'; confidence = Math.min(confidence, 30);
@@ -231,12 +252,13 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   let belowFloor = false;
   if (finalDirection !== 'NO_TRADE' && confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
     belowFloor = true; finalDirection = 'NO_TRADE';
+    filtersApplied.push('CONFIDENCE_BELOW_FLOOR (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
   }
 
   // ── CANDLE QUALITY PENALTY ──
   if (finalDirection !== 'NO_TRADE' && candleQualityMult < 0.8) {
     confidence = Math.max(0, confidence - 15);
-    filtersApplied.push('LOW_CANDLE_QUALITY_PENALTY (-15)');
+    filtersApplied.push('LOW_CANDLE_QUALITY_PENALTY -15');
     if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('BELOW_FLOOR_AFTER_QUALITY_PENALTY');
@@ -256,22 +278,29 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     }
   }
 
+  // ── NEWS BLACKOUT final check ──
+  if (newsBlocked && finalDirection !== 'NO_TRADE') {
+    finalDirection = 'NO_TRADE'; confidence = 0;
+    filtersApplied.push('NEWS_BLACKOUT: ' + (newsBlock?.label || ''));
+  }
+
   // ── AI VALIDATION ──
-  // Runs on: (a) valid signal, OR (b) rawDirection is valid and was blocked by soft filters
-  // AI can rescue a borderline signal that got filtered (DEAD_MARKET / below floor)
+  // Runs on valid signal OR raw direction (when borderline filters blocked it)
   const aiTargetDir = finalDirection !== 'NO_TRADE'
     ? finalDirection
     : (rawDirection !== 'NO_TRADE' && rawConfidence >= 60 ? rawDirection : null);
 
   let aiValidation = { status: 'SKIPPED' }; let aiAgreed = null;
+
   if (aiTargetDir) {
-    const aiUseConf = finalDirection !== 'NO_TRADE' ? confidence : rawConfidence;
-    const best_snap = findBestTimeframe(tfResults, aiTargetDir);
-    const snapshot  = buildIndicatorSnapshot(tfResults, candleData, aiTargetDir, best_snap.timeframe);
-    const engineSig = {
+    const aiUseConf  = finalDirection !== 'NO_TRADE' ? confidence : rawConfidence;
+    const bestSnap   = findBestTimeframe(tfResults, aiTargetDir);
+    const snapshot   = buildIndicatorSnapshot(tfResults, candleData, aiTargetDir, bestSnap.timeframe);
+    const engineSig  = {
       direction: aiTargetDir, confidence: aiUseConf + '%', alignment,
-      higherTFTrend: higherTFTrend || 'NEUTRAL', marketCondition, bestTF: best_snap.timeframe,
+      higherTFTrend: higherTFTrend || 'NEUTRAL', marketCondition, bestTF: bestSnap.timeframe,
     };
+
     const [cerebrasResult, groqResult] = await Promise.all([
       callCerebrasValidation(pair, assetType, engineSig, snapshot, env),
       callGroqValidation(pair, assetType, engineSig, snapshot, env),
@@ -279,37 +308,34 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     const dualResult = combineDualAIResults(cerebrasResult, groqResult, aiTargetDir);
     aiValidation = dualResult;
     const combinedAI = dualResult.combined;
+
     if (combinedAI && combinedAI.status === 'OK') {
       aiAgreed = combinedAI.signal === aiTargetDir;
       aiValidation.agrees = aiAgreed;
 
-      // ── AI RESCUE: signal was blocked by soft filter but AI strongly agrees ──
-      if (finalDirection === 'NO_TRADE' && aiTargetDir !== 'NO_TRADE' && aiAgreed) {
-        const aiConfNum = combinedAI.confidence || 0;
-        // Rescue only if AI is confident and no concerns
-        if (aiConfNum >= 70 && !combinedAI.concerns) {
+      // ── FIX: Separate rescue path vs normal path (no double-boost) ──
+      if (finalDirection === 'NO_TRADE' && aiTargetDir !== 'NO_TRADE') {
+        // RESCUE PATH — signal was blocked by soft filter
+        if (aiAgreed && (combinedAI.confidence || 0) >= 70 && !combinedAI.concerns) {
           finalDirection = aiTargetDir;
-          confidence = Math.min(92, Math.round((rawConfidence + aiConfNum) / 2));
-          filtersApplied.push('AI_RESCUE: engine=' + aiTargetDir + ' ' + rawConfidence + '% + AI=' + aiConfNum + '% → ' + confidence + '%');
+          confidence = Math.min(92, Math.round((rawConfidence + (combinedAI.confidence || 0)) / 2));
           belowFloor = false;
-        } else if (aiConfNum >= 60 && !combinedAI.concerns) {
-          // Partial rescue — softer boost
+          filtersApplied.push('AI_RESCUE: ' + aiTargetDir + ' raw=' + rawConfidence + '% AI=' + (combinedAI.confidence || 0) + '% → ' + confidence + '%');
+        } else if (aiAgreed && (combinedAI.confidence || 0) >= 60 && !combinedAI.concerns) {
           finalDirection = aiTargetDir;
           confidence = Math.min(85, rawConfidence + 5);
-          filtersApplied.push('AI_SOFT_RESCUE: ' + aiTargetDir + ' @ ' + confidence + '%');
           belowFloor = false;
+          filtersApplied.push('AI_SOFT_RESCUE: ' + aiTargetDir + ' @ ' + confidence + '%');
         } else {
-          filtersApplied.push('AI_RESCUE_FAILED: AI conf=' + aiConfNum + '% concerns=' + (combinedAI.concerns || 'none'));
+          filtersApplied.push('AI_RESCUE_FAILED: conf=' + (combinedAI.confidence || 0) + '% concerns=' + (combinedAI.concerns || 'none'));
         }
-      }
-
-      // ── Normal AI flow (signal was not blocked) ──
-      if (finalDirection !== 'NO_TRADE' && finalDirection === aiTargetDir) {
+      } else if (finalDirection !== 'NO_TRADE') {
+        // NORMAL PATH — signal was already valid, AI confirms or blocks
         if (aiAgreed) {
           if (!combinedAI.concerns) {
             const boost = combinedAI.agreement === 'BOTH_AGREE' ? 8 : 5;
             confidence = Math.min(92, confidence + boost);
-            filtersApplied.push('DUAL_AI_BOOST: ' + (combinedAI.agreement || 'AGREE') + ' → +' + boost);
+            filtersApplied.push('DUAL_AI_BOOST: ' + (combinedAI.agreement || 'AGREE') + ' +' + boost);
           } else {
             confidence = Math.max(0, confidence - 5);
             filtersApplied.push('DUAL_AI_AGREE_WITH_CONCERNS: ' + combinedAI.concerns);
@@ -322,35 +348,28 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     }
   }
 
+  // ── BUILD OUTPUTS ──
   const best    = findBestTimeframe(tfResults, finalDirection);
   const avgConf = votes.reduce((s, v) => s + (v.confluence || 0), 0) / Math.max(votes.length, 1);
 
-  // ── BUILD RECOMMENDATIONS ──
   const recommendations = {};
   for (const [rtf, rec] of Object.entries(tfResults)) {
     recommendations[rtf] = {
       direction: rec.direction, score: rec.score,
       confluence: rec.confluence + '/11 categories', alignedWithHTF: rec.alignedWithHTF,
       expiry: rec.expiry, entry: rec.entry,
-      patterns:    (rec.categoryScores?.patterns?.detected)    || [],
-      divergence:  { rsi: rec.categoryScores?.divergence?.rsi || 'NONE', macd: rec.categoryScores?.divergence?.macd || 'NONE' },
+      candleConfirmed: rec.candleConfirmed,
+      patterns:   (rec.categoryScores?.patterns?.detected)    || [],
+      divergence: { rsi: rec.categoryScores?.divergence?.rsi || 'NONE', macd: rec.categoryScores?.divergence?.macd || 'NONE' },
       diCrossover: rec.categoryScores?.adx?.diCross || 'NONE',
     };
   }
 
-  // ── ENTRY REASON ──
   const bestTFAnalysis = tfResults[best.timeframe] || null;
   const entryReason    = generateEntryReason(finalDirection, bestTFAnalysis?.categoryScores || {}, bestTFAnalysis?.indicators || {}, alignment, higherTFTrend, marketContext);
 
-  // ── PUSH FILTERS ──
-  if (newsBlocked)            filtersApplied.push('NEWS_BLACKOUT: ' + (newsBlock?.label || ''));
-  if (volumeSpikeBlocked)     filtersApplied.push('VOLUME_SPIKE_ANOMALY');
-  if (fvgBlocked)             filtersApplied.push('FVG_PENALTY: ' + fvgBlockDetail);
-  if (belowFloor)             filtersApplied.push('CONFIDENCE_BELOW_FLOOR (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
-  if (consistencyMult < 1.0)  filtersApplied.push('CANDLE_INCONSISTENCY (mult=' + consistencyMult + ')');
-  if (alignment === 'MIXED')  filtersApplied.push('MIXED_ALIGNMENT');
-  if (sessionMult !== 1.0)    filtersApplied.push('SESSION_WEIGHT (x' + sessionMult.toFixed(2) + ')');
-  if (candleQualityMult !== 1.0) filtersApplied.push('CANDLE_QUALITY (x' + candleQualityMult.toFixed(2) + ')');
+  if (sessionMult !== 1.0)      filtersApplied.push('SESSION_WEIGHT x' + sessionMult.toFixed(2));
+  if (candleQualityMult !== 1.0) filtersApplied.push('CANDLE_QUALITY x' + candleQualityMult.toFixed(2));
   if (isDeadMarket && finalDirection !== 'NO_TRADE') filtersApplied.push('DEAD_MARKET_WARN (AI rescued)');
 
   const finalGrade = getSignalGrade(confidence, avgConf, alignment);
@@ -372,7 +391,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     averageConfluence: Math.round(avgConf * 10) / 10,
     timeframeAnalysis: tfResults,
     sessionWeight: sessionMult, candleQuality: candleQualityMult,
-    method: 'WEIGHTED_MULTI_TF_v6.9.1', generatedAt: now.toISOString(),
+    method: 'WEIGHTED_MULTI_TF_v6.9.2_EMA5-13-55', generatedAt: now.toISOString(),
   };
 }
 

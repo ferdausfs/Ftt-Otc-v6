@@ -1,5 +1,7 @@
-import { HISTORY_CONFIG } from '../config.js';
+// Fix: static import (was dynamic inside fetchExpiryPrice — called every cron tick)
 import { CONFIG } from '../config.js';
+import { HISTORY_CONFIG } from '../config.js';
+import { getApiKeys } from '../fetch/keys.js';
 
 function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
@@ -8,26 +10,27 @@ function pairKey(pair) {
 export async function saveSignalToHistory(signal, pair, isOTC, env) {
   if (!env || !env.SIGNAL_CACHE) return;
   try {
-    const now       = new Date().toISOString();
-    const signalId  = 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-    const bestTF    = signal.bestTimeframe || null;
+    const now      = new Date().toISOString();
+    const signalId = 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    const bestTF   = signal.bestTimeframe || null;
     const entryPrice = signal.recommendations && bestTF
-      ? (signal.recommendations[bestTF.timeframe] && signal.recommendations[bestTF.timeframe].entry ? signal.recommendations[bestTF.timeframe].entry.price : null)
+      ? (signal.recommendations[bestTF.timeframe] && signal.recommendations[bestTF.timeframe].entry
+          ? signal.recommendations[bestTF.timeframe].entry.price : null)
       : null;
     const expiryTime = bestTF && bestTF.expiry ? bestTF.expiry.expiryTime : null;
 
     const record = {
       id: signalId, pair, isOTC,
-      direction:    signal.finalSignal,
-      confidence:   signal.confidence,
-      grade:        signal.grade ? signal.grade.grade : 'N/A',
+      direction:      signal.finalSignal,
+      confidence:     signal.confidence,
+      grade:          signal.grade ? signal.grade.grade : 'N/A',
       entryPrice, expiryTime,
-      bestTF:       bestTF ? bestTF.timeframe : 'N/A',
-      alignment:    signal.alignment,
-      marketRegime: signal.marketRegime,
-      session:      signal.session ? signal.session.sessions : [],
-      sessionQuality: signal.session ? signal.session.quality : 'N/A',
-      aiAgreed:     signal.aiValidation ? signal.aiValidation.combinedAgreed : null,
+      bestTF:         bestTF ? bestTF.timeframe : 'N/A',
+      alignment:      signal.alignment,
+      marketRegime:   signal.marketRegime,
+      session:        signal.session ? signal.session.sessions : [],
+      sessionQuality: signal.session ? signal.session.quality  : 'N/A',
+      aiAgreed:       signal.aiValidation ? signal.aiValidation.combinedAgreed : null,
       timestamp: now, result: null, exitPrice: null, checkedAt: null,
     };
 
@@ -37,12 +40,17 @@ export async function saveSignalToHistory(signal, pair, isOTC, env) {
 
     let history = Array.isArray(existing) ? existing : [];
     history.unshift(record);
-    if (history.length > HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR) history = history.slice(0, HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR);
+    if (history.length > HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR)
+      history = history.slice(0, HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR);
 
     await env.SIGNAL_CACHE.put(histKey, JSON.stringify(history), { expirationTtl: 60*60*24*30 });
 
     if (!isOTC && expiryTime) {
-      await env.SIGNAL_CACHE.put(HISTORY_CONFIG.KV_PENDING_PREFIX + signalId, JSON.stringify(record), { expirationTtl: 60*60*2 });
+      await env.SIGNAL_CACHE.put(
+        HISTORY_CONFIG.KV_PENDING_PREFIX + signalId,
+        JSON.stringify(record),
+        { expirationTtl: 60*60*2 }
+      );
     }
     console.log('Signal saved:', signalId, pair, signal.finalSignal);
   } catch (e) { console.warn('saveSignalToHistory error:', e.message); }
@@ -58,7 +66,9 @@ export async function scheduledTracker(env) {
     for (const kvEntry of pendingList.keys) {
       try {
         const record = await env.SIGNAL_CACHE.get(kvEntry.name, 'json');
-        if (!record || !record.expiryTime) { await env.SIGNAL_CACHE.delete(kvEntry.name); continue; }
+        if (!record || !record.expiryTime) {
+          await env.SIGNAL_CACHE.delete(kvEntry.name); continue;
+        }
         const checkAfterMs = new Date(record.expiryTime).getTime() + HISTORY_CONFIG.RESULT_CHECK_DELAY * 1000;
         if (now < checkAfterMs) continue;
 
@@ -82,23 +92,29 @@ export async function scheduledTracker(env) {
   } catch (e) { console.warn('scheduledTracker error:', e.message); }
 }
 
+// Fix: no longer dynamic import — uses top-level static import
 async function fetchExpiryPrice(pair, expiryTimeISO, env) {
-  const { getApiKeys } = await import('../fetch/keys.js');
   try {
     const apiKeys = getApiKeys(env);
     if (apiKeys.length === 0) return null;
     const symbol = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
     const u = new URL('/time_series', CONFIG.API_BASE_URL);
-    u.searchParams.set('symbol', symbol); u.searchParams.set('interval', '1min');
-    u.searchParams.set('outputsize', '5'); u.searchParams.set('apikey', apiKeys[0]);
+    u.searchParams.set('symbol', symbol);
+    u.searchParams.set('interval', '1min');
+    u.searchParams.set('outputsize', '5');
+    u.searchParams.set('apikey', apiKeys[0]);
     u.searchParams.set('format', 'JSON');
-    const controller = new AbortController(); const tid = setTimeout(() => controller.abort(), 8000);
+
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 8000);
     let res;
     try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
     finally { clearTimeout(tid); }
+
     if (!res.ok) return null;
     const data = await res.json();
     if (!data.values || !Array.isArray(data.values) || data.values.length === 0) return null;
+
     const expiryMs = new Date(expiryTimeISO).getTime();
     let closest = null; let minDiff = Infinity;
     for (const c of data.values) {
@@ -115,7 +131,10 @@ async function updateSignalResult(record, winLoss, exitPrice, env) {
     const existing = await env.SIGNAL_CACHE.get(histKey, 'json');
     if (!Array.isArray(existing)) return;
     for (const sig of existing) {
-      if (sig.id === record.id) { sig.result = winLoss; sig.exitPrice = exitPrice; sig.checkedAt = new Date().toISOString(); break; }
+      if (sig.id === record.id) {
+        sig.result = winLoss; sig.exitPrice = exitPrice;
+        sig.checkedAt = new Date().toISOString(); break;
+      }
     }
     await env.SIGNAL_CACHE.put(histKey, JSON.stringify(existing), { expirationTtl: 60*60*24*30 });
   } catch (e) { console.warn('updateSignalResult error:', e.message); }
@@ -140,13 +159,16 @@ export async function updatePairStats(pair, winLoss, record, env) {
   try {
     const statsKey = HISTORY_CONFIG.KV_STATS_PREFIX + pairKey(pair);
     let stats = await env.SIGNAL_CACHE.get(statsKey, 'json');
-    if (!stats) stats = { pair, totalSignals:0, wins:0, losses:0, winRate:0, sampleSize:0, bySession:{}, byTF:{}, byRegime:{}, lastUpdated:null };
+    if (!stats) stats = {
+      pair, totalSignals:0, wins:0, losses:0, winRate:0,
+      sampleSize:0, bySession:{}, byTF:{}, byRegime:{}, lastUpdated:null,
+    };
 
     stats.totalSignals++;
     if (winLoss === 'WIN')  stats.wins++;
     if (winLoss === 'LOSS') stats.losses++;
-    const decided  = stats.wins + stats.losses;
-    stats.winRate    = decided > 0 ? Math.round((stats.wins / decided) * 1000) / 1000 : 0;
+    const decided   = stats.wins + stats.losses;
+    stats.winRate   = decided > 0 ? Math.round((stats.wins / decided) * 1000) / 1000 : 0;
     stats.sampleSize = Math.min(decided, HISTORY_CONFIG.WIN_RATE_LOOKBACK);
     stats.lastUpdated = new Date().toISOString();
 

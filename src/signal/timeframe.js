@@ -11,10 +11,11 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   const minScoreThreshold = SCORE_THRESHOLDS[assetType] || 3.0;
   const weights = getRegimeWeights(marketRegime || 'RANGING');
 
+  // ── EMA 5 / 13 / 55 (Fibonacci set) ──
   const ema5  = safeLastValue(indicators.ema5);
-  const ema10 = safeLastValue(indicators.ema10);
-  const ema20 = safeLastValue(indicators.ema20);
-  const sma50 = safeLastValue(indicators.sma50);
+  const ema13 = safeLastValue(indicators.ema13);
+  const ema55 = safeLastValue(indicators.ema55);
+
   const rsi   = safeLastValue(indicators.rsi);
   const macdHistData   = safeLastTwo(indicators.macd.histogram);
   const macdHist       = macdHistData.last;
@@ -43,7 +44,7 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   const sr        = indicators.sr  || { supports: [], resistances: [] };
   const fvg       = indicators.fvg || { active: null };
 
-  if (ema5 === null || ema20 === null) {
+  if (ema5 === null || ema55 === null) {
     return {
       direction: 'NO_TRADE', score: { up: 0, down: 0, diff: 0 },
       confluence: 0, reason: 'Insufficient data', timeframe, assetType,
@@ -70,27 +71,64 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   let upScore = 0; let downScore = 0; let upCat = 0; let downCat = 0;
   const catScores = {};
 
-  // ── TREND ──
+  // ── TREND (EMA 5/13/55 Fibonacci stack) ──
   let tU = 0; let tD = 0;
-  if (ema5 > ema20) tU += 1; else if (ema5 < ema20) tD += 1;
-  if (ema10 !== null) { if (ema10 > ema20) tU += 0.5; else if (ema10 < ema20) tD += 0.5; }
-  if (sma50 !== null) { if (lastClose > sma50) tU += 0.75; else if (lastClose < sma50) tD += 0.75; }
-  if (ema10 !== null) {
-    if (ema5 > ema10 && ema10 > ema20) tU += 0.75;
-    else if (ema5 < ema10 && ema10 < ema20) tD += 0.75;
+
+  // Full stack alignment: 5 > 13 > 55 = strong bull
+  if (ema13 !== null && ema55 !== null) {
+    if (ema5 > ema13 && ema13 > ema55)      tU += 2.0;  // Full bull stack
+    else if (ema5 < ema13 && ema13 < ema55) tD += 2.0;  // Full bear stack
+    else if (ema5 > ema13)                   tU += 0.8;  // Fast above mid
+    else if (ema5 < ema13)                   tD += 0.8;  // Fast below mid
+    if (lastClose > ema55)  tU += 0.75;                  // Price above slow filter
+    else if (lastClose < ema55) tD += 0.75;
+  } else {
+    if (ema5 > ema55) tU += 1.0; else if (ema5 < ema55) tD += 1.0;
   }
-  const ema5Vals = safeLastN(indicators.ema5, 3);
-  if (ema5Vals.length >= 3) {
-    const slope = ema5Vals[2] - ema5Vals[0];
+
+  // EMA5/13 crossover detection (early signal)
+  const ema5Prev  = safeLastN(indicators.ema5, 3);
+  const ema13Prev = safeLastN(indicators.ema13, 3);
+  if (ema5Prev.length >= 3 && ema13Prev.length >= 3) {
+    const wasBelowMid = ema5Prev[0] < ema13Prev[0];
+    const nowAboveMid = ema5Prev[2] > ema13Prev[2];
+    if (wasBelowMid && nowAboveMid) tU += 1.2;  // Fresh golden cross
+    const wasAboveMid = ema5Prev[0] > ema13Prev[0];
+    const nowBelowMid = ema5Prev[2] < ema13Prev[2];
+    if (wasAboveMid && nowBelowMid) tD += 1.2;  // Fresh death cross
+  }
+
+  // EMA5 slope
+  if (ema5Prev.length >= 3) {
+    const slope = ema5Prev[2] - ema5Prev[0];
     if (slope > 0) tU += 0.25; else if (slope < 0) tD += 0.25;
   }
+
+  // EMA13 as pullback zone (price near EMA13 in trend = entry signal)
+  if (ema13 !== null && atr !== null && atr > 0) {
+    const dist13 = Math.abs(lastClose - ema13);
+    if (dist13 < atr * 0.5) {
+      if (lastClose > ema55 && ema5 > ema13) tU += 0.6;  // Pullback to EMA13 in uptrend
+      if (lastClose < ema55 && ema5 < ema13) tD += 0.6;  // Pullback to EMA13 in downtrend
+    }
+  }
+
   tU *= weights.trend; tD *= weights.trend;
   upScore += tU; downScore += tD;
   if (tU > tD && Math.abs(tU - tD) >= CONFIG.MIN_CATEGORY_SCORE) upCat++;
   else if (tD > tU && Math.abs(tD - tU) >= CONFIG.MIN_CATEGORY_SCORE) downCat++;
-  catScores.trend = { up: r2(tU), down: r2(tD) };
 
-  // ── MOMENTUM ──
+  // EMA alignment label for display
+  let emaAlignment = 'MIXED';
+  if (ema13 !== null && ema55 !== null) {
+    if (ema5 > ema13 && ema13 > ema55)      emaAlignment = 'FULL_BULL_STACK';
+    else if (ema5 < ema13 && ema13 < ema55) emaAlignment = 'FULL_BEAR_STACK';
+    else if (ema5 > ema13 && lastClose > ema55) emaAlignment = 'BULLISH';
+    else if (ema5 < ema13 && lastClose < ema55) emaAlignment = 'BEARISH';
+  }
+  catScores.trend = { up: r2(tU), down: r2(tD), emaAlignment };
+
+  // ── MOMENTUM (RSI / Williams %R / MFI) ──
   let mU = 0; let mD = 0;
   if (rsi !== null) {
     if (trending === true) {
@@ -178,8 +216,8 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   let bU = 0; let bD = 0;
   if (bbUpper !== null && bbLower !== null && bbMiddle !== null) {
     if (trending === true) {
-      if (lastClose >= bbUpper) { if (ema5 > ema20) bU += 0.75; else bD += 0.5; }
-      else if (lastClose <= bbLower) { if (ema5 < ema20) bD += 0.75; else bU += 0.5; }
+      if (lastClose >= bbUpper) { if (ema5 > ema55) bU += 0.75; else bD += 0.5; }
+      else if (lastClose <= bbLower) { if (ema5 < ema55) bD += 0.75; else bU += 0.5; }
       else if (lastClose > bbMiddle) bU += 0.25; else if (lastClose < bbMiddle) bD += 0.25;
     } else {
       if (lastClose >= bbUpper) bD += 1.0; else if (lastClose <= bbLower) bU += 1.0;
@@ -189,8 +227,8 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
       if (trending !== true) {
         if (bbPercentB > 1.0) bD += 0.5; else if (bbPercentB < 0.0) bU += 0.5;
       } else {
-        if (bbPercentB > 1.0 && ema5 > ema20) bU += 0.25;
-        else if (bbPercentB < 0.0 && ema5 < ema20) bD += 0.25;
+        if (bbPercentB > 1.0 && ema5 > ema55) bU += 0.25;
+        else if (bbPercentB < 0.0 && ema5 < ema55) bD += 0.25;
       }
     }
   }
@@ -236,7 +274,7 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     for (const pat of patterns) {
       let adj = pat.strength;
       if (trending === true) {
-        const isCont = (pat.direction === 'BUY' && ema5 > ema20) || (pat.direction === 'SELL' && ema5 < ema20);
+        const isCont = (pat.direction === 'BUY' && ema5 > ema55) || (pat.direction === 'SELL' && ema5 < ema55);
         adj *= isCont ? 1.3 : 0.6;
       }
       if (pat.direction === 'BUY') pU += adj; else if (pat.direction === 'SELL') pD += adj;
@@ -306,17 +344,12 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
         if (lastCandle.close > candles[candles.length - 5].close) vU += 0.25; else vD += 0.25;
       }
     }
-    if (patterns && patterns.length > 0 && av > 0 && lastCandle.volume > av * 1.3) {
-      for (const vp of patterns) {
-        if (vp.direction === 'BUY') vU += 0.15; else if (vp.direction === 'SELL') vD += 0.15;
-      }
-    }
   }
   vU *= weights.volume; vD *= weights.volume;
   upScore += vU; downScore += vD;
   if (vU > vD && Math.abs(vU - vD) >= CONFIG.MIN_CATEGORY_SCORE) upCat++;
   else if (vD > vU && Math.abs(vD - vU) >= CONFIG.MIN_CATEGORY_SCORE) downCat++;
-  catScores.volume = { up: r2(vU), down: r2(vD), reliable: hasReliableVolume, skipped: !hasReliableVolume ? 'No reliable volume data (forex)' : null };
+  catScores.volume = { up: r2(vU), down: r2(vD), reliable: hasReliableVolume, skipped: !hasReliableVolume ? 'No reliable volume (forex)' : null };
 
   // ── S/R ──
   let srU = 0; let srD = 0; let srContext = 'NO_LEVEL';
@@ -389,10 +422,14 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   else if (scoreDiff >= 4.0 && confluence >= 4) direction = upScore > downScore ? 'BUY' : 'SELL';
   else direction = 'NO_TRADE';
 
-  let emaAlignment = 'MIXED';
-  if (ema10 !== null) {
-    if (ema5 > ema10 && ema10 > ema20) emaAlignment = 'BULLISH';
-    else if (ema5 < ema10 && ema10 < ema20) emaAlignment = 'BEARISH';
+  // ── CONFIRMATION CANDLE CHECK ──
+  // Fix: signal direction e last candle close korche kina check
+  let candleConfirmed = true;
+  if (direction !== 'NO_TRADE') {
+    const lastBullish = lastCandle.close >= lastCandle.open;
+    const bodyRatio   = Math.abs(lastCandle.close - lastCandle.open) / ((lastCandle.high - lastCandle.low) || 0.00001);
+    if (direction === 'BUY'  && !lastBullish && bodyRatio > 0.5) { candleConfirmed = false; upScore   *= 0.85; }
+    if (direction === 'SELL' && lastBullish  && bodyRatio > 0.5) { candleConfirmed = false; downScore *= 0.85; }
   }
 
   return {
@@ -403,8 +440,9 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     volatilityMultiplier: volMult,
     htfPenalty: htfPenalty < 1.0 ? 'COUNTER_TREND_PENALTY' : 'NONE',
     marketContext: trending === true ? 'TRENDING' : trending === false ? 'RANGING' : 'UNKNOWN',
+    candleConfirmed,
     indicators: {
-      ema5: fmt(ema5), ema10: fmt(ema10), ema20: fmt(ema20), sma50: fmt(sma50),
+      ema5: fmt(ema5), ema13: fmt(ema13), ema55: fmt(ema55),
       emaAlignment, rsi: fmt(rsi, 2),
       stochK: fmt(stochK, 2), stochD: fmt(stochD, 2),
       macdHist: fmt(macdHist, 6), macdLine: fmt(macdLine, 6), macdSignal: fmt(macdSignal, 6),

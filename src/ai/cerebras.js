@@ -14,7 +14,7 @@ export async function callCerebrasValidation(pair, assetType, engineSignal, indi
     '',
     '=== INDICATOR SNAPSHOT (best timeframe: ' + engineSignal.bestTF + ') ===',
     'EMA alignment: ' + snap.emaAlignment,
-    'EMA5/10/20: ' + snap.ema5 + ' / ' + snap.ema10 + ' / ' + snap.ema20,
+    'EMA5/13/55: ' + snap.ema5 + ' / ' + snap.ema13 + ' / ' + snap.ema55,
     'RSI(14): ' + snap.rsi,
     'MACD histogram: ' + snap.macdHist,
     'ADX: ' + snap.adx + '  (+DI ' + snap.plusDI + '  -DI ' + snap.minusDI + ')',

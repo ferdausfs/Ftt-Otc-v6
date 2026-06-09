@@ -9,15 +9,15 @@ import {
 import { detectCandlestickPatterns } from './patterns.js';
 import { detectSRLevels, detectFVG } from './sr.js';
 
+// Fix: EMA 5/13/55 (Fibonacci set) replaces 5/10/20/SMA50
 export function calculateAllIndicators(candles) {
   const closes = candles.map(c => c.close);
   const atrArr  = calculateATR(candles, CONFIG.ATR_PERIOD);
   const atrLast = atrArr[atrArr.length - 1] || null;
   return {
     ema5:       calculateEMA(closes, 5),
-    ema10:      calculateEMA(closes, 10),
-    ema20:      calculateEMA(closes, 20),
-    sma50:      calculateSMA(closes, 50),
+    ema13:      calculateEMA(closes, 13),   // was ema10
+    ema55:      calculateEMA(closes, 55),   // was ema20 + sma50 combined
     rsi:        calculateRSI(closes, CONFIG.RSI_PERIOD),
     macd:       calculateMACD(closes),
     atr:        atrArr,
