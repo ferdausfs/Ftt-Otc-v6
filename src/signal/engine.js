@@ -29,7 +29,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   const indicatorCache = {};
   for (const tf of Object.keys(candleData)) {
     if (candleData[tf] && candleData[tf].length > 0) {
-      indicatorCache[tf] = calculateAllIndicators(candleData[tf]);
+      indicatorCache[tf] = calculateAllIndicators(candleData[tf], tf);
     }
   }
 
@@ -390,10 +390,22 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     },
     averageConfluence: Math.round(avgConf * 10) / 10,
     timeframeAnalysis: tfResults,
+    // Structure summary across all TFs
+    structureSummary: Object.fromEntries(
+      Object.entries(tfResults)
+        .filter(([, r]) => r.structure)
+        .map(([tf, r]) => [tf, {
+          bias:    r.structure.bias,
+          bos:     r.structure.bos     ? r.structure.bos.type     : 'NONE',
+          choch:   r.structure.choch   ? r.structure.choch.type   : 'NONE',
+          sweep:   r.structure.sweep   ? r.structure.sweep.type   : 'NONE',
+          applied: r.structureApplied  || 'NONE',
+          multiplier: r.structure.multiplier ? r.structure.multiplier.value : 1.0,
+        }])
+    ),
     sessionWeight: sessionMult, candleQuality: candleQualityMult,
-    method: 'WEIGHTED_MULTI_TF_v6.9.2_EMA5-13-55', generatedAt: now.toISOString(),
+    method: 'WEIGHTED_MULTI_TF_v6.9.2_EMA5-13-55+STRUCTURE', generatedAt: now.toISOString(),
   };
-}
 
 export function findBestTimeframe(tfResults, finalDirection) {
   let bestTF = null; let bestScore = -1; let bestConf = -1;

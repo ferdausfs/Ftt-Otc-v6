@@ -8,16 +8,19 @@ import {
 } from './math.js';
 import { detectCandlestickPatterns } from './patterns.js';
 import { detectSRLevels, detectFVG } from './sr.js';
+import { analyzeStructure } from './structure.js';
 
-// Fix: EMA 5/13/55 (Fibonacci set) replaces 5/10/20/SMA50
-export function calculateAllIndicators(candles) {
-  const closes = candles.map(c => c.close);
+export function calculateAllIndicators(candles, timeframe) {
+  const closes  = candles.map(c => c.close);
   const atrArr  = calculateATR(candles, CONFIG.ATR_PERIOD);
   const atrLast = atrArr[atrArr.length - 1] || null;
+  const tf      = timeframe || '5min';
+
   return {
+    // EMA 5/13/55 — Fibonacci set
     ema5:       calculateEMA(closes, 5),
-    ema13:      calculateEMA(closes, 13),   // was ema10
-    ema55:      calculateEMA(closes, 55),   // was ema20 + sma50 combined
+    ema13:      calculateEMA(closes, 13),
+    ema55:      calculateEMA(closes, 55),
     rsi:        calculateRSI(closes, CONFIG.RSI_PERIOD),
     macd:       calculateMACD(closes),
     atr:        atrArr,
@@ -32,5 +35,10 @@ export function calculateAllIndicators(candles) {
     patterns:   detectCandlestickPatterns(candles),
     sr:         detectSRLevels(candles, atrLast),
     fvg:        detectFVG(candles),
+    // NEW: Market Structure (BOS/CHoCH + Liquidity Sweeps)
+    structure:  analyzeStructure(candles, atrLast, tf),
   };
 }
+
+// Re-export analyzeStructure for direct use in engine
+export { analyzeStructure } from './structure.js';

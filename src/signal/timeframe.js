@@ -413,6 +413,54 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     }
   }
 
+  // ── STRUCTURE QUALIFIER (BOS / CHoCH / Liquidity Sweep) ──
+  // এটা vote না — এটা multiplier। Aligned → boost, counter → heavy penalty
+  const structure     = indicators.structure || null;
+  let structureApplied = 'NONE';
+  let structureMultUp  = 1.0;
+  let structureMultDn  = 1.0;
+
+  if (structure && structure.multiplier && structure.multiplier.direction) {
+    const sDir = structure.multiplier.direction;
+    const sVal = structure.multiplier.value;      // e.g. 1.35 for CHoCH
+    const sOpp = 2.0 - sVal;                       // e.g. 0.65 opposite penalty
+
+    if (sDir === 'BUY') {
+      structureMultUp = sVal;
+      structureMultDn = Math.max(0.45, sOpp);      // Counter SELL gets heavy penalty
+    } else if (sDir === 'SELL') {
+      structureMultDn = sVal;
+      structureMultUp = Math.max(0.45, sOpp);
+    }
+    structureApplied = structure.summary;
+  } else if (structure && structure.bias !== 'NEUTRAL') {
+    // Weak bias even without BOS/CHoCH — mild effect
+    if (structure.bias === 'BULLISH')      { structureMultUp = 1.08; structureMultDn = 0.92; }
+    else if (structure.bias === 'BEARISH') { structureMultDn = 1.08; structureMultUp = 0.92; }
+    structureApplied = 'BIAS_' + structure.bias;
+  }
+
+  upScore   *= structureMultUp;
+  downScore *= structureMultDn;
+
+  // Structure category score add (for display/confluence)
+  if (structure && structure.structureScore) {
+    catScores.structure = {
+      up:      structure.structureScore.up,
+      down:    structure.structureScore.down,
+      bias:    structure.bias,
+      bos:     structure.bos     ? structure.bos.type     : 'NONE',
+      choch:   structure.choch   ? structure.choch.type   : 'NONE',
+      sweep:   structure.sweep   ? structure.sweep.type   : 'NONE',
+      summary: structure.summary,
+    };
+    // Structure category confluence vote
+    if (structure.structureScore.up > structure.structureScore.down &&
+        structure.structureScore.up >= 1.5) upCat++;
+    else if (structure.structureScore.down > structure.structureScore.up &&
+             structure.structureScore.down >= 1.5) downCat++;
+  }
+
   // ── DECISION ──
   const scoreDiff  = Math.abs(upScore - downScore);
   const confluence = Math.max(upCat, downCat);
@@ -422,8 +470,26 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   else if (scoreDiff >= 4.0 && confluence >= 4) direction = upScore > downScore ? 'BUY' : 'SELL';
   else direction = 'NO_TRADE';
 
+  // ── STRUCTURE HARD FILTER ──
+  // CHoCH বা strong BOS এর বিরুদ্ধে signal → block করো
+  // এটাই false signal সবচেয়ে বেশি কমাবে
+  if (direction !== 'NO_TRADE' && structure) {
+    const sDir = structure.multiplier ? structure.multiplier.direction : null;
+    const hasStrongStructure = structure.choch || (structure.bos && structure.multiplier.value >= 1.20);
+
+    if (hasStrongStructure && sDir !== null && sDir !== direction) {
+      // Signal is COUNTER to confirmed BOS/CHoCH → hard block
+      direction = 'NO_TRADE';
+      catScores.structure = { ...(catScores.structure || {}), hardBlocked: true, reason: 'COUNTER_' + structure.summary };
+    }
+
+    // Liquidity sweep opposite direction → soft penalty (already applied via multiplier)
+    if (structure.sweep && structure.sweep.direction !== direction && direction !== 'NO_TRADE') {
+      catScores.structure = { ...(catScores.structure || {}), sweepWarning: 'COUNTER_SWEEP_' + structure.sweep.type };
+    }
+  }
+
   // ── CONFIRMATION CANDLE CHECK ──
-  // Fix: signal direction e last candle close korche kina check
   let candleConfirmed = true;
   if (direction !== 'NO_TRADE') {
     const lastBullish = lastCandle.close >= lastCandle.open;
@@ -435,8 +501,10 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   return {
     direction, timeframe, assetType,
     score: { up: r2(upScore), down: r2(downScore), diff: r2(scoreDiff) },
-    confluence, confluenceDetail: { bullish: upCat, bearish: downCat, total: 11 },
+    confluence, confluenceDetail: { bullish: upCat, bearish: downCat, total: 12 }, // 12 categories now
     categoryScores: catScores,
+    structure: structure || null,                   // Full structure data in output
+    structureApplied,
     volatilityMultiplier: volMult,
     htfPenalty: htfPenalty < 1.0 ? 'COUNTER_TREND_PENALTY' : 'NONE',
     marketContext: trending === true ? 'TRENDING' : trending === false ? 'RANGING' : 'UNKNOWN',
