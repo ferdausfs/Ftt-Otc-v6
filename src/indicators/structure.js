@@ -359,6 +359,19 @@ export function analyzeStructure(candles, atr, timeframe) {
     multiplierValue -= 0.05;
   }
 
+  // Recent BOS event (already faded from current `bos`) aligned with bias =
+  // breakout momentum still fresh → small extra boost
+  if (multiplierDir && !bos) {
+    const alignedRecentBOS = recentEvents.some(ev =>
+      (ev.type === 'RECENT_BULLISH_BOS' && multiplierDir === 'BUY') ||
+      (ev.type === 'RECENT_BEARISH_BOS' && multiplierDir === 'SELL')
+    );
+    if (alignedRecentBOS) {
+      multiplierValue += 0.06;
+      summary += '+RECENT_BOS';
+    }
+  }
+
   // Cap multiplier
   multiplierValue = Math.min(multiplierValue, 1.65);
 
