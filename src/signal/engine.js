@@ -483,5 +483,30 @@ export function buildStructureVerdict(tfResults, finalDirection) {
     overall = 'NEUTRAL';
   }
 
-  return { overall, perTimeframe: perTF };
+  // Independent structure direction — what does structure itself say,
+  // regardless of the engine's finalDirection?
+  let buyVotes = 0, sellVotes = 0, structNeutral = 0;
+  let buyMultSum = 0, sellMultSum = 0;
+  for (const tf of Object.values(perTF)) {
+    if (tf.structureDirection === 'BUY') { buyVotes++; buyMultSum += tf.multiplier; }
+    else if (tf.structureDirection === 'SELL') { sellVotes++; sellMultSum += tf.multiplier; }
+    else structNeutral++;
+  }
+
+  let direction, strength;
+  if (buyVotes > sellVotes) {
+    direction = 'BUY';
+    strength = (buyMultSum / buyVotes) >= 1.15 ? 'STRONG' : 'WEAK';
+  } else if (sellVotes > buyVotes) {
+    direction = 'SELL';
+    strength = (sellMultSum / sellVotes) >= 1.15 ? 'STRONG' : 'WEAK';
+  } else if (buyVotes > 0 && buyVotes === sellVotes) {
+    direction = 'MIXED';
+    strength = 'NEUTRAL';
+  } else {
+    direction = 'NEUTRAL';
+    strength = 'NEUTRAL';
+  }
+
+  return { direction, strength, overall, perTimeframe: perTF };
 }
