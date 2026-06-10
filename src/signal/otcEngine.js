@@ -7,7 +7,7 @@ import { safeLastValue, r2, formatDuration, getCandleCountdown, getNextCandleClo
 import { calculateAllIndicators } from '../indicators/index.js';
 import { calculateATR } from '../indicators/math.js';
 import { analyzeTimeframe } from './timeframe.js';
-import { findBestTimeframe } from './engine.js';
+import { findBestTimeframe, buildStructureVerdict } from './engine.js';
 import { calculateOTCCandleDuration } from '../analysis/duration.js';
 import { analyzeOTCPatterns } from '../analysis/otc.js';
 import { generateEntryReason, recentCandleConsistency, getCandleQualityMultiplier } from '../analysis/filters.js';
@@ -231,6 +231,6 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     recommendations, bestTimeframe: best,
     votes: { BUY: votes.filter(v => v.direction === 'BUY').length, SELL: votes.filter(v => v.direction === 'SELL').length, NO_TRADE: votes.filter(v => v.direction === 'NO_TRADE').length, total: votes.length, weightedBuy: r2(weightedBuy), weightedSell: r2(weightedSell), weightedNoTrade: r2(weightedNoTrade) },
     averageConfluence: Math.round(avgConf * 10) / 10,
-    timeframeAnalysis: tfResults, method: 'OTC_HYBRID_v6.9.1', generatedAt: now.toISOString(),
+    timeframeAnalysis: tfResults, structureVerdict: buildStructureVerdict(tfResults, finalDirection), method: 'OTC_HYBRID_v6.9.1', generatedAt: now.toISOString(),
   };
 }

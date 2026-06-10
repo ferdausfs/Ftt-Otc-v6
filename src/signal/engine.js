@@ -403,6 +403,9 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
           multiplier: r.structure.multiplier ? r.structure.multiplier.value : 1.0,
         }])
     ),
+    // Quick verdict: does market structure support the final signal? Use this
+    // to decide whether to take the trade when structure disagrees.
+    structureVerdict: buildStructureVerdict(tfResults, finalDirection),
     sessionWeight: sessionMult, candleQuality: candleQualityMult,
     method: 'WEIGHTED_MULTI_TF_v6.9.2_EMA5-13-55+STRUCTURE', generatedAt: now.toISOString(),
   };
@@ -430,4 +433,55 @@ export function findBestTimeframe(tfResults, finalDirection) {
     confluence: best.confluence, alignedWithHTF: best.alignedWithHTF, expiry: best.expiry,
     reason: 'Strongest ' + best.direction + ' signal with ' + best.confluence + '/11 confluence',
   };
+}
+
+// ── STRUCTURE VERDICT ─────────────────────────────────────
+// Per timeframe: does market structure (BOS/CHoCH/bias) AGREE, DISAGREE,
+// or stay NEUTRAL relative to the engine's finalDirection?
+// Plus an `overall` summary so the user can quickly decide whether to
+// take the trade when structure conflicts with the signal.
+export function buildStructureVerdict(tfResults, finalDirection) {
+  const perTF = {};
+  let agree = 0, disagree = 0, neutral = 0;
+
+  for (const [tf, r] of Object.entries(tfResults)) {
+    if (!r.structure) continue;
+    const dir = r.structure.multiplier ? r.structure.multiplier.direction : null;
+
+    let verdict;
+    if (finalDirection === 'NO_TRADE' || !dir) {
+      verdict = 'NEUTRAL';
+    } else if (dir === finalDirection) {
+      verdict = 'AGREE';
+    } else {
+      verdict = 'DISAGREE';
+    }
+
+    if (verdict === 'AGREE') agree++;
+    else if (verdict === 'DISAGREE') disagree++;
+    else neutral++;
+
+    perTF[tf] = {
+      verdict,
+      bias: r.structure.bias,
+      structureDirection: dir || 'NONE',
+      multiplier: r.structure.multiplier ? r.structure.multiplier.value : 1.0,
+      detail: r.structure.summary,
+    };
+  }
+
+  let overall;
+  if (finalDirection === 'NO_TRADE') {
+    overall = 'N/A';
+  } else if (disagree > agree) {
+    overall = 'AGAINST';
+  } else if (agree > 0 && disagree === 0) {
+    overall = 'ALIGNED';
+  } else if (agree > 0 && disagree > 0) {
+    overall = 'MIXED';
+  } else {
+    overall = 'NEUTRAL';
+  }
+
+  return { overall, perTimeframe: perTF };
 }
