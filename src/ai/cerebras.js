@@ -112,7 +112,7 @@ async function _callCerebrasAPI(prompt, env) {
       res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
         method: 'POST', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.CEREBRAS_API_KEY },
-        body: JSON.stringify({ model: 'llama-3.3-70b', max_tokens: 120, temperature: 0.05, messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify({ model: 'gpt-oss-120b', max_completion_tokens: 120, temperature: 0.05, messages: [{ role: 'user', content: prompt }] }),
       });
     } finally { clearTimeout(timeoutId); }
 
@@ -137,7 +137,7 @@ async function _callCerebrasAPI(prompt, env) {
       confidence: aiConf,
       reason: parsed.reason || null,
       concerns: parsed.concerns || null,
-      model: 'cerebras/llama-3.3-70b',
+      model: 'cerebras/gpt-oss-120b',
     };
   } catch (e) {
     if (e.name === 'AbortError') return { status: 'TIMEOUT' };
