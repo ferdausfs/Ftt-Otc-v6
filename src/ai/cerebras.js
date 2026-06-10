@@ -112,15 +112,17 @@ async function _callCerebrasAPI(prompt, env) {
       res = await fetch('https://api.cerebras.ai/v1/chat/completions', {
         method: 'POST', signal: controller.signal,
         headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + env.CEREBRAS_API_KEY },
-        body: JSON.stringify({ model: 'gpt-oss-120b', max_completion_tokens: 120, temperature: 0.05, messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify({ model: 'gpt-oss-120b', max_completion_tokens: 500, temperature: 0.05, reasoning_effort: 'low', messages: [{ role: 'user', content: prompt }] }),
       });
     } finally { clearTimeout(timeoutId); }
 
     if (!res.ok) return { status: 'API_ERROR', httpStatus: res.status };
 
     const data = await res.json();
-    let text = (data.choices && data.choices[0] && data.choices[0].message) ? data.choices[0].message.content.trim() : null;
-    if (!text) return { status: 'EMPTY_RESPONSE' };
+    const msg = data.choices && data.choices[0] && data.choices[0].message;
+    let text = msg ? (msg.content || msg.reasoning_content || '') : '';
+    text = (text || '').trim();
+    if (!text) return { status: 'EMPTY_RESPONSE', raw: JSON.stringify(data).slice(0, 200) };
 
     text = text.replace(/```json|```/g, '').trim();
     const jsonMatch = text.match(/\{[\s\S]*\}/);
