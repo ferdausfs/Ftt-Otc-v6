@@ -372,7 +372,8 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (candleQualityMult !== 1.0) filtersApplied.push('CANDLE_QUALITY x' + candleQualityMult.toFixed(2));
   if (isDeadMarket && finalDirection !== 'NO_TRADE') filtersApplied.push('DEAD_MARKET_WARN (AI rescued)');
 
-  const finalGrade = getSignalGrade(confidence, avgConf, alignment);
+  const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
+  const finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
 
   return {
     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
@@ -405,7 +406,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     ),
     // Quick verdict: does market structure support the final signal? Use this
     // to decide whether to take the trade when structure disagrees.
-    structureVerdict: buildStructureVerdict(tfResults, finalDirection),
+    structureVerdict,
     sessionWeight: sessionMult, candleQuality: candleQualityMult,
     method: 'WEIGHTED_MULTI_TF_v6.9.2_EMA5-13-55+STRUCTURE', generatedAt: now.toISOString(),
   };
