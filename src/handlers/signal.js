@@ -12,6 +12,10 @@ import {
   HISTORY_CONFIG,
 } from '../config.js';
 
+function generateSignalId() {
+  return 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+}
+
 export async function handleSignal(pair, env, ctx) {
   const result = await handleSignalRaw(pair, env, ctx);
   return jsonResponse(result);
@@ -70,7 +74,12 @@ export async function handleSignalRaw(pair, env, ctx) {
   for (const tf of timeframes)
     dataStatus[tf] = candleData[tf] ? candleData[tf].length + ' candles' : 'FAILED: ' + (errors[tf] || 'unknown');
 
+  const signalId = signal.finalSignal !== 'NO_TRADE' && env?.SIGNAL_CACHE && ctx
+    ? generateSignalId()
+    : null;
+
   const result = {
+    ...(signalId ? { id: signalId } : {}),
     pair, assetType, marketStatus: 'OPEN', session, isExoticPair: exotic, signal,
     source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
     timestamp: new Date().toISOString(),
@@ -78,8 +87,8 @@ export async function handleSignalRaw(pair, env, ctx) {
     cacheHits, dataStatus,
   };
 
-  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_CACHE && ctx)
-    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env));
+  if (signalId)
+    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId));
 
   return result;
 }
@@ -109,7 +118,12 @@ async function handleSignalRawOTC(pair, env, ctx) {
   for (const tf of timeframes)
     dataStatus[tf] = candleData[tf] ? candleData[tf].length + ' candles (from ' + basePair + ')' : 'FAILED: ' + (errors[tf] || 'unknown');
 
+  const signalId = signal.finalSignal !== 'NO_TRADE' && env?.SIGNAL_CACHE && ctx
+    ? generateSignalId()
+    : null;
+
   const otcResult = {
+    ...(signalId ? { id: signalId } : {}),
     pair, basePair, assetType: ASSET_TYPE_OTC, isOTC: true,
     otcBroker: 'Olymp Trade (synthetic price)', marketStatus: 'OPEN (OTC 24/7)',
     session, isExoticPair: exotic, signal,
@@ -120,8 +134,8 @@ async function handleSignalRawOTC(pair, env, ctx) {
     cacheHits, dataStatus,
   };
 
-  if (signal.finalSignal !== 'NO_TRADE' && env.SIGNAL_CACHE && ctx)
-    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env));
+  if (signalId)
+    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId));
 
   return otcResult;
 }

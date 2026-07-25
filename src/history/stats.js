@@ -7,11 +7,14 @@ function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
 }
 
-export async function saveSignalToHistory(signal, pair, isOTC, env) {
+export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
   if (!env || !env.SIGNAL_CACHE) return;
+  if (!signalId) {
+    console.warn('saveSignalToHistory skipped: missing signalId for ' + pair);
+    return;
+  }
   try {
     const now      = new Date().toISOString();
-    const signalId = 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
     const bestTF   = signal.bestTimeframe || null;
     const entryPrice = signal.recommendations && bestTF
       ? (signal.recommendations[bestTF.timeframe] && signal.recommendations[bestTF.timeframe].entry
