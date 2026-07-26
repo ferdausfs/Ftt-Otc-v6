@@ -7,6 +7,33 @@ function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
 }
 
+// ── DEDUP GUARD CONFIG ────────────────────────────────────────
+// Same pair+direction+nearby-entry within this window is treated
+// as a re-poll of the same setup and not written as a new record.
+const DEDUP_WINDOW_MS            = 30 * 60 * 1000;  // 30 minutes
+const DEDUP_ENTRY_REL_TOLERANCE  = 0.0005;          // 0.05% relative tolerance
+const DEDUP_ENTRY_ABS_TOLERANCE  = 0.0001;          // absolute floor (covers low-price pairs like XRP/DOGE/SOL)
+
+function entriesClose(a, b) {
+  if (a === null || a === undefined || b === null || b === undefined) return false;
+  if (typeof a !== 'number' || typeof b !== 'number' || !isFinite(a) || !isFinite(b)) return false;
+  const diff = Math.abs(a - b);
+  const scale = Math.max(Math.abs(a), Math.abs(b), 1e-9);
+  return diff <= DEDUP_ENTRY_ABS_TOLERANCE || (diff / scale) <= DEDUP_ENTRY_REL_TOLERANCE;
+}
+
+function isDuplicateRecord(newRec, prevRec) {
+  if (!prevRec) return false;
+  if (prevRec.direction !== newRec.direction) return false;
+  if (!entriesClose(newRec.entryPrice, prevRec.entryPrice)) return false;
+  try {
+    const tNew = new Date(newRec.timestamp).getTime();
+    const tOld = new Date(prevRec.timestamp).getTime();
+    if (tNew - tOld < 0 || tNew - tOld > DEDUP_WINDOW_MS) return false;
+  } catch (e) { return false; }
+  return true;
+}
+
 export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
   if (!env || !env.SIGNAL_CACHE) return;
   if (!signalId) {
@@ -42,6 +69,34 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
     try { existing = await env.SIGNAL_CACHE.get(histKey, 'json'); } catch (e) { existing = null; }
 
     let history = Array.isArray(existing) ? existing : [];
+
+    // ── DEDUP GUARD ────────────────────────────────────────────
+    // Check the most recent N records (not just [0]) to be robust to
+    // out-of-order writes. Skip past any records with stale/undecidable
+    // metadata; we only need to catch re-polls (which always arrive at the
+    // top of the history within seconds/minutes of the original).
+    const DEDUP_CHECK_DEPTH = 5;
+    let duplicateOf = null;
+    for (let i = 0; i < Math.min(DEDUP_CHECK_DEPTH, history.length); i++) {
+      const prev = history[i];
+      if (!prev || !prev.timestamp) continue;
+      if (isDuplicateRecord(record, prev)) { duplicateOf = prev; break; }
+    }
+
+    if (duplicateOf) {
+      // Option (a): simply skip the duplicate. Do NOT write a new KV entry,
+      // do NOT register a new pending-expiry record. This saves KV writes
+      // (critical on the CF Workers Free plan — 1000 writes/day/account)
+      // and prevents re-poll inflation of win/loss streaks.
+      //
+      // We do NOT mutate/refresh the existing record — the first recorded
+      // entry remains the source of truth.
+      console.log('Signal deduped (re-poll):', signalId, pair, signal.finalSignal,
+                  '-> existing id', duplicateOf.id,
+                  '(entry', entryPrice, 'expiry', expiryTime, ')');
+      return { deduped: true, duplicateOf: duplicateOf.id };
+    }
+
     history.unshift(record);
     if (history.length > HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR)
       history = history.slice(0, HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR);
@@ -56,8 +111,14 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
       );
     }
     console.log('Signal saved:', signalId, pair, signal.finalSignal);
+    return { deduped: false };
   } catch (e) { console.warn('saveSignalToHistory error:', e.message); }
 }
+
+// Test-only export (not used at runtime) so a local node script can
+// exercise isDuplicateRecord / entriesClose without reimplementing them.
+export const __dedupTest = { entriesClose, isDuplicateRecord,
+                              DEDUP_WINDOW_MS, DEDUP_ENTRY_REL_TOLERANCE, DEDUP_ENTRY_ABS_TOLERANCE };
 
 export async function scheduledTracker(env) {
   if (!env || !env.SIGNAL_CACHE) return;
