@@ -129,6 +129,11 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     finalDirection = tie.direction; confidence = tie.confidence;
   }
 
+  // B5: OTC anchor — value straight out of the weighted vote, before ANY
+  // adjustment (MIXED zeroing, alignment bonus, pattern/time/consistency
+  // penalties, exotic penalty, AI boost). Mirrors engine.js rawConfidence.
+  const rawConfidence = confidence;
+
   if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
   confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);
 
@@ -220,6 +225,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   const finalGrade = getSignalGrade(confidence, avgConf, alignment);
   return {
     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
+    coreConfidence: rawConfidence,   // B5 — see anchor above
     assetType: ASSET_TYPE_OTC, isOTC: true,
     otcNote: 'Synthetic pair — mean reversion + price action. Olymp Trade.',
     marketRegime: 'OTC_SYNTHETIC',

@@ -1,0 +1,321 @@
+{
+  "input": "pooled_dedup.json",
+  "rows_total": 214,
+  "rows_decided": 92,
+  "window": {
+    "from": "2026-06-23T00:31:19.295000+00:00",
+    "to": "2026-07-28T10:36:01.607000+00:00"
+  },
+  "loss_streak_limit": 2,
+  "configs": [
+    {
+      "config": "CB 2h",
+      "clock": "signal",
+      "cooldown_hours": 2,
+      "trips": 14,
+      "emitted_rows": 160,
+      "shadow_rows": 54,
+      "n_decided": 49,
+      "wins": 21,
+      "losses": 28,
+      "win_rate_pct": 42.9,
+      "pair_max_loss_streak": 4,
+      "cross_pair_loss_streak": 7,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 4,
+        "BTC/USD": 2,
+        "ETH/USD": 3
+      },
+      "counterfactual_shadow": {
+        "n_decided": 43,
+        "wins": 18,
+        "losses": 25,
+        "win_rate_pct": 41.9
+      },
+      "wr_delta_vs_baseline_pp": 0.5,
+      "volume_retained_pct": 53.3
+    },
+    {
+      "config": "CB 6h",
+      "clock": "signal",
+      "cooldown_hours": 6,
+      "trips": 10,
+      "emitted_rows": 118,
+      "shadow_rows": 96,
+      "n_decided": 43,
+      "wins": 20,
+      "losses": 23,
+      "win_rate_pct": 46.5,
+      "pair_max_loss_streak": 3,
+      "cross_pair_loss_streak": 7,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 3,
+        "BTC/USD": 2,
+        "ETH/USD": 2
+      },
+      "counterfactual_shadow": {
+        "n_decided": 49,
+        "wins": 19,
+        "losses": 30,
+        "win_rate_pct": 38.8
+      },
+      "wr_delta_vs_baseline_pp": 4.1,
+      "volume_retained_pct": 46.7
+    },
+    {
+      "config": "CB 12h",
+      "clock": "signal",
+      "cooldown_hours": 12,
+      "trips": 10,
+      "emitted_rows": 93,
+      "shadow_rows": 121,
+      "n_decided": 43,
+      "wins": 20,
+      "losses": 23,
+      "win_rate_pct": 46.5,
+      "pair_max_loss_streak": 3,
+      "cross_pair_loss_streak": 7,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 3,
+        "BTC/USD": 2,
+        "ETH/USD": 2
+      },
+      "counterfactual_shadow": {
+        "n_decided": 49,
+        "wins": 19,
+        "losses": 30,
+        "win_rate_pct": 38.8
+      },
+      "wr_delta_vs_baseline_pp": 4.1,
+      "volume_retained_pct": 46.7
+    },
+    {
+      "config": "CB 24h",
+      "clock": "signal",
+      "cooldown_hours": 24,
+      "trips": 10,
+      "emitted_rows": 80,
+      "shadow_rows": 134,
+      "n_decided": 30,
+      "wins": 10,
+      "losses": 20,
+      "win_rate_pct": 33.3,
+      "pair_max_loss_streak": 3,
+      "cross_pair_loss_streak": 7,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 3,
+        "BTC/USD": 3,
+        "ETH/USD": 2
+      },
+      "counterfactual_shadow": {
+        "n_decided": 62,
+        "wins": 29,
+        "losses": 33,
+        "win_rate_pct": 46.8
+      },
+      "wr_delta_vs_baseline_pp": -9.1,
+      "volume_retained_pct": 32.6
+    },
+    {
+      "config": "CB 2h",
+      "clock": "result",
+      "cooldown_hours": 2,
+      "trips": 20,
+      "emitted_rows": 166,
+      "shadow_rows": 48,
+      "n_decided": 64,
+      "wins": 26,
+      "losses": 38,
+      "win_rate_pct": 40.6,
+      "pair_max_loss_streak": 5,
+      "cross_pair_loss_streak": 10,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 5,
+        "BTC/USD": 3,
+        "ETH/USD": 5
+      },
+      "counterfactual_shadow": {
+        "n_decided": 28,
+        "wins": 13,
+        "losses": 15,
+        "win_rate_pct": 46.4
+      },
+      "wr_delta_vs_baseline_pp": -1.8,
+      "volume_retained_pct": 69.6
+    },
+    {
+      "config": "CB 6h",
+      "clock": "result",
+      "cooldown_hours": 6,
+      "trips": 16,
+      "emitted_rows": 122,
+      "shadow_rows": 92,
+      "n_decided": 56,
+      "wins": 23,
+      "losses": 33,
+      "win_rate_pct": 41.1,
+      "pair_max_loss_streak": 5,
+      "cross_pair_loss_streak": 8,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 5,
+        "BTC/USD": 3,
+        "ETH/USD": 3
+      },
+      "counterfactual_shadow": {
+        "n_decided": 36,
+        "wins": 16,
+        "losses": 20,
+        "win_rate_pct": 44.4
+      },
+      "wr_delta_vs_baseline_pp": -1.3,
+      "volume_retained_pct": 60.9
+    },
+    {
+      "config": "CB 12h",
+      "clock": "result",
+      "cooldown_hours": 12,
+      "trips": 16,
+      "emitted_rows": 106,
+      "shadow_rows": 108,
+      "n_decided": 56,
+      "wins": 23,
+      "losses": 33,
+      "win_rate_pct": 41.1,
+      "pair_max_loss_streak": 5,
+      "cross_pair_loss_streak": 8,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 5,
+        "BTC/USD": 3,
+        "ETH/USD": 3
+      },
+      "counterfactual_shadow": {
+        "n_decided": 36,
+        "wins": 16,
+        "losses": 20,
+        "win_rate_pct": 44.4
+      },
+      "wr_delta_vs_baseline_pp": -1.3,
+      "volume_retained_pct": 60.9
+    },
+    {
+      "config": "CB 24h",
+      "clock": "result",
+      "cooldown_hours": 24,
+      "trips": 13,
+      "emitted_rows": 103,
+      "shadow_rows": 111,
+      "n_decided": 41,
+      "wins": 15,
+      "losses": 26,
+      "win_rate_pct": 36.6,
+      "pair_max_loss_streak": 4,
+      "cross_pair_loss_streak": 8,
+      "per_pair_max_streak": {
+        "XRP/USD": 3,
+        "SOL/USD": 2,
+        "ADA/USD": 2,
+        "BNB/USD": 4,
+        "BTC/USD": 3,
+        "ETH/USD": 2
+      },
+      "counterfactual_shadow": {
+        "n_decided": 51,
+        "wins": 24,
+        "losses": 27,
+        "win_rate_pct": 47.1
+      },
+      "wr_delta_vs_baseline_pp": -5.8,
+      "volume_retained_pct": 44.6
+    }
+  ],
+  "baseline": {
+    "config": "Baseline (no CB)",
+    "n_decided": 92,
+    "wins": 39,
+    "losses": 53,
+    "win_rate_pct": 42.4,
+    "pair_max_loss_streak": 6,
+    "cross_pair_loss_streak": 11,
+    "per_pair_max_streak": {
+      "XRP/USD": 3,
+      "SOL/USD": 2,
+      "ADA/USD": 2,
+      "BNB/USD": 6,
+      "BTC/USD": 3,
+      "ETH/USD": 4
+    }
+  },
+  "result_clock_deviation": {
+    "note": "Production applies a CB update only when the result is actually resolvable (expiry + 90s), not at signal time. On that clock the CB 6h WR is 41.1% vs the 46.5% A2 reported on the signal clock \u2014 a 5.4pp shortfall, outside the +/-3pp tolerance. Reported, not hidden.",
+    "signal_clock_wr": 46.5,
+    "result_clock_wr": 41.1,
+    "delta_pp": 5.4,
+    "within_3pp_tolerance": false
+  },
+  "reproduction_checks": [
+    {
+      "name": "baseline WR 42.4% +/-3pp",
+      "expected": 42.4,
+      "actual": 42.4,
+      "pass": true
+    },
+    {
+      "name": "baseline n = 92",
+      "expected": 92,
+      "actual": 92,
+      "pass": true
+    },
+    {
+      "name": "baseline cross-pair loss streak = 11 (A2 trend-table metric)",
+      "expected": 11,
+      "actual": 11,
+      "pass": true
+    },
+    {
+      "name": "baseline per-pair max loss streak (informational, no A2 target)",
+      "expected": "n/a",
+      "actual": 6,
+      "pass": true
+    },
+    {
+      "name": "CB 6h [signal clock] WR 46.5% +/-3pp",
+      "expected": 46.5,
+      "actual": 46.5,
+      "pass": true
+    },
+    {
+      "name": "CB 6h [signal clock] pair-max loss streak = 3",
+      "expected": 3,
+      "actual": 3,
+      "pass": true
+    },
+    {
+      "name": "CB 6h [signal clock] n ~= 43 (+/-5)",
+      "expected": 43,
+      "actual": 43,
+      "pass": true
+    }
+  ],
+  "reproduction_all_pass": true
+}

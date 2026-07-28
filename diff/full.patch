@@ -1,0 +1,825 @@
+diff --git a/src/config.js b/src/config.js
+index d34509c..a4f3b86 100644
+--- a/src/config.js
++++ b/src/config.js
+@@ -6,6 +6,7 @@ export const CONFIG = {
+   API_BASE_URL: 'https://api.twelvedata.com',
+   REFRESH_INTERVAL: 60000,
+   REQUEST_TIMEOUT: 12000,
++  // MAX_RETRIES: reserved (fetch layer now uses apiKeys.length; kept for backward-compat)
+   MAX_RETRIES: 3,
+ 
+   MIN_CONFLUENCE: 5,
+@@ -16,7 +17,9 @@ export const CONFIG = {
+   NEWS_BLACKOUT_MINUTES: 15,
+   BATCH_MAX_PAIRS: 3,
+ 
+-  CACHE_TTL: { '1min': 60, '5min': 300, '15min': 900 },
++  // B0-4: 1min TTL 60 -> 120 (halves 1min API pull rate; cron is */2 so a
++  // 120s cache still serves fresh-enough candles for every scheduled tick)
++  CACHE_TTL: { '1min': 120, '5min': 300, '15min': 900 },
+ 
+   RATE_LIMIT_MAX_REQUESTS: 30,
+   RATE_LIMIT_WINDOW_SECONDS: 60,
+@@ -91,6 +94,9 @@ export const HISTORY_CONFIG = {
+   KV_SIGNAL_PREFIX:               'sig:',
+   KV_STATS_PREFIX:                'stats:',
+   KV_PENDING_PREFIX:              'pending:',
++  // B0-3: pending records live 2h; retry-cap gives up after 15 failed checks
++  PENDING_TTL_MS:                 2 * 60 * 60 * 1000,
++  PENDING_MAX_CHECKS:             15,
+ };
+ 
+ // ── SESSION WEIGHTS ─────────────────────────────────────────
+diff --git a/src/fetch/candles.js b/src/fetch/candles.js
+index 10ef777..cb14be4 100644
+--- a/src/fetch/candles.js
++++ b/src/fetch/candles.js
+@@ -1,5 +1,6 @@
+ import { CONFIG, TIMEFRAME_MAP, ASSET_TYPE } from '../config.js';
+-import { getApiKeys } from './keys.js';
++import { getApiKeys, getNextRotationIndex } from './keys.js';
++import { incrementQuota } from '../history/quota.js';
+ 
+ export async function fetchCandlesWithCache(pair, tf, limit, env, ctx, assetType) {
+   const cacheKey = 'c:' + pair + ':' + tf + ':' + limit;
+@@ -31,11 +32,16 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
+ 
+   const symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
+   const interval = TIMEFRAME_MAP[tf] || tf;
+-  const maxAttempts = Math.min(apiKeys.length, CONFIG.MAX_RETRIES);
++
++  // B0-6: no MAX_RETRIES cap — every provisioned key gets a chance. Rotation
++  // start index comes from KV so load spreads instead of always hitting key #1.
++  const startIdx    = await getNextRotationIndex(env, apiKeys.length);
++  const maxAttempts = apiKeys.length;
+   let lastError = 'Unknown error';
+ 
+   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+-    const apiKey = apiKeys[attempt % apiKeys.length];
++    const keyIdx = (startIdx + attempt) % apiKeys.length;
++    const apiKey = apiKeys[keyIdx];
+     try {
+       const u = new URL('/time_series', CONFIG.API_BASE_URL);
+       u.searchParams.set('symbol',     symbol);
+@@ -44,6 +50,8 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
+       u.searchParams.set('apikey',     apiKey);
+       u.searchParams.set('format',     'JSON');
+ 
++      await incrementQuota(env);   // B0-4: +1 per HTTP attempt
++
+       const controller = new AbortController();
+       const timeoutId  = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT);
+       let res;
+@@ -52,13 +60,23 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
+       } finally { clearTimeout(timeoutId); }
+ 
+       if (!res.ok) {
+-        if (res.status === 429) { lastError = 'TwelveData rate limited'; continue; }
+-        lastError = 'HTTP ' + res.status; continue;
++        const bodyText = await res.text().catch(() => '');
++        console.warn('fetchCandles non-ok pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx +
++                     ' attempt=' + attempt + ' status=' + res.status + ' body=' + bodyText.slice(0, 200));
++        if (res.status === 429) { lastError = 'TwelveData rate limited (key#' + keyIdx + ')'; continue; }
++        lastError = 'HTTP ' + res.status + ' (key#' + keyIdx + ')'; continue;
+       }
+ 
+       const data = await res.json();
+-      if (data.status === 'error') { lastError = data.message || 'API error'; continue; }
+-      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) { lastError = 'No data'; continue; }
++      if (data.status === 'error') {
++        console.warn('fetchCandles td-error pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx +
++                     ' code=' + data.code + ' msg=' + String(data.message || '').slice(0, 200));
++        lastError = (data.message || 'API error') + ' (key#' + keyIdx + ')'; continue;
++      }
++      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) {
++        console.warn('fetchCandles empty pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx);
++        lastError = 'No data (key#' + keyIdx + ')'; continue;
++      }
+ 
+       const candles = data.values.map(c => ({
+         datetime: c.datetime,
+@@ -70,12 +88,14 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
+       })).reverse();
+ 
+       const valid = candles.every(c => isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
+-      if (!valid) { lastError = 'Invalid data'; continue; }
++      if (!valid) { lastError = 'Invalid data (key#' + keyIdx + ')'; continue; }
+       return candles;
+     } catch (e) {
+-      lastError = e.name === 'AbortError' ? 'Timeout' : e.message;
++      console.warn('fetchCandles exception pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx +
++                   ' attempt=' + attempt + ' msg=' + e.message);
++      lastError = (e.name === 'AbortError' ? 'Timeout' : e.message) + ' (key#' + keyIdx + ')';
+       continue;
+     }
+   }
+-  return { error: 'All ' + maxAttempts + ' attempts failed: ' + lastError };
++  return { error: 'All ' + maxAttempts + ' attempts failed (startIdx=' + startIdx + '): ' + lastError };
+ }
+diff --git a/src/fetch/keys.js b/src/fetch/keys.js
+index 001115b..b32c131 100644
+--- a/src/fetch/keys.js
++++ b/src/fetch/keys.js
+@@ -1,24 +1,87 @@
+-import { CONFIG } from '../config.js';
++/**
++ * TwelveData API key loading + rotation.
++ *
++ * B0-6: no upper cap anywhere. Whatever number of keys is provisioned in the
++ * environment is what gets used — 19 today, 25 tomorrow, no code change.
++ */
+ 
+ export function getApiKeys(env) {
++  if (!env) return [];
++
++  // Format 1: JSON array in TWELVEDATA_API_KEYS or TWELVEDATA_API_KEY
+   const jsonSources = [env.TWELVEDATA_API_KEYS, env.TWELVEDATA_API_KEY];
+   for (const src of jsonSources) {
+     if (src && typeof src === 'string' && src.trim().startsWith('[')) {
+       try {
+         const keys = JSON.parse(src);
+         if (Array.isArray(keys) && keys.length > 0) {
+-          const filtered = keys.map(k => k.trim()).filter(k => k.length > 0);
+-          if (filtered.length > 0) return filtered;
++          const filtered = keys.map(k => String(k).trim()).filter(k => k.length > 0);
++          if (filtered.length > 0) return dedupe(filtered);
+         }
+       } catch (e) { console.warn('API key JSON parse error:', e.message); }
+     }
+   }
+-  const keys = [];
+-  for (let i = 1; i <= 10; i++) {
+-    const k = env['TWELVEDATA_API_KEY_' + i];
+-    if (k && typeof k === 'string' && k.trim().length > 0) keys.push(k.trim());
++
++  // Format 2: numbered vars TWELVEDATA_API_KEY_1, _2, ... — scan the whole env.
++  // The old fixed-bound counting loop (which silently dropped key 11+) is gone.
++  // Gaps tolerated, order by numeric index.
++  const numbered = [];
++  for (const envKey of Object.keys(env)) {
++    const m = envKey.match(/^TWELVEDATA_API_KEY_(\d+)$/);
++    if (m) {
++      const val = env[envKey];
++      if (val && typeof val === 'string' && val.trim().length > 0) {
++        numbered.push({ idx: parseInt(m[1], 10), key: val.trim() });
++      }
++    }
++  }
++  if (numbered.length > 0) {
++    numbered.sort((a, b) => a.idx - b.idx);
++    return dedupe(numbered.map(n => n.key));
++  }
++
++  // Format 3: single fallback
++  if (env.TWELVEDATA_API_KEY && typeof env.TWELVEDATA_API_KEY === 'string'
++      && !env.TWELVEDATA_API_KEY.trim().startsWith('[')) {
++    const single = env.TWELVEDATA_API_KEY.trim();
++    return single.length > 0 ? [single] : [];
+   }
+-  if (keys.length === 0 && env.TWELVEDATA_API_KEY && !env.TWELVEDATA_API_KEY.trim().startsWith('['))
+-    keys.push(env.TWELVEDATA_API_KEY.trim());
+-  return keys;
++  return [];
++}
++
++function dedupe(arr) {
++  const seen = new Set(); const out = [];
++  for (const k of arr) { if (!seen.has(k)) { seen.add(k); out.push(k); } }
++  return out;
++}
++
++/**
++ * Round-robin starting index, persisted in KV so load spreads across every key
++ * instead of hammering key #1 and only falling back on failure.
++ *
++ * Race is harmless: worst case two concurrent workers pick the same startIdx
++ * once; the distribution still spreads across all keys over time.
++ */
++export async function getNextRotationIndex(env, keyCount) {
++  if (!env || !env.SIGNAL_CACHE || !keyCount || keyCount <= 1) return 0;
++  try {
++    const raw = await env.SIGNAL_CACHE.get('rr:idx');
++    const parsed = parseInt(raw || '0', 10);
++    const cur = Number.isFinite(parsed) ? parsed : 0;
++    const next = (cur + 1) % keyCount;
++    // fire-and-forget write — never block a fetch on the counter
++    const p = env.SIGNAL_CACHE.put('rr:idx', String(next), { expirationTtl: 7 * 24 * 3600 });
++    if (p && typeof p.catch === 'function') p.catch(() => {});
++    return ((cur % keyCount) + keyCount) % keyCount;
++  } catch (e) { return 0; }
++}
++
++/** Read-only view of the rotation counter (for /health). */
++export async function readRotationIndex(env) {
++  if (!env || !env.SIGNAL_CACHE) return -1;
++  try {
++    const raw = await env.SIGNAL_CACHE.get('rr:idx');
++    const parsed = parseInt(raw || '0', 10);
++    return Number.isFinite(parsed) ? parsed : 0;
++  } catch (e) { return -1; }
+ }
+diff --git a/src/handlers/health.js b/src/handlers/health.js
+index 4857a5d..7cb6c61 100644
+--- a/src/handlers/health.js
++++ b/src/handlers/health.js
+@@ -2,11 +2,12 @@ import { CONFIG, ASSET_TYPE, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES
+ import { jsonResponse } from '../utils/helpers.js';
+ import { sanitizePair, isExoticPair } from '../utils/pairs.js';
+ import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlackout } from '../utils/session.js';
+-import { getApiKeys } from '../fetch/keys.js';
++import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
+ import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stats.js';
++import { readQuota } from '../history/quota.js';
+ 
+ // ── HEALTH ──────────────────────────────────
+-export function handleHealth(env) {
++export async function handleHealth(env) {
+   const keyCount  = getApiKeys(env).length;
+   const keySource = env.TWELVEDATA_API_KEYS ? 'TWELVEDATA_API_KEYS (JSON array)' : 'TWELVEDATA_API_KEY_N (individual vars)';
+   const session   = detectTradingSession();
+@@ -14,9 +15,16 @@ export function handleHealth(env) {
+   const forexOpen = isForexMarketOpen();
+   const holiday   = getForexHoliday();
+ 
++  // B0-4 / B0-6 instrumentation
++  const quotaUsedToday = await readQuota(env);
++  const rotationIdx    = await readRotationIndex(env);
++
+   return jsonResponse({
+     status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
+     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
++    apiKeysLoaded: keyCount,
++    quotaUsedToday,
++    rotationIdx,
+     bindings: {
+       kvCache:     env.SIGNAL_CACHE      ? 'ready' : 'NOT CONFIGURED',
+       rateLimiter: env.RATE_LIMITER      ? 'ready' : 'KV fallback',
+diff --git a/src/handlers/signal.js b/src/handlers/signal.js
+index 85fd81b..a126b52 100644
+--- a/src/handlers/signal.js
++++ b/src/handlers/signal.js
+@@ -6,6 +6,7 @@ import { fetchCandlesWithCache } from '../fetch/candles.js';
+ import { buildMultiTimeframeSignal } from '../signal/engine.js';
+ import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
+ import { saveSignalToHistory } from '../history/stats.js';
++import { isTripped } from '../history/circuitBreaker.js';
+ import { detectCorrelationConflicts } from '../analysis/filters.js';
+ import {
+   VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS,
+@@ -16,6 +17,17 @@ function generateSignalId() {
+   return 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+ }
+ 
++/**
++ * B5 §3.2 — how fresh was the candle data behind this signal?
++ * 3 timeframes are fetched, so cacheHits is 0..3.
++ */
++function classifyEntrySource(cacheHits) {
++  if (cacheHits === 0) return 'FRESH_API';
++  if (cacheHits === 1 || cacheHits === 2) return 'CACHE_PARTIAL';
++  if (cacheHits === 3) return 'CACHE_ALL';
++  return null;
++}
++
+ export async function handleSignal(pair, env, ctx) {
+   const result = await handleSignalRaw(pair, env, ctx);
+   return jsonResponse(result);
+@@ -74,6 +86,39 @@ export async function handleSignalRaw(pair, env, ctx) {
+   for (const tf of timeframes)
+     dataStatus[tf] = candleData[tf] ? candleData[tf].length + ' candles' : 'FAILED: ' + (errors[tf] || 'unknown');
+ 
++  const entrySource = classifyEntrySource(cacheHits);
++
++  // ── B2: per-pair circuit breaker (check site 1 of 2) ──
++  // Cooldown suppresses the trade but the row is still persisted with
++  // cbShadow:true (§3.3) so the counterfactual WR stays measurable.
++  const cb = signal.finalSignal !== 'NO_TRADE'
++    ? await isTripped(pair, env)
++    : { tripped: false };
++
++  if (cb.tripped) {
++    const wouldBeSignal = signal.finalSignal;
++    signal.finalSignal    = 'NO_TRADE';
++    signal.circuitBreaker = {
++      tripped: true, cooldownUntil: cb.cooldownUntil,
++      lossStreak: cb.lossStreak, wouldBeSignal, cbShadow: true,
++    };
++    const shadowId = env?.SIGNAL_CACHE && ctx ? generateSignalId() : null;
++    if (shadowId) {
++      ctx.waitUntil(saveSignalToHistory(
++        { ...signal, finalSignal: wouldBeSignal, cbShadow: true },
++        pair, false, env, shadowId, entrySource));
++    }
++    return {
++      ...(shadowId ? { id: shadowId } : {}),
++      pair, assetType, marketStatus: 'OPEN', session, isExoticPair: exotic, signal,
++      circuitBreaker: signal.circuitBreaker,
++      source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
++      timestamp: new Date().toISOString(),
++      nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
++      cacheHits, entrySource, dataStatus,
++    };
++  }
++
+   const signalId = signal.finalSignal !== 'NO_TRADE' && env?.SIGNAL_CACHE && ctx
+     ? generateSignalId()
+     : null;
+@@ -84,11 +129,11 @@ export async function handleSignalRaw(pair, env, ctx) {
+     source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
+     timestamp: new Date().toISOString(),
+     nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
+-    cacheHits, dataStatus,
++    cacheHits, entrySource, dataStatus,
+   };
+ 
+   if (signalId)
+-    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId));
++    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId, entrySource));
+ 
+   return result;
+ }
+@@ -118,6 +163,40 @@ async function handleSignalRawOTC(pair, env, ctx) {
+   for (const tf of timeframes)
+     dataStatus[tf] = candleData[tf] ? candleData[tf].length + ' candles (from ' + basePair + ')' : 'FAILED: ' + (errors[tf] || 'unknown');
+ 
++  const entrySource = classifyEntrySource(cacheHits);
++
++  // ── B2: per-pair circuit breaker (check site 2 of 2, OTC) ──
++  const cb = signal.finalSignal !== 'NO_TRADE'
++    ? await isTripped(pair, env)
++    : { tripped: false };
++
++  if (cb.tripped) {
++    const wouldBeSignal = signal.finalSignal;
++    signal.finalSignal    = 'NO_TRADE';
++    signal.circuitBreaker = {
++      tripped: true, cooldownUntil: cb.cooldownUntil,
++      lossStreak: cb.lossStreak, wouldBeSignal, cbShadow: true,
++    };
++    const shadowId = env?.SIGNAL_CACHE && ctx ? generateSignalId() : null;
++    if (shadowId) {
++      ctx.waitUntil(saveSignalToHistory(
++        { ...signal, finalSignal: wouldBeSignal, cbShadow: true },
++        pair, true, env, shadowId, entrySource));
++    }
++    return {
++      ...(shadowId ? { id: shadowId } : {}),
++      pair, basePair, assetType: ASSET_TYPE_OTC, isOTC: true,
++      otcBroker: 'Olymp Trade (synthetic price)', marketStatus: 'OPEN (OTC 24/7)',
++      session, isExoticPair: exotic, signal,
++      circuitBreaker: signal.circuitBreaker,
++      source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
++      dataNote: 'Candle data from ' + basePair + ' (real market). OTC price may differ.',
++      timestamp: new Date().toISOString(),
++      nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
++      cacheHits, entrySource, dataStatus,
++    };
++  }
++
+   const signalId = signal.finalSignal !== 'NO_TRADE' && env?.SIGNAL_CACHE && ctx
+     ? generateSignalId()
+     : null;
+@@ -131,11 +210,11 @@ async function handleSignalRawOTC(pair, env, ctx) {
+     dataNote: 'Candle data from ' + basePair + ' (real market). OTC price may differ.',
+     timestamp: new Date().toISOString(),
+     nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
+-    cacheHits, dataStatus,
++    cacheHits, entrySource, dataStatus,
+   };
+ 
+   if (signalId)
+-    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId));
++    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId, entrySource));
+ 
+   return otcResult;
+ }
+diff --git a/src/history/circuitBreaker.js b/src/history/circuitBreaker.js
+new file mode 100644
+index 0000000..ada78d9
+--- /dev/null
++++ b/src/history/circuitBreaker.js
+@@ -0,0 +1,63 @@
++/**
++ * B2 — per-pair circuit breaker.
++ *
++ * State: KV key `cb:<PAIR_KEY>` = { lossStreak, cooldownUntil, updatedAt }
++ *   - LOSS  -> lossStreak++, and at >= LOSS_STREAK_LIMIT sets a fixed cooldown
++ *   - WIN   -> lossStreak = 0, cooldown cleared
++ *   - UNKNOWN -> ignored entirely (an unresolved result is not evidence)
++ *
++ * While a pair is in cooldown the handler emits NO_TRADE but still persists the
++ * would-be signal with cbShadow:true, so the counterfactual stays measurable
++ * (shadow rows are excluded from updatePairStats and therefore from WR).
++ */
++
++const CB_PREFIX = 'cb:';
++const LOSS_STREAK_LIMIT = 2;
++const COOLDOWN_MS = 6 * 60 * 60 * 1000;   // 6h fixed
++const CB_TTL_S = 7 * 24 * 3600;
++
++function key(pair) {
++  return CB_PREFIX + String(pair).replace(/\//g, '_').replace(/-/g, '_').toUpperCase();
++}
++
++function emptyState() {
++  return { lossStreak: 0, cooldownUntil: null, updatedAt: null };
++}
++
++export async function getCBState(pair, env) {
++  if (!env || !env.SIGNAL_CACHE) return emptyState();
++  try {
++    const s = await env.SIGNAL_CACHE.get(key(pair), 'json');
++    return s && typeof s === 'object' ? s : emptyState();
++  } catch (e) { return emptyState(); }
++}
++
++export async function isTripped(pair, env) {
++  if (!env || !env.SIGNAL_CACHE) return { tripped: false };
++  const s = await getCBState(pair, env);
++  if (!s.cooldownUntil) return { tripped: false };
++  const until = new Date(s.cooldownUntil).getTime();
++  if (Number.isFinite(until) && until > Date.now())
++    return { tripped: true, cooldownUntil: s.cooldownUntil, lossStreak: s.lossStreak || 0 };
++  return { tripped: false };
++}
++
++export async function applyResult(pair, winLoss, env) {
++  if (!env || !env.SIGNAL_CACHE) return;
++  if (winLoss !== 'WIN' && winLoss !== 'LOSS') return;   // UNKNOWN ignored
++  try {
++    const s = await getCBState(pair, env);
++    if (winLoss === 'WIN') {
++      s.lossStreak = 0;
++      s.cooldownUntil = null;
++    } else {
++      s.lossStreak = (s.lossStreak || 0) + 1;
++      if (s.lossStreak >= LOSS_STREAK_LIMIT)
++        s.cooldownUntil = new Date(Date.now() + COOLDOWN_MS).toISOString();
++    }
++    s.updatedAt = new Date().toISOString();
++    await env.SIGNAL_CACHE.put(key(pair), JSON.stringify(s), { expirationTtl: CB_TTL_S });
++  } catch (e) { console.warn('circuitBreaker applyResult error:', e.message); }
++}
++
++export const __cbTest = { key, LOSS_STREAK_LIMIT, COOLDOWN_MS };
+diff --git a/src/history/quota.js b/src/history/quota.js
+new file mode 100644
+index 0000000..5043adb
+--- /dev/null
++++ b/src/history/quota.js
+@@ -0,0 +1,31 @@
++/**
++ * B0-4 — TwelveData request counter.
++ *
++ * One KV write per HTTP attempt. Account is on the Cloudflare Paid plan, so the
++ * 1000 write/day free-tier cap does not apply; batching would trade away metric
++ * accuracy for nothing.
++ *
++ * Key: quota:<YYYY-MM-DD>  (UTC day — matches TwelveData's own daily reset)
++ */
++
++function todayKey() {
++  return 'quota:' + new Date().toISOString().slice(0, 10);
++}
++
++export async function incrementQuota(env) {
++  if (!env || !env.SIGNAL_CACHE) return;
++  try {
++    const key = todayKey();
++    const parsed = parseInt((await env.SIGNAL_CACHE.get(key)) || '0', 10);
++    const cur = Number.isFinite(parsed) ? parsed : 0;
++    await env.SIGNAL_CACHE.put(key, String(cur + 1), { expirationTtl: 3 * 24 * 3600 });
++  } catch (e) { /* never block the signal path on instrumentation */ }
++}
++
++export async function readQuota(env) {
++  if (!env || !env.SIGNAL_CACHE) return -1;
++  try {
++    const parsed = parseInt((await env.SIGNAL_CACHE.get(todayKey())) || '0', 10);
++    return Number.isFinite(parsed) ? parsed : 0;
++  } catch (e) { return -1; }
++}
+diff --git a/src/history/stats.js b/src/history/stats.js
+index fcde6d2..9bcdadf 100644
+--- a/src/history/stats.js
++++ b/src/history/stats.js
+@@ -1,7 +1,9 @@
+ // Fix: static import (was dynamic inside fetchExpiryPrice — called every cron tick)
+ import { CONFIG } from '../config.js';
+ import { HISTORY_CONFIG } from '../config.js';
+-import { getApiKeys } from '../fetch/keys.js';
++import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
++import { incrementQuota } from './quota.js';
++import { applyResult as cbApplyResult } from './circuitBreaker.js';
+ 
+ function pairKey(pair) {
+   return pair.replace(/\//g, '_').replace(/-/g, '_');
+@@ -34,7 +36,29 @@ function isDuplicateRecord(newRec, prevRec) {
+   return true;
+ }
+ 
+-export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
++/**
++ * B5 — normalise AI outcome into one short string.
++ * Forex/crypto path uses the dual-AI combiner (ai/combine.js);
++ * OTC path has a single Cerebras validation with its own shape.
++ */
++function derivedAiStatus(signal) {
++  if (!signal) return null;
++  if (signal.isOTC) {
++    const st = signal.aiValidation ? signal.aiValidation.status : null;   // 'SKIPPED' | 'OK'
++    if (st === 'SKIPPED') return 'SKIPPED';
++    if (st === 'OK') return signal.aiValidation.agrees ? 'OTC_AGREE' : 'OTC_DISAGREE';
++    return st || null;
++  }
++  if (!signal.aiValidation) return null;
++  if (signal.aiValidation.status === 'SKIPPED') return 'SKIPPED';
++  const c = signal.aiValidation.combined;
++  if (!c) return null;
++  // combine.js: 'BOTH_UNAVAILABLE' | 'OK' (+ agreement 'BOTH_AGREE'|'AIs_DISAGREE')
++  if (c.status === 'OK' && c.agreement) return c.agreement;
++  return c.status || null;
++}
++
++export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource) {
+   if (!env || !env.SIGNAL_CACHE) return;
+   if (!signalId) {
+     console.warn('saveSignalToHistory skipped: missing signalId for ' + pair);
+@@ -61,8 +85,16 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
+       session:        signal.session ? signal.session.sessions : [],
+       sessionQuality: signal.session ? signal.session.quality  : 'N/A',
+       aiAgreed:       signal.aiValidation ? signal.aiValidation.combinedAgreed : null,
++      // ── B5: additive diagnostic fields (never read by existing consumers) ──
++      structureVerdict: signal.structureVerdict ? (signal.structureVerdict.overall || null) : null,
++      aiStatus:         derivedAiStatus(signal),
++      coreConfidence:   signal.coreConfidence === undefined || signal.coreConfidence === null
++                          ? null : signal.coreConfidence,
++      entrySource:      entrySource || null,
+       timestamp: now, result: null, exitPrice: null, checkedAt: null,
+     };
++    // B2/§3.3: only present on shadow rows — keeps normal records lean
++    if (signal.cbShadow === true) record.cbShadow = true;
+ 
+     const histKey = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pairKey(pair);
+     let existing = null;
+@@ -107,7 +139,7 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
+       await env.SIGNAL_CACHE.put(
+         HISTORY_CONFIG.KV_PENDING_PREFIX + signalId,
+         JSON.stringify(record),
+-        { expirationTtl: 60*60*2 }
++        { expirationTtl: Math.floor(HISTORY_CONFIG.PENDING_TTL_MS / 1000) }
+       );
+     }
+     console.log('Signal saved:', signalId, pair, signal.finalSignal);
+@@ -136,57 +168,155 @@ export async function scheduledTracker(env) {
+         const checkAfterMs = new Date(record.expiryTime).getTime() + HISTORY_CONFIG.RESULT_CHECK_DELAY * 1000;
+         if (now < checkAfterMs) continue;
+ 
+-        const exitPrice = await fetchExpiryPrice(record.pair, record.expiryTime, env);
++        const fetchResult = await fetchExpiryPrice(record.pair, record.expiryTime, env);
++
++        // ── B0-3: transient fetch failure must NOT burn the record ──
++        // Old behaviour deleted the pending key on the first miss, so one bad
++        // API response permanently froze the signal as UNKNOWN. Now we count
++        // attempts and only give up after PENDING_MAX_CHECKS.
++        if (fetchResult && fetchResult.error) {
++          record.checks        = (record.checks || 0) + 1;
++          record.lastCheckError = fetchResult.error;
++          record.lastCheckAt    = new Date().toISOString();
++
++          if (record.checks >= HISTORY_CONFIG.PENDING_MAX_CHECKS) {
++            await updateSignalResult(record, 'UNKNOWN', null, env);
++            await env.SIGNAL_CACHE.delete(kvEntry.name);
++            console.warn('scheduledTracker gave up id=' + record.id + ' pair=' + record.pair +
++                         ' checks=' + record.checks + ' lastErr=' + fetchResult.error);
++          } else {
++            const remainingMs = (new Date(record.expiryTime).getTime() + HISTORY_CONFIG.PENDING_TTL_MS) - now;
++            if (remainingMs > 60000) {
++              await env.SIGNAL_CACHE.put(kvEntry.name, JSON.stringify(record),
++                                         { expirationTtl: Math.floor(remainingMs / 1000) });
++            } else {
++              // TTL window exhausted before the retry budget — resolve as UNKNOWN
++              await updateSignalResult(record, 'UNKNOWN', null, env);
++              await env.SIGNAL_CACHE.delete(kvEntry.name);
++              console.warn('scheduledTracker ttl-expired id=' + record.id + ' pair=' + record.pair +
++                           ' checks=' + record.checks + ' lastErr=' + fetchResult.error);
++            }
++          }
++          checked++;
++          if (checked >= 10) break;
++          continue;
++        }
++
++        const exitPrice = fetchResult ? fetchResult.price : null;
+         let winLoss = 'UNKNOWN';
+-        if (record.entryPrice !== null && exitPrice !== null) {
++        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
+           if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
+           if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
+         }
+         await updateSignalResult(record, winLoss, exitPrice, env);
+         await env.SIGNAL_CACHE.delete(kvEntry.name);
+-        await updatePairStats(record.pair, winLoss, record, env);
++        // §3.3: shadow rows are outcome-tracked but never pollute WR / CB state
++        if (!record.cbShadow) await updatePairStats(record.pair, winLoss, record, env);
+         checked++;
+         if (checked >= 10) break;
+       } catch (e) {
++        // B0-3: do NOT delete on exception — let the retry counter run its course.
+         console.warn('Cron check error for ' + kvEntry.name + ':', e.message);
+-        try { await env.SIGNAL_CACHE.delete(kvEntry.name); } catch (e2) {}
+       }
+     }
+     if (checked > 0) console.log('Cron: checked ' + checked + ' expired signals');
+   } catch (e) { console.warn('scheduledTracker error:', e.message); }
+ }
+ 
+-// Fix: no longer dynamic import — uses top-level static import
++/**
++ * B0-1/B0-2/B0-5 — expiry price lookup.
++ *
++ * Old version: outputsize=5 from "now" (so a cron tick that ran late simply
++ * could not see the expiry minute), key #1 only, and every failure collapsed to
++ * a bare `null` with no reason recorded.
++ *
++ * New version: an explicit +/-5min bracket around the expiry timestamp, full key
++ * rotation, and a result object — {price} on success, {error,status,body} on
++ * failure — so the caller can distinguish "no data" from "not yet".
++ */
+ async function fetchExpiryPrice(pair, expiryTimeISO, env) {
+-  try {
+-    const apiKeys = getApiKeys(env);
+-    if (apiKeys.length === 0) return null;
+-    const symbol = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
+-    const u = new URL('/time_series', CONFIG.API_BASE_URL);
+-    u.searchParams.set('symbol', symbol);
+-    u.searchParams.set('interval', '1min');
+-    u.searchParams.set('outputsize', '5');
+-    u.searchParams.set('apikey', apiKeys[0]);
+-    u.searchParams.set('format', 'JSON');
+-
+-    const controller = new AbortController();
+-    const tid = setTimeout(() => controller.abort(), 8000);
+-    let res;
+-    try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
+-    finally { clearTimeout(tid); }
+-
+-    if (!res.ok) return null;
+-    const data = await res.json();
+-    if (!data.values || !Array.isArray(data.values) || data.values.length === 0) return null;
+-
+-    const expiryMs = new Date(expiryTimeISO).getTime();
+-    let closest = null; let minDiff = Infinity;
+-    for (const c of data.values) {
+-      const diff = Math.abs(new Date(c.datetime).getTime() - expiryMs);
+-      if (diff < minDiff) { minDiff = diff; closest = c; }
++  const apiKeys = getApiKeys(env);
++  if (apiKeys.length === 0) return { error: 'NO_API_KEYS' };
++
++  const symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
++  const expiryMs = new Date(expiryTimeISO).getTime();
++  if (!Number.isFinite(expiryMs)) return { error: 'BAD_EXPIRY_TIME' };
++
++  // TwelveData accepts "YYYY-MM-DD HH:MM:SS" (UTC)
++  const startDate = new Date(expiryMs - 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
++  const endDate   = new Date(expiryMs + 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
++
++  const startIdx    = await getNextRotationIndex(env, apiKeys.length);
++  const maxAttempts = apiKeys.length;     // B0-6: no MAX_RETRIES cap
++  let lastErr = { error: 'UNKNOWN' };
++
++  for (let attempt = 0; attempt < maxAttempts; attempt++) {
++    const keyIdx = (startIdx + attempt) % apiKeys.length;
++    const apiKey = apiKeys[keyIdx];
++    try {
++      const u = new URL('/time_series', CONFIG.API_BASE_URL);
++      u.searchParams.set('symbol', symbol);
++      u.searchParams.set('interval', '1min');
++      u.searchParams.set('start_date', startDate);
++      u.searchParams.set('end_date', endDate);
++      u.searchParams.set('apikey', apiKey);
++      u.searchParams.set('format', 'JSON');
++
++      await incrementQuota(env);   // B0-4: +1 per HTTP attempt
++
++      const controller = new AbortController();
++      const tid = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT);
++      let res;
++      try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
++      finally { clearTimeout(tid); }
++
++      if (!res.ok) {
++        const bodyText = await res.text().catch(() => '');
++        console.warn('fetchExpiryPrice non-ok pair=' + pair + ' keyIdx=' + keyIdx +
++                     ' status=' + res.status + ' body=' + bodyText.slice(0, 200));
++        lastErr = res.status === 429
++          ? { error: 'RATE_LIMITED', status: 429, body: bodyText.slice(0, 200) }
++          : { error: 'HTTP_' + res.status, status: res.status, body: bodyText.slice(0, 200) };
++        continue;
++      }
++
++      const data = await res.json();
++      if (data.status === 'error') {
++        console.warn('fetchExpiryPrice td-error pair=' + pair + ' keyIdx=' + keyIdx +
++                     ' code=' + data.code + ' msg=' + String(data.message || '').slice(0, 200));
++        lastErr = { error: 'TD_ERROR', status: data.code, body: String(data.message || '').slice(0, 200) };
++        continue;
++      }
++      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) {
++        console.warn('fetchExpiryPrice empty pair=' + pair + ' keyIdx=' + keyIdx +
++                     ' body=' + JSON.stringify(data).slice(0, 200));
++        lastErr = { error: 'EMPTY_VALUES' };
++        continue;
++      }
++
++      let closest = null; let minDiff = Infinity;
++      for (const c of data.values) {
++        if (!c || !c.datetime) continue;
++        const stamp = new Date(String(c.datetime).replace(' ', 'T') + 'Z').getTime();
++        if (!Number.isFinite(stamp)) continue;
++        const diff = Math.abs(stamp - expiryMs);
++        if (diff < minDiff) { minDiff = diff; closest = c; }
++      }
++      if (closest && minDiff <= 120000) {
++        const px = parseFloat(closest.close);
++        if (Number.isFinite(px)) return { price: px };
++        lastErr = { error: 'BAD_CLOSE_VALUE', body: String(closest.close).slice(0, 200) };
++        continue;
++      }
++      console.warn('fetchExpiryPrice no-match pair=' + pair + ' keyIdx=' + keyIdx + ' minDiff=' + minDiff);
++      lastErr = { error: 'NO_MATCH_WITHIN_120S', body: 'minDiff=' + minDiff };
++    } catch (e) {
++      console.warn('fetchExpiryPrice exception pair=' + pair + ' keyIdx=' + keyIdx +
++                   ' attempt=' + attempt + ' msg=' + e.message);
++      lastErr = { error: 'EXCEPTION', body: e.message };
+     }
+-    return (closest && minDiff <= 120000) ? parseFloat(closest.close) : null;
+-  } catch (e) { console.warn('fetchExpiryPrice error:', e.message); return null; }
++  }
++  return lastErr;
+ }
+ 
+ async function updateSignalResult(record, winLoss, exitPrice, env) {
+@@ -259,5 +389,9 @@ export async function updatePairStats(pair, winLoss, record, env) {
+     stats.byRegime[regime].winRate = rd > 0 ? Math.round((stats.byRegime[regime].wins / rd) * 1000) / 1000 : 0;
+ 
+     await env.SIGNAL_CACHE.put(statsKey, JSON.stringify(stats), { expirationTtl: 60*60*24*90 });
++
++    // B2: single funnel point — every decided result that counts toward WR also
++    // feeds the circuit breaker. Shadow rows never reach here (skipped upstream).
++    await cbApplyResult(pair, winLoss, env);
+   } catch (e) { console.warn('updatePairStats error:', e.message); }
+ }
+diff --git a/src/index.js b/src/index.js
+index e18d6fa..9be0c23 100644
+--- a/src/index.js
++++ b/src/index.js
+@@ -34,7 +34,7 @@ export default {
+       let response;
+ 
+       if (path === '/' || path === '/health') {
+-        response = handleHealth(env);
++        response = await handleHealth(env);
+ 
+       } else if (path === '/api/signal' || path === '/signal') {
+         const rawPair = url.searchParams.get('pair') || 'EUR/USD';
+diff --git a/src/signal/engine.js b/src/signal/engine.js
+index 8b430ed..24e9aa8 100644
+--- a/src/signal/engine.js
++++ b/src/signal/engine.js
+@@ -377,6 +377,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
+ 
+   return {
+     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
++    // B5: pre-filter engine confidence (captured at line ~164, before HTF block,
++    // alignment bonus, session/exotic penalties, AI rescue etc). Lets us later
++    // separate "engine was weak" from "filters ate it".
++    coreConfidence: rawConfidence,
+     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
+     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
+     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,
+diff --git a/src/signal/otcEngine.js b/src/signal/otcEngine.js
+index 907ef3f..f59c49c 100644
+--- a/src/signal/otcEngine.js
++++ b/src/signal/otcEngine.js
+@@ -129,6 +129,11 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
+     finalDirection = tie.direction; confidence = tie.confidence;
+   }
+ 
++  // B5: OTC anchor — value straight out of the weighted vote, before ANY
++  // adjustment (MIXED zeroing, alignment bonus, pattern/time/consistency
++  // penalties, exotic penalty, AI boost). Mirrors engine.js rawConfidence.
++  const rawConfidence = confidence;
++
+   if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
+   confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);
+ 
+@@ -220,6 +225,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
+   const finalGrade = getSignalGrade(confidence, avgConf, alignment);
+   return {
+     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
++    coreConfidence: rawConfidence,   // B5 — see anchor above
+     assetType: ASSET_TYPE_OTC, isOTC: true,
+     otcNote: 'Synthetic pair — mean reversion + price action. Olymp Trade.',
+     marketRegime: 'OTC_SYNTHETIC',

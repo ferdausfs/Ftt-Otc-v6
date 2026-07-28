@@ -4,6 +4,43 @@ Changelog-স্টাইল টেকনিক্যাল লগ — commit/da
 
 ---
 
+## 2026-07-28 — Phase B (FIX) — code change only, NOT deployed
+
+**Base:** `93f2de5`। ৯ file modified + ২ new। `src/` diff: 478 insertions / 64 deletions। ZIP deliverable, কোনো push/deploy হয়নি।
+
+**Changes:**
+- `fetch/keys.js` — full rewrite। numbered-key scan থেকে fixed upper bound সরানো (আগে key ১১+ silently ignored হতো; env-এ ১৯টা আছে)। dedupe যোগ। নতুন `getNextRotationIndex` (KV `rr:idx`) — round-robin start index, শুধু retry-fallback না
+- `fetch/candles.js` — `maxAttempts = apiKeys.length` (আগে `Math.min(len, MAX_RETRIES)` = ৩-এ cap)। rotation start। প্রতি HTTP attempt-এ `incrementQuota`। সব failure branch-এ warn + `body[:200]` + keyIdx
+- `history/quota.js` — **new**। `quota:<YYYY-MM-DD UTC>` counter, 3d TTL
+- `history/circuitBreaker.js` — **new**। `cb:<PAIR>` state, 2-loss streak → 6h fixed cooldown, WIN resets, UNKNOWN ignored
+- `history/stats.js` — `fetchExpiryPrice` rewrite: ±5min `start_date`/`end_date` bracket (আগে `outputsize=5` from now, দেরিতে চললে expiry minute-ই দেখতে পেত না), key rotation (আগে `apiKeys[0]` hardcode), `{price}`/`{error,status,body}` return। `scheduledTracker` retry-cap: fail-এ pending delete **বন্ধ**, `checks` counter, ≥15-এ UNKNOWN (আগে প্রথম miss-এই permanently UNKNOWN হয়ে যেত — এটাই UNKNOWN 56%-এর মূল কারণ)। outer catch আর delete করে না। `updatePairStats` end-এ CB funnel hook। record-এ ৪ field + conditional `cbShadow`
+- `handlers/signal.js` — দুই path-এ CB check site। Cooldown-এ `NO_TRADE` কিন্তু shadow row persist (`cbShadow:true`, would-be direction সহ) — counterfactual measurable রাখতে। `entrySource` (cacheHits 0/1-2/3)
+- `handlers/health.js` + `index.js` — `handleHealth` async, `quotaUsedToday`/`apiKeysLoaded`/`rotationIdx`
+- `signal/engine.js`, `signal/otcEngine.js` — `coreConfidence` (pre-filter anchor)
+- `config.js` — `CACHE_TTL['1min']` 60→120, `PENDING_TTL_MS`/`PENDING_MAX_CHECKS`, `MAX_RETRIES` reserved-comment
+
+**Verification:** node --check 31/31 · smoke 93/93 assertions (৩ suite: keys/rotation/CB/quota, scheduledTracker end-to-end, handler CB check sites) · backtest reproduction 7/7।
+
+**Backtest (n=214 raw / 92 decided, live /api/history থেকে re-pull, A2 baseline exact match):**
+
+| Config | signal clock WR / n | result clock WR / n |
+|---|---:|---:|
+| Baseline | 42.4% / 92 | 42.4% / 92 |
+| CB 2h | 42.9% / 49 | 40.6% / 64 |
+| CB 6h (shipped) | 46.5% / 43 | **41.1% / 56** |
+| CB 12h | 46.5% / 43 | 41.1% / 56 |
+| CB 24h | 33.3% / 30 | 36.6% / 41 |
+
+**দুইটা material deviation (report §2-এ full):**
+1. A2-এর "streak 11" per-pair না, **cross-pair**। Worst per-pair baseline = 6 (BNB/USD)। CB 6h: cross-pair 11→8, ETH 4→3, BNB 6→5
+2. **CB 6h-এর WR gain production clock-এ টেকে না** — 46.5% (signal clock, A2 যেভাবে মেপেছে) vs **41.1%** (result clock = expiry+90s, production যেভাবে চলবে)। −5.4pp, tolerance-এর বাইরে। Ship করা হয়েছে streak containment + shadow instrumentation-এর জন্য, WR gain-এর জন্য না
+
+**নতুন open finding:** result clock-এ shadow WR (44.4%, n=36) > emitted WR (41.1%, n=56) — CB এই sample-এ ভালো trade-ও block করছে। Live shadow data ২-৪ সপ্তাহ দরকার verdict-এর জন্য।
+
+**অমীমাংসিত:** pool-এ EUR/USD-এর ৫০টা row-এর **শূন্যটা** decided (সব UNKNOWN), crypto pair-গুলো ঠিকঠাক resolve হচ্ছে। B0-5 log-line পরের data pull-এ দেখতে হবে — forex-specific TwelveData restriction সন্দেহ।
+
+---
+
 ## 2026-07-28 — Catch-up entry (আগের commit + investigation history)
 
 **Commits এই repo-তে:**

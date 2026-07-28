@@ -1,0 +1,24 @@
+# git diff --stat  (src/ only — the shipped code change)
+
+ src/config.js                 |   8 +-
+ src/fetch/candles.js          |  40 ++++++--
+ src/fetch/keys.js             |  83 +++++++++++++++--
+ src/handlers/health.js        |  12 ++-
+ src/handlers/signal.js        |  87 +++++++++++++++++-
+ src/history/circuitBreaker.js |  63 +++++++++++++
+ src/history/quota.js          |  31 +++++++
+ src/history/stats.js          | 206 ++++++++++++++++++++++++++++++++++--------
+ src/index.js                  |   2 +-
+ src/signal/engine.js          |   4 +
+ src/signal/otcEngine.js       |   6 ++
+ 11 files changed, 478 insertions(+), 64 deletions(-)
+
+# New files (untracked at base, full contents in the ZIP):
+  src/history/circuitBreaker.js   (new, 63 lines)
+  src/history/quota.js            (new, 31 lines)
+
+# Agent-authored artifacts (not part of the worker bundle):
+  analysis/phase_b_backtest.py, phase_b_backtest_output.{json,md}
+  analysis/phase_b_smoke.js, phase_b_tracker_smoke.js, phase_b_handler_smoke.js
+  analysis/pooled_dedup.json  (n=214 dedup-clean pool, re-pulled from live /api/history)
+  verify/node_check.txt, grep_bans.txt, smoke_output.txt

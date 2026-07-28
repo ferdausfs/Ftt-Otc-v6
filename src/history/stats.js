@@ -1,7 +1,9 @@
 // Fix: static import (was dynamic inside fetchExpiryPrice — called every cron tick)
 import { CONFIG } from '../config.js';
 import { HISTORY_CONFIG } from '../config.js';
-import { getApiKeys } from '../fetch/keys.js';
+import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
+import { incrementQuota } from './quota.js';
+import { applyResult as cbApplyResult } from './circuitBreaker.js';
 
 function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
@@ -34,7 +36,29 @@ function isDuplicateRecord(newRec, prevRec) {
   return true;
 }
 
-export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
+/**
+ * B5 — normalise AI outcome into one short string.
+ * Forex/crypto path uses the dual-AI combiner (ai/combine.js);
+ * OTC path has a single Cerebras validation with its own shape.
+ */
+function derivedAiStatus(signal) {
+  if (!signal) return null;
+  if (signal.isOTC) {
+    const st = signal.aiValidation ? signal.aiValidation.status : null;   // 'SKIPPED' | 'OK'
+    if (st === 'SKIPPED') return 'SKIPPED';
+    if (st === 'OK') return signal.aiValidation.agrees ? 'OTC_AGREE' : 'OTC_DISAGREE';
+    return st || null;
+  }
+  if (!signal.aiValidation) return null;
+  if (signal.aiValidation.status === 'SKIPPED') return 'SKIPPED';
+  const c = signal.aiValidation.combined;
+  if (!c) return null;
+  // combine.js: 'BOTH_UNAVAILABLE' | 'OK' (+ agreement 'BOTH_AGREE'|'AIs_DISAGREE')
+  if (c.status === 'OK' && c.agreement) return c.agreement;
+  return c.status || null;
+}
+
+export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource) {
   if (!env || !env.SIGNAL_CACHE) return;
   if (!signalId) {
     console.warn('saveSignalToHistory skipped: missing signalId for ' + pair);
@@ -61,8 +85,16 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
       session:        signal.session ? signal.session.sessions : [],
       sessionQuality: signal.session ? signal.session.quality  : 'N/A',
       aiAgreed:       signal.aiValidation ? signal.aiValidation.combinedAgreed : null,
+      // ── B5: additive diagnostic fields (never read by existing consumers) ──
+      structureVerdict: signal.structureVerdict ? (signal.structureVerdict.overall || null) : null,
+      aiStatus:         derivedAiStatus(signal),
+      coreConfidence:   signal.coreConfidence === undefined || signal.coreConfidence === null
+                          ? null : signal.coreConfidence,
+      entrySource:      entrySource || null,
       timestamp: now, result: null, exitPrice: null, checkedAt: null,
     };
+    // B2/§3.3: only present on shadow rows — keeps normal records lean
+    if (signal.cbShadow === true) record.cbShadow = true;
 
     const histKey = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pairKey(pair);
     let existing = null;
@@ -107,7 +139,7 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
       await env.SIGNAL_CACHE.put(
         HISTORY_CONFIG.KV_PENDING_PREFIX + signalId,
         JSON.stringify(record),
-        { expirationTtl: 60*60*2 }
+        { expirationTtl: Math.floor(HISTORY_CONFIG.PENDING_TTL_MS / 1000) }
       );
     }
     console.log('Signal saved:', signalId, pair, signal.finalSignal);
@@ -136,57 +168,155 @@ export async function scheduledTracker(env) {
         const checkAfterMs = new Date(record.expiryTime).getTime() + HISTORY_CONFIG.RESULT_CHECK_DELAY * 1000;
         if (now < checkAfterMs) continue;
 
-        const exitPrice = await fetchExpiryPrice(record.pair, record.expiryTime, env);
+        const fetchResult = await fetchExpiryPrice(record.pair, record.expiryTime, env);
+
+        // ── B0-3: transient fetch failure must NOT burn the record ──
+        // Old behaviour deleted the pending key on the first miss, so one bad
+        // API response permanently froze the signal as UNKNOWN. Now we count
+        // attempts and only give up after PENDING_MAX_CHECKS.
+        if (fetchResult && fetchResult.error) {
+          record.checks        = (record.checks || 0) + 1;
+          record.lastCheckError = fetchResult.error;
+          record.lastCheckAt    = new Date().toISOString();
+
+          if (record.checks >= HISTORY_CONFIG.PENDING_MAX_CHECKS) {
+            await updateSignalResult(record, 'UNKNOWN', null, env);
+            await env.SIGNAL_CACHE.delete(kvEntry.name);
+            console.warn('scheduledTracker gave up id=' + record.id + ' pair=' + record.pair +
+                         ' checks=' + record.checks + ' lastErr=' + fetchResult.error);
+          } else {
+            const remainingMs = (new Date(record.expiryTime).getTime() + HISTORY_CONFIG.PENDING_TTL_MS) - now;
+            if (remainingMs > 60000) {
+              await env.SIGNAL_CACHE.put(kvEntry.name, JSON.stringify(record),
+                                         { expirationTtl: Math.floor(remainingMs / 1000) });
+            } else {
+              // TTL window exhausted before the retry budget — resolve as UNKNOWN
+              await updateSignalResult(record, 'UNKNOWN', null, env);
+              await env.SIGNAL_CACHE.delete(kvEntry.name);
+              console.warn('scheduledTracker ttl-expired id=' + record.id + ' pair=' + record.pair +
+                           ' checks=' + record.checks + ' lastErr=' + fetchResult.error);
+            }
+          }
+          checked++;
+          if (checked >= 10) break;
+          continue;
+        }
+
+        const exitPrice = fetchResult ? fetchResult.price : null;
         let winLoss = 'UNKNOWN';
-        if (record.entryPrice !== null && exitPrice !== null) {
+        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
           if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
           if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
         }
         await updateSignalResult(record, winLoss, exitPrice, env);
         await env.SIGNAL_CACHE.delete(kvEntry.name);
-        await updatePairStats(record.pair, winLoss, record, env);
+        // §3.3: shadow rows are outcome-tracked but never pollute WR / CB state
+        if (!record.cbShadow) await updatePairStats(record.pair, winLoss, record, env);
         checked++;
         if (checked >= 10) break;
       } catch (e) {
+        // B0-3: do NOT delete on exception — let the retry counter run its course.
         console.warn('Cron check error for ' + kvEntry.name + ':', e.message);
-        try { await env.SIGNAL_CACHE.delete(kvEntry.name); } catch (e2) {}
       }
     }
     if (checked > 0) console.log('Cron: checked ' + checked + ' expired signals');
   } catch (e) { console.warn('scheduledTracker error:', e.message); }
 }
 
-// Fix: no longer dynamic import — uses top-level static import
+/**
+ * B0-1/B0-2/B0-5 — expiry price lookup.
+ *
+ * Old version: outputsize=5 from "now" (so a cron tick that ran late simply
+ * could not see the expiry minute), key #1 only, and every failure collapsed to
+ * a bare `null` with no reason recorded.
+ *
+ * New version: an explicit +/-5min bracket around the expiry timestamp, full key
+ * rotation, and a result object — {price} on success, {error,status,body} on
+ * failure — so the caller can distinguish "no data" from "not yet".
+ */
 async function fetchExpiryPrice(pair, expiryTimeISO, env) {
-  try {
-    const apiKeys = getApiKeys(env);
-    if (apiKeys.length === 0) return null;
-    const symbol = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
-    const u = new URL('/time_series', CONFIG.API_BASE_URL);
-    u.searchParams.set('symbol', symbol);
-    u.searchParams.set('interval', '1min');
-    u.searchParams.set('outputsize', '5');
-    u.searchParams.set('apikey', apiKeys[0]);
-    u.searchParams.set('format', 'JSON');
+  const apiKeys = getApiKeys(env);
+  if (apiKeys.length === 0) return { error: 'NO_API_KEYS' };
 
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 8000);
-    let res;
-    try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
-    finally { clearTimeout(tid); }
+  const symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
+  const expiryMs = new Date(expiryTimeISO).getTime();
+  if (!Number.isFinite(expiryMs)) return { error: 'BAD_EXPIRY_TIME' };
 
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data.values || !Array.isArray(data.values) || data.values.length === 0) return null;
+  // TwelveData accepts "YYYY-MM-DD HH:MM:SS" (UTC)
+  const startDate = new Date(expiryMs - 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  const endDate   = new Date(expiryMs + 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
 
-    const expiryMs = new Date(expiryTimeISO).getTime();
-    let closest = null; let minDiff = Infinity;
-    for (const c of data.values) {
-      const diff = Math.abs(new Date(c.datetime).getTime() - expiryMs);
-      if (diff < minDiff) { minDiff = diff; closest = c; }
+  const startIdx    = await getNextRotationIndex(env, apiKeys.length);
+  const maxAttempts = apiKeys.length;     // B0-6: no MAX_RETRIES cap
+  let lastErr = { error: 'UNKNOWN' };
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const keyIdx = (startIdx + attempt) % apiKeys.length;
+    const apiKey = apiKeys[keyIdx];
+    try {
+      const u = new URL('/time_series', CONFIG.API_BASE_URL);
+      u.searchParams.set('symbol', symbol);
+      u.searchParams.set('interval', '1min');
+      u.searchParams.set('start_date', startDate);
+      u.searchParams.set('end_date', endDate);
+      u.searchParams.set('apikey', apiKey);
+      u.searchParams.set('format', 'JSON');
+
+      await incrementQuota(env);   // B0-4: +1 per HTTP attempt
+
+      const controller = new AbortController();
+      const tid = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT);
+      let res;
+      try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
+      finally { clearTimeout(tid); }
+
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => '');
+        console.warn('fetchExpiryPrice non-ok pair=' + pair + ' keyIdx=' + keyIdx +
+                     ' status=' + res.status + ' body=' + bodyText.slice(0, 200));
+        lastErr = res.status === 429
+          ? { error: 'RATE_LIMITED', status: 429, body: bodyText.slice(0, 200) }
+          : { error: 'HTTP_' + res.status, status: res.status, body: bodyText.slice(0, 200) };
+        continue;
+      }
+
+      const data = await res.json();
+      if (data.status === 'error') {
+        console.warn('fetchExpiryPrice td-error pair=' + pair + ' keyIdx=' + keyIdx +
+                     ' code=' + data.code + ' msg=' + String(data.message || '').slice(0, 200));
+        lastErr = { error: 'TD_ERROR', status: data.code, body: String(data.message || '').slice(0, 200) };
+        continue;
+      }
+      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) {
+        console.warn('fetchExpiryPrice empty pair=' + pair + ' keyIdx=' + keyIdx +
+                     ' body=' + JSON.stringify(data).slice(0, 200));
+        lastErr = { error: 'EMPTY_VALUES' };
+        continue;
+      }
+
+      let closest = null; let minDiff = Infinity;
+      for (const c of data.values) {
+        if (!c || !c.datetime) continue;
+        const stamp = new Date(String(c.datetime).replace(' ', 'T') + 'Z').getTime();
+        if (!Number.isFinite(stamp)) continue;
+        const diff = Math.abs(stamp - expiryMs);
+        if (diff < minDiff) { minDiff = diff; closest = c; }
+      }
+      if (closest && minDiff <= 120000) {
+        const px = parseFloat(closest.close);
+        if (Number.isFinite(px)) return { price: px };
+        lastErr = { error: 'BAD_CLOSE_VALUE', body: String(closest.close).slice(0, 200) };
+        continue;
+      }
+      console.warn('fetchExpiryPrice no-match pair=' + pair + ' keyIdx=' + keyIdx + ' minDiff=' + minDiff);
+      lastErr = { error: 'NO_MATCH_WITHIN_120S', body: 'minDiff=' + minDiff };
+    } catch (e) {
+      console.warn('fetchExpiryPrice exception pair=' + pair + ' keyIdx=' + keyIdx +
+                   ' attempt=' + attempt + ' msg=' + e.message);
+      lastErr = { error: 'EXCEPTION', body: e.message };
     }
-    return (closest && minDiff <= 120000) ? parseFloat(closest.close) : null;
-  } catch (e) { console.warn('fetchExpiryPrice error:', e.message); return null; }
+  }
+  return lastErr;
 }
 
 async function updateSignalResult(record, winLoss, exitPrice, env) {
@@ -259,5 +389,9 @@ export async function updatePairStats(pair, winLoss, record, env) {
     stats.byRegime[regime].winRate = rd > 0 ? Math.round((stats.byRegime[regime].wins / rd) * 1000) / 1000 : 0;
 
     await env.SIGNAL_CACHE.put(statsKey, JSON.stringify(stats), { expirationTtl: 60*60*24*90 });
+
+    // B2: single funnel point — every decided result that counts toward WR also
+    // feeds the circuit breaker. Shadow rows never reach here (skipped upstream).
+    await cbApplyResult(pair, winLoss, env);
   } catch (e) { console.warn('updatePairStats error:', e.message); }
 }

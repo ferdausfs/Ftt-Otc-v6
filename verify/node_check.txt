@@ -1,0 +1,17 @@
+# §7.1 — node --check on all changed/new files
+$ node --check <file>  (exit 0 = pass)
+
+PASS  src/history/stats.js
+PASS  src/history/quota.js
+PASS  src/history/circuitBreaker.js
+PASS  src/handlers/signal.js
+PASS  src/handlers/health.js
+PASS  src/signal/engine.js
+PASS  src/signal/otcEngine.js
+PASS  src/config.js
+PASS  src/fetch/candles.js
+PASS  src/fetch/keys.js
+PASS  src/index.js
+
+# every src/ file (regression sweep)
+checked 31 files, failures: 0

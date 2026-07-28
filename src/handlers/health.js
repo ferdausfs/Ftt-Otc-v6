@@ -2,11 +2,12 @@ import { CONFIG, ASSET_TYPE, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES
 import { jsonResponse } from '../utils/helpers.js';
 import { sanitizePair, isExoticPair } from '../utils/pairs.js';
 import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlackout } from '../utils/session.js';
-import { getApiKeys } from '../fetch/keys.js';
+import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
 import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stats.js';
+import { readQuota } from '../history/quota.js';
 
 // ── HEALTH ──────────────────────────────────
-export function handleHealth(env) {
+export async function handleHealth(env) {
   const keyCount  = getApiKeys(env).length;
   const keySource = env.TWELVEDATA_API_KEYS ? 'TWELVEDATA_API_KEYS (JSON array)' : 'TWELVEDATA_API_KEY_N (individual vars)';
   const session   = detectTradingSession();
@@ -14,9 +15,16 @@ export function handleHealth(env) {
   const forexOpen = isForexMarketOpen();
   const holiday   = getForexHoliday();
 
+  // B0-4 / B0-6 instrumentation
+  const quotaUsedToday = await readQuota(env);
+  const rotationIdx    = await readRotationIndex(env);
+
   return jsonResponse({
     status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
+    apiKeysLoaded: keyCount,
+    quotaUsedToday,
+    rotationIdx,
     bindings: {
       kvCache:     env.SIGNAL_CACHE      ? 'ready' : 'NOT CONFIGURED',
       rateLimiter: env.RATE_LIMITER      ? 'ready' : 'KV fallback',

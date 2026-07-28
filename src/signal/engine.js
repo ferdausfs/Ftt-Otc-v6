@@ -377,6 +377,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
 
   return {
     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
+    // B5: pre-filter engine confidence (captured at line ~164, before HTF block,
+    // alignment bonus, session/exotic penalties, AI rescue etc). Lets us later
+    // separate "engine was weak" from "filters ate it".
+    coreConfidence: rawConfidence,
     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,

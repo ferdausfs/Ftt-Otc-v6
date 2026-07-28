@@ -34,7 +34,7 @@ export default {
       let response;
 
       if (path === '/' || path === '/health') {
-        response = handleHealth(env);
+        response = await handleHealth(env);
 
       } else if (path === '/api/signal' || path === '/signal') {
         const rawPair = url.searchParams.get('pair') || 'EUR/USD';

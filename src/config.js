@@ -6,6 +6,7 @@ export const CONFIG = {
   API_BASE_URL: 'https://api.twelvedata.com',
   REFRESH_INTERVAL: 60000,
   REQUEST_TIMEOUT: 12000,
+  // MAX_RETRIES: reserved (fetch layer now uses apiKeys.length; kept for backward-compat)
   MAX_RETRIES: 3,
 
   MIN_CONFLUENCE: 5,
@@ -16,7 +17,9 @@ export const CONFIG = {
   NEWS_BLACKOUT_MINUTES: 15,
   BATCH_MAX_PAIRS: 3,
 
-  CACHE_TTL: { '1min': 60, '5min': 300, '15min': 900 },
+  // B0-4: 1min TTL 60 -> 120 (halves 1min API pull rate; cron is */2 so a
+  // 120s cache still serves fresh-enough candles for every scheduled tick)
+  CACHE_TTL: { '1min': 120, '5min': 300, '15min': 900 },
 
   RATE_LIMIT_MAX_REQUESTS: 30,
   RATE_LIMIT_WINDOW_SECONDS: 60,
@@ -91,6 +94,9 @@ export const HISTORY_CONFIG = {
   KV_SIGNAL_PREFIX:               'sig:',
   KV_STATS_PREFIX:                'stats:',
   KV_PENDING_PREFIX:              'pending:',
+  // B0-3: pending records live 2h; retry-cap gives up after 15 failed checks
+  PENDING_TTL_MS:                 2 * 60 * 60 * 1000,
+  PENDING_MAX_CHECKS:             15,
 };
 
 // ── SESSION WEIGHTS ─────────────────────────────────────────
