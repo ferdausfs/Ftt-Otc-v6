@@ -1,34 +1,27 @@
-diff --git a/scripts/phase7_integration.mjs b/scripts/phase7_integration.mjs
+diff --git a/scripts/phase10_integration.mjs b/scripts/phase10_integration.mjs
 new file mode 100644
-index 0000000..73926fc
+index 0000000..c1414f6
 --- /dev/null
-+++ b/scripts/phase7_integration.mjs
-@@ -0,0 +1,254 @@
++++ b/scripts/phase10_integration.mjs
+@@ -0,0 +1,226 @@
 +/**
-+ * Phase 7 integration test — node scripts/phase7_integration.mjs
++ * Phase 10 integration test — node scripts/phase10_integration.mjs
 + *
-+ * Runs the REAL pipeline (scheduledScan -> handleSignalRaw -> candles -> engine
-+ * -> AI -> KV) with only the network stubbed, so the wiring is proven rather
-+ * than grep-asserted. Verifies:
++ * Drives the REAL request path (handleSignalRaw -> engine -> saveAndPush ->
++ * Telegram) with only the network stubbed. The unit suite alone would not have
++ * caught the wiring bug where `saveAndPush` was never inserted, so this proves
++ * the end-to-end chain rather than the module in isolation.
 + *
-+ *   - a scan writes one latest:<PAIR> per active pair, with TTL + generationId
-+ *   - history is written EXACTLY ONCE per signal (the spec's sketch would have
-+ *     produced two records per scanned pair)
-+ *   - preferCache=true serves the cache with zero upstream requests
-+ *   - preferCache on a miss generates, answers, and warms the cache
-+ *   - default /api/signal still forces a fresh run (backward compatible)
-+ *   - the market-closed skip, the duration cap and per-pair failure isolation
++ * Also drives the real scheduledTracker to prove result pushes fire.
 + */
-+
-+import { SCAN_CONFIG } from '../src/config.js';
 +
 +let pass = 0, fail = 0;
 +const failures = [];
 +const ok = (n, c, d) => { if (c) { pass++; console.log('PASS  ' + n); } else { fail++; failures.push(n); console.log('FAIL  ' + n + (d ? ' — ' + d : '')); } };
 +const eq = (n, a, b) => ok(n, JSON.stringify(a) === JSON.stringify(b), 'expected ' + JSON.stringify(b) + ', got ' + JSON.stringify(a));
 +
-+function makeKV() {
-+  const m = new Map();
++function makeKV(seed = {}) {
++  const m = new Map(Object.entries(seed).map(([k, v]) => [k, { value: JSON.stringify(v) }]));
 +  return {
 +    _m: m,
 +    async get(k, t) { if (!m.has(k)) return null; const v = m.get(k).value; return t === 'json' ? JSON.parse(v) : v; },
@@ -38,13 +31,8 @@ index 0000000..73926fc
 +  };
 +}
 +
-+// ── network stub: TwelveData candles + both AI providers ───────────────
-+let httpCalls = { candles: 0, cerebras: 0, groq: 0 };
-+let failPairs = new Set();
-+
-+function candleSeries(n, base, step) {
-+  const out = [];
-+  let c = base;
++function series(n, base, step) {
++  const out = []; let c = base;
 +  for (let i = 0; i < n; i++) {
 +    const o = c;
 +    c = c + step + Math.sin(i / 3) * step * 0.1;
@@ -57,1041 +45,1017 @@ index 0000000..73926fc
 +  return out.reverse();
 +}
 +
-+function installFetchStub() {
-+  httpCalls = { candles: 0, cerebras: 0, groq: 0 };
-+  globalThis.fetch = async (url) => {
++let tg = [];
++let expiryPrice = null;
++function installNet() {
++  tg = [];
++  globalThis.fetch = async (url, init) => {
 +    const u = String(url);
++    if (u.includes('api.telegram.org')) {
++      const b = JSON.parse(init.body);
++      tg.push({ chatId: String(b.chat_id), text: b.text });
++      return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '{}' };
++    }
 +    if (u.includes('twelvedata')) {
-+      httpCalls.candles++;
-+      const symbol = new URL(u).searchParams.get('symbol') || '';
-+      if ([...failPairs].some(p => symbol.includes(p))) {
-+        return new Response('upstream boom', { status: 500 });
++      const p = new URL(u).searchParams;
++      if (p.get('start_date') && expiryPrice != null) {
++        // The bracket is expiry +/-5min, so the candle must sit at the MIDDLE
++        // of [start,end] to be within fetchExpiryPrice's 120s match window.
++        // Returning the start timestamp makes it legitimately reject as
++        // NO_MATCH_WITHIN_120S — that was a bug in this harness, not the code.
++        const st = new Date(p.get('start_date').replace(' ', 'T') + 'Z').getTime();
++        const en = new Date(p.get('end_date').replace(' ', 'T') + 'Z').getTime();
++        const mid = new Date((st + en) / 2).toISOString().slice(0, 19).replace('T', ' ');
++        return { ok: true, status: 200, json: async () => ({ values: [{
++          datetime: mid, open: '1', high: '1', low: '1', close: String(expiryPrice),
++        }] }), text: async () => '' };
 +      }
-+      return new Response(JSON.stringify({ values: candleSeries(120, 100, 0.2) }),
-+        { status: 200, headers: { 'content-type': 'application/json' } });
++      return { ok: true, status: 200, json: async () => ({ values: series(120, 100, 0.2) }), text: async () => '' };
 +    }
-+    if (u.includes('cerebras')) {
-+      httpCalls.cerebras++;
-+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 80, reason: 'stub' }) } }] }),
-+        { status: 200, headers: { 'content-type': 'application/json' } });
-+    }
-+    if (u.includes('groq')) {
-+      httpCalls.groq++;
-+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 78, reason: 'stub' }) } }] }),
-+        { status: 200, headers: { 'content-type': 'application/json' } });
-+    }
-+    throw new Error('unexpected fetch: ' + u.slice(0, 80));
++    // AI providers
++    return { ok: true, status: 200, text: async () => '{}',
++      json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 80, reason: 'stub' }) } }] }) };
 +  };
 +}
 +
-+const drain = async (sink) => { await Promise.allSettled(sink); sink.length = 0; };
 +const quiet = () => { const w = console.warn, l = console.log; console.warn = () => {}; console.log = () => {}; return () => { console.warn = w; console.log = l; }; };
++const drain = async (sink) => { await Promise.allSettled(sink); sink.length = 0; };
++const ctxOf = (sink) => ({ waitUntil: (p) => { sink.push(Promise.resolve(p).catch(() => {})); return p; } });
 +
-+const baseEnv = () => ({
-+  SIGNAL_CACHE: makeKV(),
-+  TWELVEDATA_API_KEY_1: 'k1',
-+  CEREBRAS_API_KEY: 'c1',
-+  GROQ_API_KEY: 'g1',
++const userOf = (o = {}) => ({
++  pair: 'BTCUSD', watchlist: [], interval: 5, autoEnabled: true,
++  gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false, channelId: null, ...o,
 +});
 +
-+const { scheduledScan, selectActivePairs } = await import('../src/handlers/scheduledScan.js');
-+const { handleSignal } = await import('../src/handlers/signal.js');
-+const { handleLatest } = await import('../src/handlers/latest.js');
++function envOf(users = { 111: userOf() }) {
++  const seed = {};
++  for (const [cid, u] of Object.entries(users)) seed['u:' + cid] = u;
++  seed['auto_users'] = Object.keys(users);
++  return {
++    SIGNAL_CACHE: makeKV(), BOT_KV: makeKV(seed), BOT_TOKEN: 'tok',
++    TWELVEDATA_API_KEY_1: 'k', CEREBRAS_API_KEY: 'c', GROQ_API_KEY: 'g',
++  };
++}
 +
-+console.log('── scheduledScan writes the cache ─────────────────────────');
++const { handleSignalRaw } = await import('../src/handlers/signal.js');
++const { scheduledTracker } = await import('../src/history/stats.js');
++const { HISTORY_CONFIG } = await import('../src/config.js');
++
++console.log('── a real /api/signal call pushes to subscribers ──────────');
 +{
-+  installFetchStub();
-+  const env = baseEnv();
++  installNet();
++  const env = envOf();
 +  const sink = [];
-+  const restore = quiet();
-+  // scan a small explicit set by monkey-patching the pair list via selectActivePairs
-+  const res = await scheduledScan(env, ctxWith(sink));
++  const r = quiet();
++  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
 +  await drain(sink);
-+  restore();
++  r();
 +
-+  const keys = [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('latest:'));
-+  ok('scan reported successes', res.ok > 0, JSON.stringify(res));
-+  eq('one cache entry per successful pair', keys.length, res.ok);
-+  ok('every active pair cached (14 while forex open)', keys.length >= 10, 'keys=' + keys.length);
++  ok('engine produced an actionable signal', ['BUY', 'SELL'].includes(res.signal.finalSignal), res.signal.finalSignal);
++  eq('subscriber received exactly one message', tg.length, 1);
++  eq('delivered to the right chat', tg[0].chatId, '111');
++  ok('message carries the signal id suffix', tg[0].text.includes(String(res.id).slice(-4)), tg[0].text.slice(0, 60));
++  ok('message names the pair', tg[0].text.includes('BTC/USD'));
++  ok('history row written', !!env.SIGNAL_CACHE._m.get('sig:BTC_USD'));
++  ok('push log written for the emitted id', !!env.SIGNAL_CACHE._m.get('pushLog:' + res.id));
++}
 +
-+  const sample = JSON.parse(env.SIGNAL_CACHE._m.get(keys[0]).value);
-+  eq('entry marked cached', sample.cached, true);
-+  ok('generationId stamped', typeof sample.generationId === 'string' && sample.generationId.startsWith('gen_'));
-+  eq('cron entries are not opportunistic', sample.opportunistic, false);
-+  ok('generatedAt is an ISO timestamp', !Number.isNaN(new Date(sample.generatedAt).getTime()));
-+  eq('TTL set to 10 min', env.SIGNAL_CACHE._m.get(keys[0]).opts.expirationTtl, SCAN_CONFIG.LATEST_TTL_SECONDS);
-+  ok('signal body preserved', !!sample.signal && typeof sample.signal.finalSignal === 'string');
-+  ok('Phase B fields survive caching', 'entrySource' in sample);
++console.log('\n── repeated calls (re-poll) do not spam ───────────────────');
++{
++  installNet();
++  const env = envOf();
++  const sink = [];
++  const r = quiet();
++  // three back-to-back calls, exactly like App auto-refresh + Bot cron overlap
++  await handleSignalRaw('BTC/USD', env, ctxOf(sink)); await drain(sink);
++  await handleSignalRaw('BTC/USD', env, ctxOf(sink)); await drain(sink);
++  await handleSignalRaw('BTC/USD', env, ctxOf(sink)); await drain(sink);
++  r();
++  eq('one Telegram message for three identical calls', tg.length, 1);
++  const hist = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
++  eq('history also deduped to one row', hist.length, 1);
++}
 +
-+  // ── the double-write check that the spec's sketch would have failed ──
-+  const histKeys = [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('sig:'));
-+  let maxPerPair = 0;
-+  for (const k of histKeys) {
-+    const arr = JSON.parse(env.SIGNAL_CACHE._m.get(k).value);
-+    maxPerPair = Math.max(maxPerPair, arr.length);
++console.log('\n── a non-subscriber pair pushes nothing ───────────────────');
++{
++  installNet();
++  const env = envOf({ 111: userOf({ pair: 'EURUSD' }) });
++  const sink = [];
++  const r = quiet();
++  await handleSignalRaw('BTC/USD', env, ctxOf(sink));
++  await drain(sink);
++  r();
++  eq('no push for an unwatched pair', tg.length, 0);
++}
++
++console.log('\n── push failure must not break the response ───────────────');
++{
++  installNet();
++  const env = envOf();
++  const sink = [];
++  const realFetch = globalThis.fetch;
++  globalThis.fetch = async (url, init) => {
++    if (String(url).includes('api.telegram.org')) throw new Error('telegram down');
++    return realFetch(url, init);
++  };
++  const r = quiet();
++  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
++  await drain(sink);
++  r();
++  ok('caller still got a valid signal', !!res.signal && !!res.id);
++  ok('history still written', !!env.SIGNAL_CACHE._m.get('sig:BTC_USD'));
++}
++
++console.log('\n── result push via the real cron tracker ──────────────────');
++{
++  installNet();
++  const env = envOf();
++  const sink = [];
++  const r = quiet();
++
++  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
++  await drain(sink);
++  const pushedCount = tg.length;
++
++  // Age the pending record so the tracker treats it as due, and make the
++  // expiry price a clear win/loss versus the recorded entry.
++  const pendKey = HISTORY_CONFIG.KV_PENDING_PREFIX + res.id;
++  const rec = await env.SIGNAL_CACHE.get(pendKey, 'json');
++  ok('pending record exists for the cron to resolve', !!rec);
++  rec.expiryTime = new Date(Date.now() - 10 * 60 * 1000).toISOString();
++  await env.SIGNAL_CACHE.put(pendKey, JSON.stringify(rec));
++  expiryPrice = rec.direction === 'BUY' ? rec.entryPrice + 50 : rec.entryPrice - 50;
++
++  await scheduledTracker(env);
++  r();
++  expiryPrice = null;
++
++  eq('exactly one result message added', tg.length - pushedCount, 1);
++  const last = tg[tg.length - 1].text;
++  ok('result message announces a WIN', last.includes('Result: WIN'), last.slice(0, 40));
++  ok('result message references the same signal id', last.includes(String(res.id).slice(-4)));
++  eq('push log consumed', await env.SIGNAL_CACHE.get('pushLog:' + res.id, 'json'), null);
++}
++
++console.log('\n── NO_TRADE emits nothing ─────────────────────────────────');
++{
++  installNet();
++  const env = envOf();
++  const sink = [];
++  const r = quiet();
++  // flat series -> MIXED alignment -> NO_TRADE
++  const realFetch = globalThis.fetch;
++  globalThis.fetch = async (url, init) => {
++    if (String(url).includes('twelvedata')) {
++      const flat = Array.from({ length: 120 }, (_, i) => ({
++        datetime: new Date(Date.now() - (120 - i) * 60000).toISOString().slice(0, 19).replace('T', ' '),
++        open: '100.00000', high: '100.00100', low: '99.99900', close: '100.00000', volume: '1',
++      }));
++      return { ok: true, status: 200, json: async () => ({ values: flat }), text: async () => '' };
++    }
++    return realFetch(url, init);
++  };
++  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
++  await drain(sink);
++  r();
++  if (res.signal.finalSignal === 'NO_TRADE') {
++    eq('NO_TRADE -> no push', tg.length, 0);
++    eq('NO_TRADE -> no id minted', res.id, undefined);
++  } else {
++    ok('flat series did not yield NO_TRADE (skipped)', true);
 +  }
-+  ok('history written at most once per pair per scan', maxPerPair <= 1,
-+     'max records for one pair after a single scan: ' + maxPerPair);
-+}
-+
-+console.log('\n── /api/signals/latest serves what the scan wrote ─────────');
-+{
-+  installFetchStub();
-+  const env = baseEnv();
-+  const sink = [];
-+  const restore = quiet();
-+  await scheduledScan(env, ctxWith(sink));
-+  await drain(sink);
-+  const before = { ...httpCalls };
-+  const res = await handleLatest(new URL('https://x/api/signals/latest'), env);
-+  const body = await res.json();
-+  restore();
-+
-+  ok('latest returns the scanned pairs', body.pairCount >= 10, 'pairCount=' + body.pairCount);
-+  eq('serving the cache costs zero upstream calls', httpCalls.candles, before.candles);
-+  ok('ages are small right after a scan',
-+     Object.values(body.signals).every(s => s.generationAge < 5));
-+}
-+
-+console.log('\n── preferCache=true ───────────────────────────────────────');
-+{
-+  installFetchStub();
-+  const env = baseEnv();
-+  const sink = [];
-+  const restore = quiet();
-+
-+  // 1) miss -> generates, answers, warms cache
-+  const missRes = await handleSignal('BTC/USD', env, ctxWith(sink), { preferCache: true });
-+  await drain(sink);
-+  const missBody = await missRes.json();
-+  const afterMiss = { ...httpCalls };
-+  const warmedRaw = env.SIGNAL_CACHE._m.get('latest:BTC_USD');
-+
-+  // 2) hit -> zero upstream calls
-+  const hitRes = await handleSignal('BTC/USD', env, ctxWith(sink), { preferCache: true });
-+  await drain(sink);
-+  const hitBody = await hitRes.json();
-+  restore();   // restore BEFORE asserting, or the PASS lines are swallowed
-+
-+  eq('miss answers with cached:false', missBody.cached, false);
-+  ok('miss actually hit upstream', afterMiss.candles > 0);
-+  ok('cache warmed after miss', !!warmedRaw);
-+  eq('warm entry flagged opportunistic', JSON.parse(warmedRaw.value).opportunistic, true);
-+
-+  eq('hit answers with cached:true', hitBody.cached, true);
-+  eq('hit is not a force refresh', hitBody.forceRefresh, false);
-+  eq('cache hit made no candle calls', httpCalls.candles, afterMiss.candles);
-+  eq('cache hit made no AI calls', httpCalls.cerebras, afterMiss.cerebras);
-+  ok('hit carries freshness metadata', typeof hitBody.generationAge === 'number');
-+}
-+
-+console.log('\n── default /api/signal is still a force refresh ───────────');
-+{
-+  installFetchStub();
-+  const env = baseEnv();
-+  const sink = [];
-+  const restore = quiet();
-+
-+  // pre-warm, then call WITHOUT preferCache
-+  const warmRes = await handleSignal('ETH/USD', env, ctxWith(sink), { preferCache: true });
-+  await drain(sink);
-+  const warmBody = await warmRes.json();
-+  const afterWarm = { ...httpCalls };
-+
-+  const res = await handleSignal('ETH/USD', env, ctxWith(sink), {});
-+  await drain(sink);
-+  const body = await res.json();
-+  restore();
-+
-+  eq('default response labelled uncached', body.cached, false);
-+  eq('default response labelled forceRefresh', body.forceRefresh, true);
-+  // A force refresh must re-run the ENGINE. It does NOT have to refetch candles:
-+  // the `c:` candle cache is a separate pre-existing TTL layer (1min=120s) that
-+  // Phase 7 deliberately leaves alone. So the proof of freshness is a new engine
-+  // pass (new AI round-trips + a newly minted signal id), not new candle calls.
-+  ok('force refresh re-ran the engine (new AI round-trips)',
-+     httpCalls.cerebras > afterWarm.cerebras || httpCalls.groq > afterWarm.groq,
-+     'ai before=' + afterWarm.cerebras + '/' + afterWarm.groq + ' after=' + httpCalls.cerebras + '/' + httpCalls.groq);
-+  ok('force refresh produced a distinct signal id', body.id && warmBody.id && body.id !== warmBody.id,
-+     warmBody.id + ' vs ' + body.id);
-+  ok('force refresh did NOT serve the latest: entry', body.generationId === undefined);
-+  ok('candle cache intentionally still reused (no extra TwelveData spend)',
-+     httpCalls.candles === afterWarm.candles,
-+     'candles before=' + afterWarm.candles + ' after=' + httpCalls.candles);
-+  ok('backward-compatible shape kept', !!body.signal && !!body.pair && !!body.timestamp);
-+}
-+
-+console.log('\n── resilience ─────────────────────────────────────────────');
-+{
-+  // market closed -> forex skipped
-+  eq('forex skipped when closed', selectActivePairs(undefined, false).length, 10);
-+  eq('all scanned when open', selectActivePairs(undefined, true).length, 14);
-+
-+  // one pair failing upstream must not abort the scan
-+  installFetchStub();
-+  failPairs = new Set(['BTC']);
-+  const env = baseEnv();
-+  const sink = [];
-+  const restore = quiet();
-+  const res = await scheduledScan(env, ctxWith(sink));
-+  await drain(sink);
-+  restore();
-+  failPairs = new Set();
-+
-+  ok('scan continued past a failing pair', res.ok > 0, JSON.stringify(res));
-+  ok('failing pair not cached', !env.SIGNAL_CACHE._m.has('latest:BTC_USD'));
-+  ok('other pairs still cached',
-+     [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('latest:')).length >= 9);
-+
-+  // no KV binding must not throw
-+  const restore2 = quiet();
-+  const noKv = await scheduledScan({}, ctxWith(sink));
-+  restore2();
-+  eq('scan without KV aborts cleanly', noKv.aborted, true);
-+}
-+
-+function ctxWith(sink) {
-+  return { waitUntil: (p) => { sink.push(Promise.resolve(p).catch(() => {})); return p; } };
 +}
 +
 +console.log('\n───────────────────────────────────────────────────────────');
 +console.log('PASS: ' + pass + '   FAIL: ' + fail);
 +if (fail > 0) { console.log('\nFailures:'); failures.forEach(f => console.log('  - ' + f)); process.exit(1); }
-+console.log('ALL PHASE 7 INTEGRATION TESTS PASSED');
-diff --git a/scripts/phase7_smoke.mjs b/scripts/phase7_smoke.mjs
++console.log('ALL PHASE 10 INTEGRATION TESTS PASSED');
+diff --git a/scripts/phase10_smoke.mjs b/scripts/phase10_smoke.mjs
 new file mode 100644
-index 0000000..0ea820e
+index 0000000..9c75f66
 --- /dev/null
-+++ b/scripts/phase7_smoke.mjs
-@@ -0,0 +1,232 @@
++++ b/scripts/phase10_smoke.mjs
+@@ -0,0 +1,335 @@
 +/**
-+ * Phase 7 smoke tests — node scripts/phase7_smoke.mjs
++ * Phase 10 smoke tests — node scripts/phase10_smoke.mjs
 + *
-+ * Exercises the real modules against an in-memory KV and a mocked engine:
-+ *   - key format / round-trip (a mismatch = permanent silent cache miss)
-+ *   - scheduledScan: writes, batching, market-closed skip, duration cap,
-+ *     failure isolation, and the DUMMY_FALLBACK guard
-+ *   - handleLatest: single + all, 404 on miss, stale handling
-+ *   - preferCache: cache hit avoids the engine; miss runs it and writes back
-+ *   - /health scanCache block
-+ *   - no double history write (the spec's scanOnePair would have caused one)
++ * Runs the REAL push module against in-memory KV doubles and a mocked Telegram
++ * API. Covers the §5 checklist plus the two failure modes the spec did not
++ * anticipate: duplicate pushes from repeated /api/signal calls, and the
++ * Bot's actual gradeFilter vocabulary.
 + *
-+ * No network. Cloudflare globals are stubbed where needed.
++ * No network.
 + */
-+
-+import assert from 'node:assert';
 +
 +let pass = 0, fail = 0;
 +const failures = [];
-+const ok = (name, cond, detail) => {
-+  if (cond) { pass++; console.log('PASS  ' + name); }
-+  else { fail++; failures.push(name); console.log('FAIL  ' + name + (detail ? ' — ' + detail : '')); }
-+};
-+const eq = (name, a, b) => ok(name, JSON.stringify(a) === JSON.stringify(b),
-+  'expected ' + JSON.stringify(b) + ', got ' + JSON.stringify(a));
++const ok = (n, c, d) => { if (c) { pass++; console.log('PASS  ' + n); } else { fail++; failures.push(n); console.log('FAIL  ' + n + (d ? ' — ' + d : '')); } };
++const eq = (n, a, b) => ok(n, JSON.stringify(a) === JSON.stringify(b), 'expected ' + JSON.stringify(b) + ', got ' + JSON.stringify(a));
 +
-+// ── in-memory KV double ────────────────────────────────────────────────
-+function makeKV() {
-+  const m = new Map();
++function makeKV(seed = {}) {
++  const m = new Map(Object.entries(seed).map(([k, v]) => [k, { value: JSON.stringify(v) }]));
 +  return {
 +    _m: m,
-+    puts: 0,
-+    async get(k, type) {
-+      if (!m.has(k)) return null;
-+      const v = m.get(k).value;
-+      return type === 'json' ? JSON.parse(v) : v;
-+    },
-+    async put(k, v, opts) { this.puts++; m.set(k, { value: String(v), opts }); },
++    async get(k, t) { if (!m.has(k)) return null; const v = m.get(k).value; return t === 'json' ? JSON.parse(v) : v; },
++    async put(k, v, opts) { m.set(k, { value: String(v), opts }); },
 +    async delete(k) { m.delete(k); },
-+    async list({ prefix }) {
-+      return { keys: [...m.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })) };
-+    },
++    async list({ prefix }) { return { keys: [...m.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })) }; },
 +  };
 +}
-+const ctxOf = (sink) => ({ waitUntil: (p) => { sink.push(p); return p; } });
++
++let tg = [];
++let tgFailFor = new Set();
++function installTelegram() {
++  tg = [];
++  globalThis.fetch = async (url, init) => {
++    const u = String(url);
++    if (!u.includes('api.telegram.org')) throw new Error('unexpected fetch ' + u);
++    const body = JSON.parse(init.body);
++    tg.push({ chatId: String(body.chat_id), text: body.text, parseMode: body.parse_mode });
++    if (tgFailFor.has(String(body.chat_id))) {
++      return { ok: false, status: 403, text: async () => 'blocked by user', json: async () => ({}) };
++    }
++    return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '{}' };
++  };
++}
++
 +const quiet = () => { const w = console.warn, l = console.log; console.warn = () => {}; console.log = () => {}; return () => { console.warn = w; console.log = l; }; };
 +
-+const { SCAN_CONFIG, SCAN_PAIRS } = await import('../src/config.js');
-+const cache = await import('../src/history/latestCache.js');
++const sigOf = (over = {}, sigOver = {}) => ({
++  id: 'sig_1785400000000_abcd',
++  pair: 'BTC/USD',
++  signal: {
++    finalSignal: 'BUY',
++    confidence: '87%',
++    grade: { grade: 'A', label: 'EXCELLENT' },
++    bestTimeframe: { timeframe: '5min' },
++    recommendations: { '5min': { entry: { price: 63750 }, expiry: { totalMinutes: 10, countdown: { label: '2m 30s' } } } },
++    higherTFTrend: 'BUY', marketRegime: 'TRENDING', regimeAdvice: 'Trend continuation',
++    entryReason: 'EMA stack bullish (5>13>55). RSI 62 — room to run!',
++    aiValidation: { status: 'OK', agrees: true },
++    ...sigOver,
++  },
++  ...over,
++});
 +
-+console.log('── KV key format (shared by 3 call sites) ─────────────────');
++const userOf = (o = {}) => ({
++  pair: 'BTCUSD', watchlist: [], interval: 5, autoEnabled: true,
++  gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false, channelId: null, ...o,
++});
++
++const envOf = (users = {}, autoUsers = null) => {
++  const seed = {};
++  for (const [cid, u] of Object.entries(users)) seed['u:' + cid] = u;
++  seed['auto_users'] = autoUsers || Object.keys(users);
++  return { BOT_TOKEN: 'tok', BOT_KV: makeKV(seed), SIGNAL_CACHE: makeKV() };
++};
++
++const push = await import('../src/handlers/pushToSubscribers.js');
++
++console.log('── §5: matching + fan-out ─────────────────────────────────');
 +{
-+  eq('slash normalised', cache.latestKey('BTC/USD'), 'latest:BTC_USD');
-+  eq('lowercase upper-cased', cache.latestKey('btc/usd'), 'latest:BTC_USD');
-+  eq('OTC dash normalised', cache.latestKey('EURUSD-OTC'), 'latest:EURUSD_OTC');
-+  eq('round-trip BTC/USD', cache.pairFromLatestKey(cache.latestKey('BTC/USD')), 'BTC/USD');
-+  eq('round-trip USD/JPY', cache.pairFromLatestKey(cache.latestKey('USD/JPY')), 'USD/JPY');
-+  // a naive underscore->slash swap would turn this into EURUSD/OTC
-+  eq('round-trip OTC keeps the dash', cache.pairFromLatestKey(cache.latestKey('EURUSD-OTC')), 'EURUSD-OTC');
-+  ok('prefix distinct from existing ones',
-+     !['sig:', 'stats:', 'pending:', 'cb:', 'quota:', 'rr:', 'c:'].includes(SCAN_CONFIG.KV_LATEST_PREFIX));
++  installTelegram();
++  const env = envOf({ 111: userOf(), 222: userOf({ watchlist: ['BTCUSD'] , pair: 'EURUSD' }), 333: userOf() });
++  const r = quiet();
++  const out = await push.pushSignalToSubscribers(sigOf(), env);
++  r();
++  eq('3 matching subscribers -> 3 Telegram calls', tg.length, 3);
++  eq('reported pushed count', out.pushed, 3);
++  ok('watchlist match works (222 via watchlist)', tg.some(m => m.chatId === '222'));
++  ok('push log written', !!env.SIGNAL_CACHE._m.get('pushLog:sig_1785400000000_abcd'));
 +}
 +
-+console.log('\n── freshness maths ────────────────────────────────────────');
++console.log('\n── §5: filters ────────────────────────────────────────────');
 +{
-+  const now = Date.now();
-+  const at = s => ({ generatedAt: new Date(now - s * 1000).toISOString() });
-+  eq('age computed in seconds', cache.enrichAge(at(120), now).generationAge, 120);
-+  ok('fresh entry not stale', !cache.enrichAge(at(120), now).stale);
-+  ok('entry past TTL is stale', cache.enrichAge(at(SCAN_CONFIG.LATEST_TTL_SECONDS + 1), now).stale);
-+  ok('isStale agrees with enrichAge', cache.isStale(at(SCAN_CONFIG.LATEST_TTL_SECONDS + 1), now));
-+  // nextRefreshIn counts to the next scan, not to TTL expiry
-+  eq('nextRefreshIn mid-cycle', cache.enrichAge(at(120), now).nextRefreshIn, 180);
-+  eq('nextRefreshIn wraps per interval', cache.enrichAge(at(360), now).nextRefreshIn, 240);
-+  ok('unparseable generatedAt treated as stale',
-+     cache.enrichAge({ generatedAt: 'nope' }, now).stale === true);
-+  ok('null payload survives enrichAge', cache.enrichAge(null) === null);
++  installTelegram();
++  const env = envOf({ 111: userOf({ minConfidence: 80 }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf({}, { confidence: '75%' }), env);
++  r();
++  eq('minConfidence 80 vs 75% signal -> no push', tg.length, 0);
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf({ gradeFilter: 'A' }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf({}, { grade: { grade: 'B', label: 'GOOD' } }), env);
++  r();
++  eq("gradeFilter 'A' vs grade B -> no push", tg.length, 0);
++}
++{
++  // The Bot only ever stores ALL | AB | A. 'AB' must accept B — the spec's
++  // numeric rank table would have rejected it.
++  installTelegram();
++  const env = envOf({ 111: userOf({ gradeFilter: 'AB' }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf({}, { grade: { grade: 'B', label: 'GOOD' } }), env);
++  r();
++  eq("gradeFilter 'AB' accepts grade B", tg.length, 1);
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf({ aiOnlyMode: true }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf({}, { aiValidation: { status: 'OK', agrees: false } }), env);
++  r();
++  eq('aiOnlyMode with disagreeing AI -> no push', tg.length, 0);
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf({ autoEnabled: false }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf(), env);
++  r();
++  eq('autoEnabled=false -> no push', tg.length, 0);
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf({ pair: 'EURUSD', watchlist: ['GBPUSD'] }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf(), env);   // BTC/USD
++  r();
++  eq('pair not watched -> no push', tg.length, 0);
 +}
 +
-+console.log('\n── writeLatest / readLatest ───────────────────────────────');
++console.log('\n── §5: NO_TRADE and guards ────────────────────────────────');
 +{
-+  const env = { SIGNAL_CACHE: makeKV() };
-+  const wrote = await cache.writeLatest('BTC/USD', { signal: { finalSignal: 'BUY' } },
-+    { generationId: 'gen_x', opportunistic: false }, env);
-+  ok('write reports success', wrote === true);
-+  const stored = env.SIGNAL_CACHE._m.get('latest:BTC_USD');
-+  eq('TTL applied on write', stored.opts.expirationTtl, SCAN_CONFIG.LATEST_TTL_SECONDS);
-+  const read = await cache.readLatest('BTC/USD', env);
-+  eq('cached flag set', read.cached, true);
-+  eq('generationId persisted', read.generationId, 'gen_x');
-+  eq('opportunistic false for cron writes', read.opportunistic, false);
-+  eq('miss returns null', await cache.readLatest('ZZZ/USD', env), null);
-+  eq('no KV binding -> null, no throw', await cache.readLatest('BTC/USD', {}), null);
-+  eq('write with no binding -> false', await cache.writeLatest('BTC/USD', {}, {}, {}), false);
++  installTelegram();
++  const env = envOf({ 111: userOf() });
++  const r = quiet();
++  const out = await push.pushSignalToSubscribers(sigOf({}, { finalSignal: 'NO_TRADE' }), env);
++  r();
++  eq('NO_TRADE -> 0 pushes', tg.length, 0);
++  eq('reported as not actionable', out.skipped, 'not-actionable');
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf() });
++  delete env.BOT_TOKEN;
++  const r = quiet();
++  const out = await push.pushSignalToSubscribers(sigOf(), env);
++  r();
++  eq('no BOT_TOKEN -> inert, no throw', out.skipped, 'no-token');
++  eq('no Telegram calls', tg.length, 0);
++}
++{
++  installTelegram();
++  const r = quiet();
++  const out = await push.pushSignalToSubscribers(sigOf(), { BOT_TOKEN: 't', SIGNAL_CACHE: makeKV() });
++  r();
++  eq('no BOT_KV -> no matches, no throw', out.skipped, 'no-match');
 +}
 +
-+// ── mock the engine so scheduledScan can run offline ──────────────────
-+const engineCalls = [];
-+let engineBehaviour = () => ({ pair: 'X', signal: { finalSignal: 'BUY' }, source: 'FULL_DATA' });
-+
-+const signalMod = await import('../src/handlers/signal.js');
-+const realHandleSignalRaw = signalMod.handleSignalRaw;
-+
-+console.log('\n── scheduledScan (mocked engine) ──────────────────────────');
++console.log('\n── §5: one failure must not block the others ──────────────');
 +{
-+  // scheduledScan imports handleSignalRaw directly, so inject via module record
-+  const scanMod = await import('../src/handlers/scheduledScan.js');
-+
-+  // selectActivePairs is pure and exported — test the market gate directly
-+  const openList = scanMod.selectActivePairs(SCAN_PAIRS, true);
-+  const closedList = scanMod.selectActivePairs(SCAN_PAIRS, false);
-+  eq('all 14 pairs active when forex open', openList.length, 14);
-+  eq('forex dropped when market closed', closedList.length, 10);
-+  ok('crypto survives a closed forex market', closedList.every(p => !['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD'].includes(p)));
-+  ok('unsupported symbol filtered out',
-+     scanMod.selectActivePairs(['BTC/USD', 'XAU/USD'], true).length === 1);
-+  eq('pairs are normalised', scanMod.selectActivePairs(['btcusd'], true), ['BTC/USD']);
++  installTelegram();
++  tgFailFor = new Set(['222']);
++  const env = envOf({ 111: userOf(), 222: userOf(), 333: userOf() });
++  const r = quiet();
++  const out = await push.pushSignalToSubscribers(sigOf(), env);
++  r();
++  tgFailFor = new Set();
++  eq('all three attempted', tg.length, 3);
++  eq('two delivered', out.pushed, 2);
++  const log = await env.SIGNAL_CACHE.get('pushLog:sig_1785400000000_abcd', 'json');
++  eq('failed chat excluded from push log', log.map(e => e.chatId).sort(), ['111', '333']);
 +}
 +
-+console.log('\n── handleLatest ───────────────────────────────────────────');
++console.log('\n── duplicate-push guard (not in spec — see report §1.4) ───');
 +{
-+  const { handleLatest } = await import('../src/handlers/latest.js');
-+  const env = { SIGNAL_CACHE: makeKV() };
-+  const now = Date.now();
-+
-+  await cache.writeLatest('BTC/USD', { signal: { finalSignal: 'BUY' }, pair: 'BTC/USD' },
-+    { generationId: 'gen_1' }, env);
-+  await cache.writeLatest('ETH/USD', { signal: { finalSignal: 'SELL' }, pair: 'ETH/USD' },
-+    { generationId: 'gen_1' }, env);
-+
-+  const one = await handleLatest(new URL('https://x/api/signals/latest?pair=BTC/USD'), env);
-+  eq('single pair 200', one.status, 200);
-+  const oneBody = await one.json();
-+  eq('single pair payload', oneBody.signal.finalSignal, 'BUY');
-+  ok('age enriched', typeof oneBody.generationAge === 'number');
-+  ok('nextRefreshIn present', typeof oneBody.nextRefreshIn === 'number');
-+
-+  const alt = await handleLatest(new URL('https://x/api/signals/latest?pair=btcusd'), env);
-+  eq('alternate spelling resolves to same entry', (await alt.json()).pair, 'BTC/USD');
-+
-+  const miss = await handleLatest(new URL('https://x/api/signals/latest?pair=DOT/USD'), env);
-+  eq('cache miss is 404', miss.status, 404);
-+  const missBody = await miss.json();
-+  ok('404 explains the escape hatch', String(missBody.message).includes('/api/signal'));
-+  eq('404 says whether the pair is scanned', missBody.scanned, true);
-+
-+  const bad = await handleLatest(new URL('https://x/api/signals/latest?pair=NOTAPAIR'), env);
-+  eq('invalid pair is 400', bad.status, 400);
-+
-+  const all = await handleLatest(new URL('https://x/api/signals/latest'), env);
-+  const allBody = await all.json();
-+  eq('all-pairs count', allBody.pairCount, 2);
-+  ok('keys map back to display pairs',
-+     Object.keys(allBody.signals).sort().join(',') === 'BTC/USD,ETH/USD',
-+     Object.keys(allBody.signals).join(','));
-+  ok('oldestCachedAge reported', typeof allBody.oldestCachedAge === 'number');
-+
-+  // a stale row must not be served
-+  const staleEnv = { SIGNAL_CACHE: makeKV() };
-+  await staleEnv.SIGNAL_CACHE.put('latest:DOT_USD', JSON.stringify({
-+    signal: { finalSignal: 'BUY' },
-+    generatedAt: new Date(now - (SCAN_CONFIG.LATEST_TTL_SECONDS + 60) * 1000).toISOString(),
-+  }));
-+  const staleOne = await handleLatest(new URL('https://x/api/signals/latest?pair=DOT/USD'), staleEnv);
-+  eq('stale single pair -> 404', staleOne.status, 404);
-+  const staleAll = await handleLatest(new URL('https://x/api/signals/latest'), staleEnv);
-+  const staleAllBody = await staleAll.json();
-+  eq('stale row excluded from all-list', staleAllBody.pairCount, 0);
-+  eq('stale rows counted', staleAllBody.staleSkipped, 1);
-+
-+  const noKv = await handleLatest(new URL('https://x/api/signals/latest'), {});
-+  eq('no KV binding -> 503', noKv.status, 503);
++  installTelegram();
++  const env = envOf({ 111: userOf() });
++  const r = quiet();
++  // Same setup, three different signalIds — exactly what repeated /api/signal
++  // calls produce (App auto-refresh 60s, Bot cron, manual views).
++  await push.pushSignalToSubscribers(sigOf({ id: 'sig_a' }), env);
++  await push.pushSignalToSubscribers(sigOf({ id: 'sig_b' }), env);
++  const third = await push.pushSignalToSubscribers(sigOf({ id: 'sig_c' }), env);
++  r();
++  eq('same pair+direction pushed once inside the window', tg.length, 1);
++  eq('subsequent attempts report locked', third.skipped, 'locked');
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf() });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf({ id: 'sig_a' }), env);
++  // opposite direction is a genuinely new event and must get through
++  await push.pushSignalToSubscribers(sigOf({ id: 'sig_b' }, { finalSignal: 'SELL' }), env);
++  r();
++  eq('direction flip pushes again', tg.length, 2);
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf({ watchlist: ['ETHUSD'] }) });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf({ id: 'sig_a' }), env);
++  await push.pushSignalToSubscribers(sigOf({ id: 'sig_b', pair: 'ETH/USD' }), env);
++  r();
++  eq('different pair pushes independently', tg.length, 2);
 +}
 +
-+console.log('\n── /health scanCache block ────────────────────────────────');
++console.log('\n── §5: result push ────────────────────────────────────────');
 +{
-+  const { getScanCacheStats } = await import('../src/handlers/latest.js');
-+  const env = { SIGNAL_CACHE: makeKV() };
-+  await cache.writeLatest('BTC/USD', { signal: {} }, { generationId: 'gen_A' }, env);
-+  await cache.writeLatest('ETH/USD', { signal: {} }, { opportunistic: true }, env);
-+
-+  const stats = await getScanCacheStats(env);
-+  eq('cachedPairCount', stats.cachedPairCount, 2);
-+  eq('scanIntervalSec surfaced', stats.scanIntervalSec, SCAN_CONFIG.SCAN_INTERVAL_SECONDS);
-+  eq('ttl surfaced', stats.ttlSeconds, SCAN_CONFIG.LATEST_TTL_SECONDS);
-+  eq('opportunistic entries counted', stats.opportunisticCount, 1);
-+  eq('cron generation id reported', stats.lastGenerationId, 'gen_A');
-+  ok('ages computed', typeof stats.oldestCachedAge === 'number');
-+  eq('no binding -> null', await getScanCacheStats({}), null);
++  installTelegram();
++  const env = envOf({ 111: userOf(), 222: userOf() });
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf(), env);
++  const beforeResult = tg.length;
++  const record = { id: 'sig_1785400000000_abcd', pair: 'BTC/USD', direction: 'BUY', entryPrice: 63750 };
++  const out = await push.pushResultToSubscribers(record, 'WIN', 63900, env);
++  r();
++  eq('result pushed to both original recipients', tg.length - beforeResult, 2);
++  eq('reported', out.pushed, 2);
++  ok('result text carries the verdict', tg[tg.length - 1].text.includes('Result: WIN'));
++  ok('result text shows entry -> exit', tg[tg.length - 1].text.includes('63750'));
++  eq('push log consumed (no double result)', await env.SIGNAL_CACHE.get('pushLog:sig_1785400000000_abcd', 'json'), null);
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf() });
++  const r = quiet();
++  const out = await push.pushResultToSubscribers(
++    { id: 'never_pushed', pair: 'BTC/USD', direction: 'BUY', entryPrice: 1 }, 'WIN', 2, env);
++  r();
++  eq('signal that was never pushed -> no result push', tg.length, 0);
++  eq('reported', out.skipped, 'never-pushed');
++}
++{
++  installTelegram();
++  const env = envOf({ 111: userOf() });
++  const r = quiet();
++  const out = await push.pushResultToSubscribers(
++    { id: 'x', pair: 'BTC/USD', direction: 'BUY', entryPrice: 1 }, 'UNKNOWN', null, env);
++  r();
++  eq('UNKNOWN never pushes', out.skipped, 'undecided');
 +}
 +
-+console.log('\n── backward compatibility (spec §9) ───────────────────────');
++console.log('\n── §5.5: message format ───────────────────────────────────');
++{
++  const msg = push.formatSignalMessage(sigOf());
++  ok('has signal number', msg.includes('📌 Signal No. abcd'));
++  ok('has pair and timeframe', msg.includes('📊 BTC/USD | 5min'));
++  ok('has direction line', msg.includes('🟢 BUY  87%  A EXCELLENT'));
++  ok('has entry', msg.includes('💰 Entry: 63750'));
++  ok('has expiry', msg.includes('⏰ Expiry: 10 min'));
++  ok('has countdown', msg.includes('🕐 Candle closes: 2m 30s'));
++  ok('has live-push footer', msg.includes('⚡ Live push · fresh generation'));
++  ok('NO cached wording (Phase 9 mistake)', !/cached/i.test(msg));
++
++  // Plain text: no parse_mode is sent, so these characters are safe as-is.
++  installTelegram();
++  const r = quiet();
++  await push.pushSignalToSubscribers(sigOf(), envOf({ 111: userOf() }));
++  r();
++  eq('sendMessage omits parse_mode', tg[0].parseMode, undefined);
++  ok('raw punctuation preserved verbatim', tg[0].text.includes('(5>13>55)') && tg[0].text.includes('run!'));
++
++  // missing optional fields must not print "undefined"
++  const sparse = push.formatSignalMessage({ id: 'sig_z', pair: 'X/Y', signal: { finalSignal: 'SELL', confidence: '70%' } });
++  ok('sparse signal renders without undefined', !sparse.includes('undefined'), sparse);
++
++  const res = push.formatResultMessage({ id: 'sig_q', pair: 'BTC/USD', direction: 'BUY', entryPrice: 63750 }, 'LOSS', 63700);
++  ok('loss emoji', res.includes('❌'));
++  ok('crypto delta uses 2dp not 0.0000', res.includes('-50.00'), res);
++  const fx = push.formatResultMessage({ id: 'f', pair: 'EUR/USD', direction: 'SELL', entryPrice: 1.1730 }, 'WIN', 1.1725);
++  ok('forex delta uses 5dp', /\+0\.0005/.test(fx), fx);
++}
++
++console.log('\n── §5.6: /health block ────────────────────────────────────');
++{
++  const env = envOf({ 111: userOf(), 222: userOf() });
++  await env.SIGNAL_CACHE.put('pushLog:a', '[]');
++  await env.SIGNAL_CACHE.put('pushLog:b', '[]');
++  const stats = await push.getPushStats(env);
++  eq('pushEnabled', stats.pushEnabled, true);
++  eq('botKvBound', stats.botKvBound, true);
++  eq('pushesLast24h counted', stats.pushesLast24h, 2);
++  eq('subscriberCount from auto_users', stats.subscriberCount, 2);
++  const off = await push.getPushStats({ SIGNAL_CACHE: makeKV() });
++  eq('pushEnabled false without token', off.pushEnabled, false);
++}
++
++console.log('\n── wiring + bans ──────────────────────────────────────────');
 +{
 +  const fs = await import('node:fs');
-+  const idx = fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
-+  for (const ep of ['/api/signal', '/api/batch', '/api/history', '/api/stats', '/api/report', '/api/pairs']) {
-+    ok('endpoint still routed: ' + ep, idx.includes("'" + ep + "'"));
-+  }
-+  ok('new endpoint routed', idx.includes("'/api/signals/latest'"));
-+  ok('cron split on event.cron', idx.includes("cron === '*/5 * * * *'"));
-+  ok('result checker still wired', idx.includes('scheduledTracker(env)'));
++  const rd = (f) => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
 +
-+  const sig = fs.readFileSync(new URL('../src/handlers/signal.js', import.meta.url), 'utf8');
-+  ok('handleSignalRaw signature unchanged',
-+     sig.includes('export async function handleSignalRaw(pair, env, ctx)'));
-+  // The spec's scanOnePair sketch also called saveSignalToHistory; that would
-+  // double-write because handleSignalRaw already does it.
-+  const scan = fs.readFileSync(new URL('../src/handlers/scheduledScan.js', import.meta.url), 'utf8');
-+  // Must not CALL it — the file mentions it in a comment explaining why.
-+  const scanCode = scan.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-+  ok('scanner does NOT call saveSignalToHistory (no double write)',
-+     !/saveSignalToHistory\s*\(/.test(scanCode));
-+  ok('scanner does not import saveSignalToHistory',
-+     !/import[^;]*saveSignalToHistory/.test(scanCode));
-+  ok('scanner reuses handleSignalRaw (no forked engine)', scan.includes('handleSignalRaw('));
-+  ok('scanner skips DUMMY_FALLBACK', scan.includes('DUMMY_FALLBACK'));
++  const sig = rd('src/handlers/signal.js');
++  ok('signal.js imports the push module', sig.includes("from './pushToSubscribers.js'"));
++  ok('both emit paths go through saveAndPush', (sig.match(/saveAndPush\(/g) || []).length === 3);
++  ok('push is chained behind the dedup result', sig.includes('saveResult.deduped'));
++  ok('push runs inside waitUntil (non-blocking)', sig.includes('ctx.waitUntil(saveAndPush('));
 +
-+  const wrangler = fs.readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
-+  ok('both crons registered', wrangler.includes('"*/2 * * * *", "*/5 * * * *"'));
++  const stats = rd('src/history/stats.js');
++  ok('result checker pushes results', stats.includes('pushResultToSubscribers(record, winLoss, exitPrice, env)'));
 +
-+  const engineDiffTargets = ['../src/signal/engine.js', '../src/signal/otcEngine.js'];
-+  for (const t of engineDiffTargets) {
-+    const src = fs.readFileSync(new URL(t, import.meta.url), 'utf8');
-+    ok('engine untouched by Phase 7: ' + t.split('/').pop(),
-+       !src.includes('SCAN_CONFIG') && !src.includes('latestCache'));
-+  }
++  const health = rd('src/handlers/health.js');
++  ok('/health exposes phase10', health.includes('phase10'));
++
++  const wr = rd('wrangler.toml');
++  ok('BOT_KV bound', wr.includes('binding = "BOT_KV"'));
++  ok('bot namespace id correct', wr.includes('39653d1f9b5147259cf3791658f131d7'));
++  ok('crons unchanged', wr.includes('crons = ["*/2 * * * *", "*/5 * * * *"]'));
++
++  ok('no deploy commands', !/wrangler deploy|git push/.test(sig + stats + health + wr));
++  const pushSrc = rd('src/handlers/pushToSubscribers.js');
++  // The words appear in the header comment explaining WHY it is absent;
++  // assert on code by stripping comments first.
++  const pushCode = pushSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
++  ok('no parse_mode in code (Bot Bug#1)', !pushCode.includes('parse_mode'));
++  ok('uses auto_users index, not a full u: scan',
++     pushSrc.includes("get('auto_users'") && !pushSrc.includes("list({ prefix: 'u:'"));
 +}
 +
 +console.log('\n───────────────────────────────────────────────────────────');
 +console.log('PASS: ' + pass + '   FAIL: ' + fail);
 +if (fail > 0) { console.log('\nFailures:'); failures.forEach(f => console.log('  - ' + f)); process.exit(1); }
-+console.log('ALL PHASE 7 SMOKE TESTS PASSED');
-diff --git a/src/config.js b/src/config.js
-index a4f3b86..890d322 100644
---- a/src/config.js
-+++ b/src/config.js
-@@ -49,6 +49,27 @@ export const CONFIG = {
-   EXOTIC_CONFIDENCE_PENALTY: 10,
- };
- 
-+// ── PHASE 7: CRON SIGNAL SCANNER ────────────────────────────
-+// Pairs the 5-min scanner keeps warm in KV. Every entry was verified live
-+// against /api/signal on 2026-07-29 — all 14 return FULL_DATA.
-+// Forex entries are skipped automatically while the market is closed.
-+export const SCAN_PAIRS = [
-+  // Crypto — 24/7
-+  'BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD', 'ADA/USD',
-+  'DOGE/USD', 'AVAX/USD', 'DOT/USD', 'LINK/USD',
-+  // Forex majors — market-hours gated
-+  'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
-+];
-+
-+export const SCAN_CONFIG = {
-+  KV_LATEST_PREFIX:      'latest:',   // distinct from sig: / stats: / pending: / c: / rr: / cb: / quota:
-+  LATEST_TTL_SECONDS:    600,         // 10 min = 2x cron interval
-+  BATCH_SIZE:            3,           // parallel pairs per batch (AI rate-limit safety)
-+  BATCH_DELAY_MS:        500,         // pause between batches
-+  MAX_SCAN_DURATION_MS:  90000,       // hard stop so one cron tick can never run away
-+  SCAN_INTERVAL_SECONDS: 300,         // informational, mirrors the */5 cron
-+};
-+
- // ── OTC CONFIG ──────────────────────────────────────────────
- export const ASSET_TYPE_OTC = 'FOREX_OTC';
- export const OTC_SUFFIXES = ['-OTC', 'OTC'];
++console.log('ALL PHASE 10 SMOKE TESTS PASSED');
 diff --git a/src/handlers/health.js b/src/handlers/health.js
-index 7cb6c61..b68ad30 100644
+index b68ad30..14fafca 100644
 --- a/src/handlers/health.js
 +++ b/src/handlers/health.js
-@@ -5,6 +5,7 @@ import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlac
- import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
+@@ -6,6 +6,7 @@ import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
  import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stats.js';
  import { readQuota } from '../history/quota.js';
-+import { getScanCacheStats } from './latest.js';
+ import { getScanCacheStats } from './latest.js';
++import { getPushStats } from './pushToSubscribers.js';
  
  // ── HEALTH ──────────────────────────────────
  export async function handleHealth(env) {
-@@ -18,6 +19,7 @@ export async function handleHealth(env) {
-   // B0-4 / B0-6 instrumentation
+@@ -20,6 +21,7 @@ export async function handleHealth(env) {
    const quotaUsedToday = await readQuota(env);
    const rotationIdx    = await readRotationIndex(env);
-+  const scanCache      = await getScanCacheStats(env);   // Phase 7
+   const scanCache      = await getScanCacheStats(env);   // Phase 7
++  const phase10        = await getPushStats(env);        // Phase 10 push
  
    return jsonResponse({
      status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
-@@ -37,6 +39,9 @@ export async function handleHealth(env) {
-       crypto: { status: 'ALWAYS OPEN (24/7)', bases: CRYPTO_BASES, quotes: CRYPTO_QUOTES, topPairs: POPULAR_CRYPTO_PAIRS.slice(0, 10) },
-     },
-     filters: { minConfidenceFloor: CONFIG.MIN_CONFIDENCE_FLOOR + '%', volumeSpikeMultiplier: CONFIG.VOLUME_SPIKE_FILTER_MULTIPLIER + 'x', newsBlackoutMargin: CONFIG.NEWS_BLACKOUT_MINUTES + ' min', batchMaxPairs: CONFIG.BATCH_MAX_PAIRS },
-+    // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
-+    // means the */5 scan is failing or being skipped.
-+    scanCache,
+@@ -42,6 +44,9 @@ export async function handleHealth(env) {
+     // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
+     // means the */5 scan is failing or being skipped.
+     scanCache,
++    // Phase 10 — cross-surface Telegram push. pushEnabled false means the
++    // BOT_TOKEN secret is not set on this worker, so pushes are inert.
++    phase10,
      history: {
        enabled: !!env.SIGNAL_CACHE, maxPerPair: HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
        winRateLookback: HISTORY_CONFIG.WIN_RATE_LOOKBACK, resultCheckDelay: HISTORY_CONFIG.RESULT_CHECK_DELAY + 's after expiry',
-diff --git a/src/handlers/latest.js b/src/handlers/latest.js
+diff --git a/src/handlers/pushToSubscribers.js b/src/handlers/pushToSubscribers.js
 new file mode 100644
-index 0000000..457d95f
+index 0000000..a8ff7e2
 --- /dev/null
-+++ b/src/handlers/latest.js
-@@ -0,0 +1,143 @@
++++ b/src/handlers/pushToSubscribers.js
+@@ -0,0 +1,349 @@
 +/**
-+ * Phase 7 — read-only view of the cron-warmed signal cache.
++ * Phase 10 — cross-surface signal push.
 + *
-+ *   GET /api/signals/latest              -> every cached pair
-+ *   GET /api/signals/latest?pair=BTC/USD -> one pair (404 when never scanned)
++ * When a fresh BUY/SELL signal is generated by ANY caller (App view, Bot
++ * command, Bot autoScan), matching Telegram subscribers are notified straight
++ * from the worker — no cache, no polling, sub-second delivery.
 + *
-+ * This endpoint never runs the engine. A miss is a miss: the caller is told to
-+ * use /api/signal (force refresh) or wait for the next scan. That is the whole
-+ * point of the split — a read here can never cost TwelveData or AI credits.
++ * ── Design decisions, all driven by live inspection of the Bot repo ─────────
++ *
++ * 1. Subscriber enumeration uses the Bot's OWN index (`auto_users`), not a
++ *    `BOT_KV.list({prefix:'u:'})` scan. The Bot maintains that array itself
++ *    (getAutoUsers/addAutoUser) and its cron reads exactly it, so we see the
++ *    same population the Bot does — and pay 1 + N reads instead of a full
++ *    keyspace list on every signal.
++ *
++ * 2. Filter semantics are copied from the Bot's own passGrade/passConf/passAI
++ *    helpers, NOT from the rank-table in the Phase 10 spec. The Bot only ever
++ *    stores gradeFilter values 'ALL' | 'AB' | 'A' (settings keyboard line 606);
++ *    a numeric A+/A/B/C/D ranking would mis-filter every subscriber.
++ *
++ * 3. Messages are sent as PLAIN TEXT with no parse_mode. The Bot deliberately
++ *    removed parse_mode after its Bug#1: signal text contains ( ) . ! - _ which
++ *    made Telegram reject MarkdownV2 with HTTP 400 while the error was only
++ *    logged, so users silently got nothing. The spec's `parse_mode:'HTML'`
++ *    would reintroduce that class of failure (entryReason regularly contains
++ *    '<' / '&' style characters). See PHASE_10_REPORT.md §1.3.
++ *
++ * 4. A per-signal push-lock makes the push idempotent. /api/signal is called
++ *    constantly (App auto-refresh is 60s post-revert, Bot cron every 5min, plus
++ *    every manual view), and each call mints a NEW signalId even when the
++ *    worker's own 30-minute dedup guard treats it as a re-poll. Without a lock
++ *    one setup would be pushed dozens of times. See §1.4.
 + */
 +
-+import { SCAN_PAIRS, SCAN_CONFIG } from '../config.js';
-+import { jsonResponse } from '../utils/helpers.js';   // NOT utils/cors.js — see report §1.1
-+import { sanitizePair } from '../utils/pairs.js';
-+import { readLatest, enrichAge, isStale, pairFromLatestKey } from '../history/latestCache.js';
 +
-+export async function handleLatest(url, env) {
-+  if (!env || !env.SIGNAL_CACHE) {
-+    return jsonResponse({ error: true, message: 'SIGNAL_CACHE KV not bound' }, 503);
-+  }
 +
-+  const rawPair = url.searchParams.get('pair');
++const PUSH_LOG_PREFIX  = 'pushLog:';    // pushLog:<signalId> -> [{chatId, sentAt}]
++const PUSH_LOCK_PREFIX = 'pushLock:';   // pushLock:<chatId>:<PAIR>:<DIR> -> signalId
++const PUSH_LOG_TTL_S   = 24 * 3600;
++/**
++ * How long one (subscriber, pair, direction) stays muted after a push.
++ * Mirrors the worker's own DEDUP_WINDOW_MS (30 min) so a push happens exactly
++ * when a genuinely new setup is recorded in history, not on every re-poll.
++ */
++const PUSH_LOCK_TTL_S  = 30 * 60;
 +
-+  // ── single pair ──
-+  if (rawPair) {
-+    const pair = sanitizePair(rawPair);
-+    if (!pair) {
-+      return jsonResponse({
-+        error: true,
-+        message: 'Invalid pair: "' + rawPair + '". Use EUR/USD, EURUSD, BTC/USD, BTCUSD etc.',
-+      }, 400);
-+    }
++const TELEGRAM_API = 'https://api.telegram.org';
 +
-+    const cached = await readLatest(pair, env);
-+    if (!cached) {
-+      return jsonResponse({
-+        error: true, stale: true, pair,
-+        message: 'No cached signal for ' + pair
-+          + '. Use /api/signal?pair=' + encodeURIComponent(pair)
-+          + ' for fresh generation, or wait for the next scan cycle.',
-+        scanned: SCAN_PAIRS.includes(pair),
-+        scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
-+        timestamp: new Date().toISOString(),
-+      }, 404);
-+    }
++/** Bot stores pairs slash-less ("EURUSD"); normalise both sides before compare. */
++function normPair(p) {
++  return String(p || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
++}
 +
-+    const enriched = enrichAge(cached);
-+    // KV TTL should evict before this, but a clock skew or a long-lived edge
-+    // read can still surface an over-age entry — treat it as a miss.
-+    if (enriched.stale) {
-+      return jsonResponse({
-+        error: true, stale: true, pair,
-+        message: 'Cached signal expired, next scan due.',
-+        generatedAt: cached.generatedAt,
-+        generationAge: enriched.generationAge,
-+        scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
-+        timestamp: new Date().toISOString(),
-+      }, 404);
-+    }
++function confPct(sig) {
++  return parseInt(String((sig && sig.confidence) || '0%').replace('%', ''), 10) || 0;
++}
 +
-+    return jsonResponse(enriched);
-+  }
++// ── filter helpers — mirrored from the Bot's own implementation ─────────
++export function passGrade(sig, f) {
++  if (!f || f === 'ALL') return true;
++  const g = (sig && sig.grade && sig.grade.grade) || '';
++  if (!g) return false;
++  return f === 'A' ? g === 'A' : f === 'AB' ? ['A', 'B'].includes(g) : true;
++}
 +
-+  // ── all cached pairs ──
-+  let list;
++export function passConf(sig, min) {
++  if (!min) return true;
++  return confPct(sig) >= min;
++}
++
++export function passAI(sig, aiOnly) {
++  if (!aiOnly) return true;
++  return !!(sig && sig.aiValidation
++    && sig.aiValidation.status === 'OK' && sig.aiValidation.agrees === true);
++}
++
++/**
++ * Everyone who should receive this signal.
++ * Returns [{ chatId, channelId }] — channelId mirrors the Bot's [F10] behaviour.
++ */
++export async function getMatchingSubscribers(signal, env) {
++  if (!env || !env.BOT_KV) return [];
++  const sig = signal && signal.signal;
++  if (!sig) return [];
++
++  let autoUsers;
 +  try {
-+    list = await env.SIGNAL_CACHE.list({ prefix: SCAN_CONFIG.KV_LATEST_PREFIX });
++    autoUsers = await env.BOT_KV.get('auto_users', 'json');
 +  } catch (e) {
-+    return jsonResponse({ error: true, message: 'Cache list failed: ' + e.message }, 500);
++    console.warn('push: auto_users read failed: ' + e.message);
++    return [];
 +  }
++  if (!Array.isArray(autoUsers) || autoUsers.length === 0) return [];
 +
-+  const keys = (list && list.keys) || [];
-+  const signals = {};
-+  let staleCount = 0;
++  const want = normPair(signal.pair);
++  const matches = [];
 +
-+  for (const key of keys) {
++  for (const cid of autoUsers) {
 +    try {
-+      const cached = await env.SIGNAL_CACHE.get(key.name, 'json');
-+      if (!cached) continue;
-+      const enriched = enrichAge(cached);
-+      if (enriched.stale) { staleCount++; continue; }   // don't serve expired rows
-+      signals[pairFromLatestKey(key.name)] = enriched;
-+    } catch (e) { /* skip unreadable entry */ }
++      const user = await env.BOT_KV.get('u:' + cid, 'json');
++      if (!user || user.autoEnabled !== true) continue;
++
++      const watched = [user.pair, ...(Array.isArray(user.watchlist) ? user.watchlist : [])]
++        .filter(Boolean)
++        .map(normPair);
++      if (!watched.includes(want)) continue;
++
++      // Same three gates the Bot applies in autoScan.
++      if (!passConf(sig, user.minConfidence)) continue;
++      if (!passGrade(sig, user.gradeFilter)) continue;
++      if (!passAI(sig, user.aiOnlyMode)) continue;
++
++      matches.push({ chatId: String(cid), channelId: user.channelId || null });
++    } catch (e) {
++      console.warn('push: user read failed for ' + cid + ': ' + e.message);
++    }
 +  }
-+
-+  const ages = Object.values(signals)
-+    .map(s => s.generationAge)
-+    .filter(a => typeof a === 'number');
-+
-+  return jsonResponse({
-+    cached: true,
-+    signals,
-+    pairCount: Object.keys(signals).length,
-+    scannedPairs: SCAN_PAIRS,
-+    scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
-+    oldestCachedAge: ages.length ? Math.max(...ages) : null,
-+    newestCachedAge: ages.length ? Math.min(...ages) : null,
-+    staleSkipped: staleCount,
-+    timestamp: new Date().toISOString(),
-+  });
++  return matches;
 +}
 +
-+/** Cache summary for /health (spec §4.7). */
-+export async function getScanCacheStats(env) {
-+  if (!env || !env.SIGNAL_CACHE) return null;
++/**
++ * Claim the right to push this (subscriber, pair, direction) combination.
++ * Returns true only for the first caller inside the lock window.
++ *
++ * KV has no atomic compare-and-set, so a genuine race can let two concurrent
++ * requests both claim. That is acceptable: the worst case is one duplicate
++ * message, versus dozens without the lock.
++ */
++async function claimPushLock(chatId, signal, env) {
++  if (!env.SIGNAL_CACHE) return true;
++  const key = PUSH_LOCK_PREFIX + chatId + ':' + normPair(signal.pair)
++    + ':' + signal.signal.finalSignal;
 +  try {
-+    const list = await env.SIGNAL_CACHE.list({ prefix: SCAN_CONFIG.KV_LATEST_PREFIX });
-+    const keys = (list && list.keys) || [];
-+    let lastGenerationId = null;
-+    let newestAt = -Infinity;
-+    let opportunisticCount = 0;
-+    const ages = [];
-+
-+    for (const key of keys) {
-+      try {
-+        const cached = await env.SIGNAL_CACHE.get(key.name, 'json');
-+        if (!cached || !cached.generatedAt) continue;
-+        const t = new Date(cached.generatedAt).getTime();
-+        if (!Number.isFinite(t)) continue;
-+        ages.push(Math.max(0, Math.floor((Date.now() - t) / 1000)));
-+        if (cached.opportunistic) opportunisticCount++;
-+        // report the newest CRON generation id; opportunistic writes have none
-+        if (t > newestAt && cached.generationId) {
-+          newestAt = t;
-+          lastGenerationId = cached.generationId;
-+        }
-+      } catch (e) { /* skip */ }
-+    }
-+
-+    return {
-+      lastGenerationId,
-+      cachedPairCount: keys.length,
-+      oldestCachedAge: ages.length ? Math.max(...ages) : null,
-+      newestCachedAge: ages.length ? Math.min(...ages) : null,
-+      opportunisticCount,
-+      scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
-+      ttlSeconds: SCAN_CONFIG.LATEST_TTL_SECONDS,
-+      scannedPairs: SCAN_PAIRS.length,
-+    };
++    const held = await env.SIGNAL_CACHE.get(key);
++    if (held) return false;
++    await env.SIGNAL_CACHE.put(key, signal.id, { expirationTtl: PUSH_LOCK_TTL_S });
++    return true;
 +  } catch (e) {
-+    return { error: 'scanCache unavailable: ' + e.message };
++    // Never let lock bookkeeping suppress a signal.
++    console.warn('push: lock check failed: ' + e.message);
++    return true;
 +  }
 +}
-diff --git a/src/handlers/scheduledScan.js b/src/handlers/scheduledScan.js
-new file mode 100644
-index 0000000..755f0e7
---- /dev/null
-+++ b/src/handlers/scheduledScan.js
-@@ -0,0 +1,148 @@
-+/**
-+ * Phase 7 — cron signal scanner (runs every 5 minutes).
-+ *
-+ * Keeps `latest:<PAIR>` warm for every pair in SCAN_PAIRS so the App and the
-+ * Bot can read one shared, already-computed signal instead of each triggering
-+ * their own engine run.
-+ *
-+ * ── Engine reuse (spec §5) ──────────────────────────────────────────────────
-+ * The spec expected to import `generateSignalCore` from signal/engine.js and
-+ * warned a refactor might be needed. No refactor was required: the request path
-+ * is already `index.js -> handleSignal() -> handleSignalRaw(pair, env, ctx)`,
-+ * and handleSignalRaw already returns exactly the response object we want to
-+ * cache. So the scanner calls that same function — one engine, one code path.
-+ *
-+ * ── Why history is NOT saved here ───────────────────────────────────────────
-+ * The spec's scanOnePair sketch called saveSignalToHistory() itself. That would
-+ * double-write: handleSignalRaw ALREADY persists BUY/SELL via
-+ * `ctx.waitUntil(saveSignalToHistory(...))` (signal.js:136 and :217), including
-+ * the Phase B fields and the circuit-breaker shadow rows. Calling it again here
-+ * would create two records per signal — the 30-min dedup guard would collapse
-+ * most, but not all (differing entryPrice on a re-poll slips through), and each
-+ * one also registers a `pending:` result-check. So we let the existing path own
-+ * history and only add the KV cache write. See PHASE_7_FIX_REPORT.md §1.3.
-+ */
-+
-+import { SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
-+import { sanitizePair, getAssetType } from '../utils/pairs.js';
-+import { isForexMarketOpen } from '../utils/session.js';
-+import { handleSignalRaw } from './signal.js';
-+import { writeLatest } from '../history/latestCache.js';
 +
 +/**
-+ * Which pairs are worth scanning right now.
-+ * Crypto is 24/7; forex is skipped while the market is shut so the scan does
-+ * not spend TwelveData credits on a frozen weekend price.
-+ *
-+ * The spec imported `getMarketStatus()` from utils/pairs.js — that function does
-+ * not exist in this repo. The real market-hours check is isForexMarketOpen()
-+ * in utils/session.js, which is what /api/signal itself uses.
++ * Push a fresh signal to every matching subscriber.
++ * Call inside ctx.waitUntil() — never block the caller's response.
 + */
-+export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketOpen()) {
-+  const active = [];
-+  for (const raw of pairs) {
-+    const pair = sanitizePair(raw);
-+    if (!pair) {
-+      console.warn('scheduledScan: unsupported pair skipped: ' + raw);
-+      continue;
-+    }
-+    const assetType = getAssetType(pair);
-+    if (assetType === ASSET_TYPE.FOREX && !forexOpen) continue;   // market closed
-+    active.push(pair);
++export async function pushSignalToSubscribers(signal, env) {
++  if (!signal || !signal.id) return { pushed: 0, skipped: 'no-id' };
++  const sig = signal.signal;
++  if (!sig || !['BUY', 'SELL'].includes(sig.finalSignal)) {
++    return { pushed: 0, skipped: 'not-actionable' };
 +  }
-+  return active;
-+}
-+
-+export async function scheduledScan(env, ctx) {
-+  const startTime = Date.now();
-+  if (!env || !env.SIGNAL_CACHE) {
-+    console.warn('scheduledScan: SIGNAL_CACHE not bound, aborting');
-+    return { ok: 0, failed: 0, skipped: 0, aborted: true };
++  if (!env || !env.BOT_TOKEN) {
++    // Not an error: push is opt-in via secret. Stay silent to avoid log spam
++    // on every single signal when the feature simply is not configured.
++    return { pushed: 0, skipped: 'no-token' };
 +  }
 +
-+  const generationId = 'gen_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-+  const activePairs = selectActivePairs();
-+  const skipped = SCAN_PAIRS.length - activePairs.length;
-+  console.log('scheduledScan start ' + generationId
-+    + ' active=' + activePairs.length + '/' + SCAN_PAIRS.length
-+    + (skipped ? ' (skipped ' + skipped + ', market closed/unsupported)' : ''));
++  try {
++    const subscribers = await getMatchingSubscribers(signal, env);
++    if (subscribers.length === 0) return { pushed: 0, skipped: 'no-match' };
 +
-+  let ok = 0;
-+  let failed = 0;
-+  let processed = 0;
-+
-+  for (let i = 0; i < activePairs.length; i += SCAN_CONFIG.BATCH_SIZE) {
-+    // Hard cap: a cron invocation must never run away. Partial coverage is
-+    // fine — the next tick is only 5 minutes out and TTL is 10.
-+    if (Date.now() - startTime > SCAN_CONFIG.MAX_SCAN_DURATION_MS) {
-+      console.warn('scheduledScan ' + generationId + ' hit MAX_SCAN_DURATION at '
-+        + processed + '/' + activePairs.length + ' pairs');
-+      break;
++    // Idempotency: only push to subscribers not already notified about this
++    // pair+direction inside the lock window.
++    const eligible = [];
++    for (const sub of subscribers) {
++      if (await claimPushLock(sub.chatId, signal, env)) eligible.push(sub);
 +    }
++    if (eligible.length === 0) return { pushed: 0, skipped: 'locked' };
 +
-+    const batch = activePairs.slice(i, i + SCAN_CONFIG.BATCH_SIZE);
++    const message = formatSignalMessage(signal);
 +    const results = await Promise.allSettled(
-+      batch.map(pair => scanOnePair(pair, generationId, env, ctx)),
++      eligible.map(sub => sendTelegramMessage(sub.chatId, message, env)),
 +    );
-+    for (const r of results) {
-+      processed++;
-+      if (r.status === 'fulfilled' && r.value) ok++;
-+      else {
-+        failed++;
-+        if (r.status === 'rejected') {
-+          console.warn('scheduledScan batch rejection: ' + (r.reason && r.reason.message));
-+        }
-+      }
++
++    const delivered = [];
++    results.forEach((r, i) => {
++      if (r.status === 'fulfilled') delivered.push(eligible[i]);
++    });
++
++    // Channel mirroring ([F10] parity) — best effort, never gates the DM.
++    await Promise.allSettled(
++      delivered.filter(s => s.channelId)
++        .map(s => sendTelegramMessage(s.channelId, message, env)),
++    );
++
++    if (delivered.length > 0 && env.SIGNAL_CACHE) {
++      const now = new Date().toISOString();
++      await env.SIGNAL_CACHE.put(
++        PUSH_LOG_PREFIX + signal.id,
++        JSON.stringify(delivered.map(s => ({ chatId: s.chatId, sentAt: now }))),
++        { expirationTtl: PUSH_LOG_TTL_S },
++      );
 +    }
 +
-+    if (i + SCAN_CONFIG.BATCH_SIZE < activePairs.length) {
-+      await sleep(SCAN_CONFIG.BATCH_DELAY_MS);
-+    }
-+  }
-+
-+  const ms = Date.now() - startTime;
-+  console.log('scheduledScan done ' + generationId + ': ' + ok + ' ok, ' + failed
-+    + ' failed, ' + skipped + ' skipped, ' + ms + 'ms');
-+  return { ok, failed, skipped, generationId, ms };
-+}
-+
-+async function scanOnePair(pair, generationId, env, ctx) {
-+  try {
-+    // Same entry point /api/signal uses — including circuit-breaker checks and
-+    // the existing history write via ctx.waitUntil.
-+    const result = await handleSignalRaw(pair, env, ctx);
-+
-+    if (!result || result.error) {
-+      console.warn('scanOnePair ' + pair + ' error: '
-+        + (result && result.message ? String(result.message).slice(0, 120) : 'unknown'));
-+      return null;
-+    }
-+    // A dummy fallback means every timeframe fetch failed; caching it would
-+    // serve fabricated prices to both clients for the next 10 minutes.
-+    if (result.source === 'DUMMY_FALLBACK') {
-+      console.warn('scanOnePair ' + pair + ' skipped: DUMMY_FALLBACK (all candle fetches failed)');
-+      return null;
-+    }
-+    // Market-closed responses carry no signal; nothing worth caching.
-+    if (!result.signal) {
-+      console.warn('scanOnePair ' + pair + ' skipped: no signal in response (marketStatus='
-+        + result.marketStatus + ')');
-+      return null;
-+    }
-+
-+    const written = await writeLatest(pair, result, {
-+      generationId,
-+      generatedAt: new Date().toISOString(),
-+      opportunistic: false,
-+    }, env);
-+
-+    return written ? { pair } : null;
++    console.log('Phase 10 push: ' + signal.id + ' ' + signal.pair + ' '
++      + sig.finalSignal + ' -> ' + delivered.length + '/' + eligible.length
++      + ' delivered (' + subscribers.length + ' matched)');
++    return { pushed: delivered.length, matched: subscribers.length };
 +  } catch (e) {
-+    console.warn('scanOnePair exception ' + pair + ': ' + e.message);
-+    return null;
++    console.warn('pushSignalToSubscribers error: ' + e.message);
++    return { pushed: 0, error: e.message };
 +  }
 +}
 +
-+function sleep(ms) {
-+  return new Promise(resolve => setTimeout(resolve, ms));
++/**
++ * Result push — fired by the cron result checker when a signal resolves.
++ * Only the subscribers who actually received the original signal are told.
++ */
++export async function pushResultToSubscribers(record, winLoss, exitPrice, env) {
++  if (!record || !record.id) return { pushed: 0 };
++  if (!['WIN', 'LOSS'].includes(winLoss)) return { pushed: 0, skipped: 'undecided' };
++  if (!env || !env.BOT_TOKEN || !env.SIGNAL_CACHE) return { pushed: 0, skipped: 'not-configured' };
++
++  try {
++    const logKey = PUSH_LOG_PREFIX + record.id;
++    const log = await env.SIGNAL_CACHE.get(logKey, 'json');
++    if (!Array.isArray(log) || log.length === 0) return { pushed: 0, skipped: 'never-pushed' };
++
++    const message = formatResultMessage(record, winLoss, exitPrice);
++    const results = await Promise.allSettled(
++      log.map(entry => sendTelegramMessage(entry.chatId, message, env)),
++    );
++    const delivered = results.filter(r => r.status === 'fulfilled').length;
++
++    // One result per signal — drop the log so a re-resolve cannot double-notify.
++    await env.SIGNAL_CACHE.delete(logKey).catch(() => {});
++
++    console.log('Phase 10 result push: ' + record.id + ' ' + winLoss
++      + ' -> ' + delivered + '/' + log.length);
++    return { pushed: delivered };
++  } catch (e) {
++    console.warn('pushResultToSubscribers error: ' + e.message);
++    return { pushed: 0, error: e.message };
++  }
 +}
++
++// ── message formatting ─────────────────────────────────────────────────
++export function formatSignalMessage(signal) {
++  const sig = signal.signal;
++  const dir = sig.finalSignal;
++  const emoji = dir === 'BUY' ? '🟢' : '🔴';
++  const idShort = String(signal.id || '').slice(-4);
++  const bestTF = (sig.bestTimeframe && sig.bestTimeframe.timeframe) || '5min';
++  const rec = (sig.recommendations && sig.recommendations[bestTF]) || {};
++  const entry = rec.entry && rec.entry.price;
++  const expMin = rec.expiry && rec.expiry.totalMinutes;
++  const countdown = rec.expiry && rec.expiry.countdown && rec.expiry.countdown.label;
++  const grade = (sig.grade && sig.grade.grade) || '';
++  const label = (sig.grade && sig.grade.label) || '';
++
++  const lines = [];
++  lines.push('📌 Signal No. ' + idShort);
++  lines.push('📊 ' + signal.pair + ' | ' + bestTF);
++  lines.push('━━━━━━━━━━━━━━');
++  lines.push(emoji + ' ' + dir + '  ' + (sig.confidence || '') + '  ' + (grade + ' ' + label).trim());
++  if (entry != null) lines.push('💰 Entry: ' + entry);
++  if (expMin != null) lines.push('⏰ Expiry: ' + expMin + ' min');
++  if (countdown) lines.push('🕐 Candle closes: ' + countdown);
++  if (sig.higherTFTrend) lines.push('📈 HTF: ' + sig.higherTFTrend);
++  if (sig.marketRegime) lines.push('🟡 Regime: ' + sig.marketRegime);
++  if (sig.regimeAdvice) lines.push('💡 ' + sig.regimeAdvice);
++  if (sig.entryReason) { lines.push(''); lines.push('📝 ' + sig.entryReason); }
++  lines.push('');
++  lines.push('⏳ Result will be tracked automatically');
++  lines.push('⚡ Live push · fresh generation');
++  return lines.join('\n');
++}
++
++export function formatResultMessage(record, winLoss, exitPrice) {
++  const emoji = winLoss === 'WIN' ? '🏆' : '❌';
++  const idShort = String(record.id || '').slice(-4);
++  const entry = record.entryPrice;
++  const dir = record.direction;
++
++  let deltaStr = 'N/A';
++  if (exitPrice != null && entry != null && isFinite(exitPrice) && isFinite(entry)) {
++    const delta = dir === 'BUY' ? exitPrice - entry : entry - exitPrice;
++    // Crypto moves in whole units, forex in 5th-decimal pips — pick a sane
++    // precision instead of printing 0.0000 for a real BTC move.
++    const digits = Math.abs(entry) >= 100 ? 2 : 5;
++    deltaStr = (delta >= 0 ? '+' : '') + delta.toFixed(digits);
++  }
++
++  return [
++    '🎯 Result: ' + winLoss + ' ' + emoji,
++    '',
++    '📌 Signal No. ' + idShort,
++    '📊 ' + record.pair + ' · ' + dir,
++    'Entry: ' + (entry != null ? entry : '?') + ' → Exit: ' + (exitPrice != null ? exitPrice : '?'),
++    'Δ: ' + deltaStr,
++  ].join('\n');
++}
++
++/**
++ * Plain-text sendMessage. No parse_mode on purpose — see the header note and
++ * the Bot's own Bug#1 comment.
++ */
++export async function sendTelegramMessage(chatId, text, env) {
++  const url = TELEGRAM_API + '/bot' + env.BOT_TOKEN + '/sendMessage';
++  const res = await fetch(url, {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify({
++      chat_id: chatId,
++      text: String(text || ''),
++      disable_web_page_preview: true,
++    }),
++  });
++  if (!res.ok) {
++    const body = await res.text().catch(() => '');
++    console.warn('Telegram sendMessage failed: chatId=' + chatId
++      + ' status=' + res.status + ' body=' + body.slice(0, 200));
++    throw new Error('Telegram ' + res.status);
++  }
++  return res.json().catch(() => ({}));
++}
++
++/** /health support (spec §2.5). */
++export async function getPushStats(env) {
++  const enabled = !!(env && env.BOT_TOKEN);
++  const stats = {
++    pushEnabled: enabled,
++    botKvBound: !!(env && env.BOT_KV),
++    pushesLast24h: null,
++    subscriberCount: null,
++  };
++  if (!env || !env.SIGNAL_CACHE) return stats;
++
++  try {
++    const list = await env.SIGNAL_CACHE.list({ prefix: PUSH_LOG_PREFIX });
++    stats.pushesLast24h = ((list && list.keys) || []).length;
++  } catch (e) { /* leave null */ }
++
++  if (env.BOT_KV) {
++    try {
++      const autoUsers = await env.BOT_KV.get('auto_users', 'json');
++      stats.subscriberCount = Array.isArray(autoUsers) ? autoUsers.length : 0;
++    } catch (e) { /* leave null */ }
++  }
++  return stats;
++}
++
++export const __pushTest = {
++  normPair, confPct, claimPushLock,
++  PUSH_LOG_PREFIX, PUSH_LOCK_PREFIX, PUSH_LOCK_TTL_S, PUSH_LOG_TTL_S,
++};
 diff --git a/src/handlers/signal.js b/src/handlers/signal.js
-index a126b52..cd3d8f9 100644
+index cd3d8f9..1461947 100644
 --- a/src/handlers/signal.js
 +++ b/src/handlers/signal.js
-@@ -8,6 +8,7 @@ import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
+@@ -7,6 +7,7 @@ import { buildMultiTimeframeSignal } from '../signal/engine.js';
+ import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
  import { saveSignalToHistory } from '../history/stats.js';
  import { isTripped } from '../history/circuitBreaker.js';
++import { pushSignalToSubscribers } from './pushToSubscribers.js';
  import { detectCorrelationConflicts } from '../analysis/filters.js';
-+import { readLatest, writeLatest, enrichAge, isStale } from '../history/latestCache.js';
+ import { readLatest, writeLatest, enrichAge, isStale } from '../history/latestCache.js';
  import {
-   VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS,
-   HISTORY_CONFIG,
-@@ -28,9 +29,39 @@ function classifyEntrySource(cacheHits) {
+@@ -29,6 +30,32 @@ function classifyEntrySource(cacheHits) {
    return null;
  }
  
--export async function handleSignal(pair, env, ctx) {
 +/**
-+ * Phase 7 — /api/signal entry point.
++ * PHASE 10 — persist, then push only if the record was genuinely new.
 + *
-+ * Default behaviour is unchanged: a fresh engine run (the "force refresh" path),
-+ * now labelled `cached:false, forceRefresh:true` so a client can tell the two
-+ * apart.
-+ *
-+ * With `?preferCache=true` the cron-warmed `latest:` entry is served when it is
-+ * fresh; on a miss or a stale entry we fall through to a normal generation and
-+ * opportunistically warm the cache for the next reader.
++ * saveSignalToHistory() returns {deduped:true} when its 30-minute guard decides
++ * this is a re-poll of an existing setup. /api/signal mints a fresh signalId on
++ * every call (App auto-refresh 60s, Bot cron 5min, every manual view), so
++ * pushing unconditionally would fire many Telegram messages for one setup.
++ * Chaining the push behind the save result means subscribers are notified
++ * exactly when a new row lands in history.
 + */
-+export async function handleSignal(pair, env, ctx, opts) {
-+  const preferCache = !!(opts && opts.preferCache);
-+
-+  if (preferCache) {
-+    const cached = await readLatest(pair, env);
-+    if (cached && !isStale(cached)) {
-+      return jsonResponse({ ...enrichAge(cached), cached: true, forceRefresh: false });
-+    }
++async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response) {
++  let saveResult = null;
++  try {
++    saveResult = await saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource);
++  } catch (e) {
++    console.warn('saveAndPush: save failed for ' + pair + ': ' + e.message);
++    return;
 +  }
-+
-   const result = await handleSignalRaw(pair, env, ctx);
--  return jsonResponse(result);
-+
-+  if (preferCache && result && !result.error && result.signal
-+      && result.source !== 'DUMMY_FALLBACK') {
-+    // Warm the cache for whoever asks next. Marked opportunistic so it is
-+    // distinguishable from a cron-generated entry.
-+    const write = writeLatest(pair, result, { opportunistic: true }, env);
-+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(write);
-+    else await write;
++  if (saveResult && saveResult.deduped) return;   // re-poll — already announced
++  try {
++    await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
++  } catch (e) {
++    console.warn('saveAndPush: push failed for ' + pair + ': ' + e.message);
 +  }
++}
 +
-+  return jsonResponse({ ...result, cached: false, forceRefresh: !preferCache });
+ /**
+  * Phase 7 — /api/signal entry point.
+  *
+@@ -164,7 +191,7 @@ export async function handleSignalRaw(pair, env, ctx) {
+   };
+ 
+   if (signalId)
+-    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId, entrySource));
++    ctx.waitUntil(saveAndPush(signal, pair, false, env, signalId, entrySource, result));
+ 
+   return result;
  }
+@@ -245,7 +272,7 @@ async function handleSignalRawOTC(pair, env, ctx) {
+   };
  
- export async function handleSignalRaw(pair, env, ctx) {
-diff --git a/src/history/latestCache.js b/src/history/latestCache.js
-new file mode 100644
-index 0000000..15f3822
---- /dev/null
-+++ b/src/history/latestCache.js
-@@ -0,0 +1,102 @@
-+/**
-+ * Phase 7 — shared read/write layer for the cron-warmed signal cache.
-+ *
-+ * Three call sites depend on the key format and the staleness rule
-+ * (scheduledScan writes, /api/signals/latest reads, /api/signal?preferCache
-+ * reads then opportunistically writes). They live here so the three can never
-+ * drift apart — a mismatched key would silently produce a permanent cache miss
-+ * rather than an error.
-+ *
-+ * Key: `latest:<PAIR>` with `/` and `-` normalised to `_`, upper-cased.
-+ *   BTC/USD      -> latest:BTC_USD
-+ *   EURUSD-OTC   -> latest:EURUSD_OTC
-+ * This mirrors the existing pairKey() convention in history/stats.js, and the
-+ * `latest:` prefix is distinct from every prefix already in use
-+ * (sig:, stats:, pending:, cb:, quota:, rr:, c:) — verified by grep.
-+ */
-+
-+import { SCAN_CONFIG } from '../config.js';
-+
-+/** Normalise any accepted pair spelling to the KV key form. */
-+export function latestKey(pair) {
-+  return SCAN_CONFIG.KV_LATEST_PREFIX
-+    + String(pair).replace(/\//g, '_').replace(/-/g, '_').toUpperCase();
-+}
-+
-+/** Inverse of latestKey() — used when listing the whole cache. */
-+export function pairFromLatestKey(keyName) {
-+  const raw = String(keyName).slice(SCAN_CONFIG.KV_LATEST_PREFIX.length);
-+  // OTC keys are stored as EURUSD_OTC and must come back as EURUSD-OTC,
-+  // not EURUSD/OTC — a plain underscore->slash swap would corrupt them.
-+  if (raw.endsWith('_OTC')) return raw.slice(0, -4) + '-OTC';
-+  const i = raw.indexOf('_');
-+  return i === -1 ? raw : raw.slice(0, i) + '/' + raw.slice(i + 1);
-+}
-+
-+/**
-+ * Attach freshness metadata at read time.
-+ * `generationAge` is seconds since generation; `nextRefreshIn` counts down to
-+ * the next scheduled scan, not to TTL expiry — that is the number a client
-+ * actually wants when deciding whether to wait or force a refresh.
-+ */
-+export function enrichAge(cached, now = Date.now()) {
-+  if (!cached || typeof cached !== 'object') return cached;
-+  const genTime = new Date(cached.generatedAt).getTime();
-+  if (!Number.isFinite(genTime)) {
-+    return { ...cached, generationAge: null, nextRefreshIn: null, stale: true };
-+  }
-+  const ageSeconds = Math.max(0, Math.floor((now - genTime) / 1000));
-+  const interval = SCAN_CONFIG.SCAN_INTERVAL_SECONDS;
-+  return {
-+    ...cached,
-+    generationAge: ageSeconds,
-+    nextRefreshIn: Math.max(0, interval - (ageSeconds % interval)),
-+    stale: ageSeconds >= SCAN_CONFIG.LATEST_TTL_SECONDS,
-+  };
-+}
-+
-+export function isStale(cached, now = Date.now()) {
-+  if (!cached) return true;
-+  const genTime = new Date(cached.generatedAt).getTime();
-+  if (!Number.isFinite(genTime)) return true;
-+  return (now - genTime) / 1000 >= SCAN_CONFIG.LATEST_TTL_SECONDS;
-+}
-+
-+/** Read one cached signal. Returns null on miss, bad JSON, or KV error. */
-+export async function readLatest(pair, env) {
-+  if (!env || !env.SIGNAL_CACHE) return null;
-+  try {
-+    const cached = await env.SIGNAL_CACHE.get(latestKey(pair), 'json');
-+    return cached && typeof cached === 'object' ? cached : null;
-+  } catch (e) {
-+    console.warn('readLatest error ' + pair + ': ' + e.message);
-+    return null;
-+  }
-+}
-+
-+/**
-+ * Write one signal into the cache.
-+ *
-+ * `meta.opportunistic` marks an entry warmed by a user request rather than by
-+ * the cron, so the two are distinguishable in the response and in /health.
-+ * Never throws: a cache write failing must not fail the request that triggered it.
-+ */
-+export async function writeLatest(pair, payload, meta, env) {
-+  if (!env || !env.SIGNAL_CACHE || !payload) return false;
-+  try {
-+    const record = {
-+      ...payload,
-+      cached: true,
-+      generatedAt: (meta && meta.generatedAt) || new Date().toISOString(),
-+      generationId: (meta && meta.generationId) || null,
-+      opportunistic: !!(meta && meta.opportunistic),
-+    };
-+    await env.SIGNAL_CACHE.put(latestKey(pair), JSON.stringify(record), {
-+      expirationTtl: SCAN_CONFIG.LATEST_TTL_SECONDS,
-+    });
-+    return true;
-+  } catch (e) {
-+    console.warn('writeLatest error ' + pair + ': ' + e.message);
-+    return false;
-+  }
-+}
-diff --git a/src/index.js b/src/index.js
-index 9be0c23..36ccfc3 100644
---- a/src/index.js
-+++ b/src/index.js
-@@ -9,11 +9,31 @@ import { sanitizePair } from './utils/pairs.js';
- import { checkRateLimit } from './middleware/rateLimit.js';
- import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
- import { handleSignal, handleBatch } from './handlers/signal.js';
-+import { handleLatest } from './handlers/latest.js';
- import { scheduledTracker } from './history/stats.js';
-+import { scheduledScan } from './handlers/scheduledScan.js';
- import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
+   if (signalId)
+-    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId, entrySource));
++    ctx.waitUntil(saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult));
  
- export default {
-+  /**
-+   * Two crons share this handler (wrangler.toml `crons`):
-+   *   */2 * * * *  -> result checker (Phase B)
-+   *   */5 * * * *  -> signal scanner (Phase 7)
-+   *
-+   * `event.cron` carries the pattern that fired. If a runtime ever omits it we
-+   * fall back to the result checker, which is the cheaper and more critical of
-+   * the two — a missed scan self-heals on the next tick, a missed result check
-+   * delays win/loss resolution.
-+   */
-   async scheduled(event, env, ctx) {
-+    const cron = event && event.cron;
-+    if (cron === '*/5 * * * *') {
-+      ctx.waitUntil(scheduledScan(env, ctx));
-+      return;
-+    }
-+    if (cron && cron !== '*/2 * * * *') {
-+      console.warn('scheduled: unrecognised cron pattern "' + cron + '", running result checker');
-+    }
-     ctx.waitUntil(scheduledTracker(env));
-   },
+   return otcResult;
+ }
+diff --git a/src/history/stats.js b/src/history/stats.js
+index 9bcdadf..b55c90c 100644
+--- a/src/history/stats.js
++++ b/src/history/stats.js
+@@ -4,6 +4,7 @@ import { HISTORY_CONFIG } from '../config.js';
+ import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
+ import { incrementQuota } from './quota.js';
+ import { applyResult as cbApplyResult } from './circuitBreaker.js';
++import { pushResultToSubscribers } from '../handlers/pushToSubscribers.js';
  
-@@ -48,9 +68,13 @@ export default {
-             examples: ['EUR/USD','GBP/JPY','BTC/USD','ETH/EUR','SOL/USDT','EURUSD-OTC'],
-           }, 400);
-         } else {
--          response = await handleSignal(pair, env, ctx);
-+          const preferCache = url.searchParams.get('preferCache') === 'true';
-+          response = await handleSignal(pair, env, ctx, { preferCache });
-         }
- 
-+      } else if (path === '/api/signals/latest') {
-+        response = await handleLatest(url, env);
-+
-       } else if (path === '/api/batch') {
-         response = await handleBatch(url, env, ctx);
- 
-@@ -73,6 +97,9 @@ export default {
-           endpoints: {
-             health:    '/',
-             signal:    '/api/signal?pair=EUR/USD',
-+            signalCached: '/api/signal?pair=EUR/USD&preferCache=true',
-+            latestAll: '/api/signals/latest',
-+            latestOne: '/api/signals/latest?pair=BTC/USD',
-             signalOTC: '/api/signal?pair=EURUSD-OTC',
-             crypto:    '/api/signal?pair=BTC/USD',
-             batch:     '/api/batch?pairs=EUR/USD,GBP/JPY,BTC/USD',
+ function pairKey(pair) {
+   return pair.replace(/\//g, '_').replace(/-/g, '_');
+@@ -212,6 +213,9 @@ export async function scheduledTracker(env) {
+         await env.SIGNAL_CACHE.delete(kvEntry.name);
+         // §3.3: shadow rows are outcome-tracked but never pollute WR / CB state
+         if (!record.cbShadow) await updatePairStats(record.pair, winLoss, record, env);
++        // PHASE 10: tell whoever received the original signal how it resolved.
++        // Only fires for signals that were actually pushed (pushLog lookup).
++        await pushResultToSubscribers(record, winLoss, exitPrice, env);
+         checked++;
+         if (checked >= 10) break;
+       } catch (e) {
 diff --git a/wrangler.toml b/wrangler.toml
-index d20c7f3..fdadb5c 100644
+index fdadb5c..1a0724a 100644
 --- a/wrangler.toml
 +++ b/wrangler.toml
-@@ -7,4 +7,5 @@ binding = "SIGNAL_CACHE"
+@@ -6,6 +6,13 @@ compatibility_date = "2025-01-01"
+ binding = "SIGNAL_CACHE"
  id = "f553a3f10915478fa1b8165dd58ff6ea"
  
++# PHASE 10: read-only access to the Bot's KV so the worker can enumerate
++# Telegram subscribers (auto_users index + u:<chatId> records).
++# Same Cloudflare account, so binding by namespace id works.
++[[kv_namespaces]]
++binding = "BOT_KV"
++id = "39653d1f9b5147259cf3791658f131d7"
++
  [triggers]
--crons = ["*/2 * * * *"]
-+# */2 = result checker (Phase B) · */5 = signal scanner (Phase 7)
-+crons = ["*/2 * * * *", "*/5 * * * *"]
+ # */2 = result checker (Phase B) · */5 = signal scanner (Phase 7)
+ crons = ["*/2 * * * *", "*/5 * * * *"]

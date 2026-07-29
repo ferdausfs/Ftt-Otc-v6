@@ -7,6 +7,7 @@ import { buildMultiTimeframeSignal } from '../signal/engine.js';
 import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
 import { saveSignalToHistory } from '../history/stats.js';
 import { isTripped } from '../history/circuitBreaker.js';
+import { pushSignalToSubscribers } from './pushToSubscribers.js';
 import { detectCorrelationConflicts } from '../analysis/filters.js';
 import { readLatest, writeLatest, enrichAge, isStale } from '../history/latestCache.js';
 import {
@@ -27,6 +28,32 @@ function classifyEntrySource(cacheHits) {
   if (cacheHits === 1 || cacheHits === 2) return 'CACHE_PARTIAL';
   if (cacheHits === 3) return 'CACHE_ALL';
   return null;
+}
+
+/**
+ * PHASE 10 — persist, then push only if the record was genuinely new.
+ *
+ * saveSignalToHistory() returns {deduped:true} when its 30-minute guard decides
+ * this is a re-poll of an existing setup. /api/signal mints a fresh signalId on
+ * every call (App auto-refresh 60s, Bot cron 5min, every manual view), so
+ * pushing unconditionally would fire many Telegram messages for one setup.
+ * Chaining the push behind the save result means subscribers are notified
+ * exactly when a new row lands in history.
+ */
+async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response) {
+  let saveResult = null;
+  try {
+    saveResult = await saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource);
+  } catch (e) {
+    console.warn('saveAndPush: save failed for ' + pair + ': ' + e.message);
+    return;
+  }
+  if (saveResult && saveResult.deduped) return;   // re-poll — already announced
+  try {
+    await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+  } catch (e) {
+    console.warn('saveAndPush: push failed for ' + pair + ': ' + e.message);
+  }
 }
 
 /**
@@ -164,7 +191,7 @@ export async function handleSignalRaw(pair, env, ctx) {
   };
 
   if (signalId)
-    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId, entrySource));
+    ctx.waitUntil(saveAndPush(signal, pair, false, env, signalId, entrySource, result));
 
   return result;
 }
@@ -245,7 +272,7 @@ async function handleSignalRawOTC(pair, env, ctx) {
   };
 
   if (signalId)
-    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId, entrySource));
+    ctx.waitUntil(saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult));
 
   return otcResult;
 }

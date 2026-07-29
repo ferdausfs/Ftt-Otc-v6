@@ -1,5 +1,75 @@
 # Ftt-Otc-v6 — Agent Log
 
+## 2026-07-29 — Phase 10: real-time cross-surface push (NOT deployed)
+
+**Base:** `24985da` (Phase 7.1). 7 files: 3 modified + wrangler.toml, 1 new module,
+2 test scripts. 955 insertions / 2 deletions. App and Bot repos untouched.
+
+### Five spec assumptions checked against the two repos first — four would have broken silently
+- **Bot keeps its own `auto_users` index**, so the spec's `BOT_KV.list({prefix:'u:'})`
+  full scan is both wasteful and wrong: it would include auto-disabled users and
+  show a different population than the Bot's own cron sees. Used the index.
+- **`gradeFilter` is only ever `ALL` | `AB` | `A`** (settings keyboard, line 606).
+  The spec's rank table `{A+:5,A:4,B:3...}` has no `AB` entry, so `rank['AB']||0`
+  = 0 and the "A+B only" filter would have passed everything. Mirrored the Bot's
+  real `passGrade`/`passConf`/`passAI` instead.
+- **`parse_mode:'HTML'` would reintroduce the Bot's documented Bug#1.** The Bot
+  stripped parse_mode entirely because signal text contains `( ) . ! - _` and `<`,
+  which made Telegram answer 400 while the error was only logged — users silently
+  got nothing. Sending plain text.
+- **No duplicate guard in the spec.** `/api/signal` mints a new signalId on every
+  call, and it is called constantly (App auto-refresh 60s, Bot cron 5min, every
+  manual view), so "push on every call" meant ~30 Telegram messages for one setup
+  inside the 30-minute dedup window. Push is now chained behind
+  `saveSignalToHistory()`'s `{deduped}` result, plus a per-(subscriber,pair,
+  direction) lock with the same 30-minute TTL.
+- Result-push pip precision was hardcoded to 4dp; now chosen from the entry price
+  so crypto shows `-50.00` instead of a rounded-away figure and forex keeps 5dp.
+
+### Option B chosen (cross-worker KV), not Option A
+Option A needed a new `/api/subscribers` endpoint in the Bot, violating the round's
+"Bot changes: ZERO" rule. Option B binds the Bot's namespace id directly in
+`wrangler.toml`. Same account, so this is standard — but it could not be verified
+without deploying, so it is the first thing to check post-deploy via
+`/health` -> `phase10.botKvBound` / `subscriberCount`.
+
+### Changes
+- `handlers/pushToSubscribers.js` (new) — enumeration via `auto_users`, Bot-mirrored
+  filters, idempotency lock, plain-text formatter, Telegram sender, `/health` stats.
+  Refuses to cache anything and never blocks: with no `BOT_TOKEN` the whole feature
+  is inert (`{skipped:'no-token'}`).
+- `handlers/signal.js` — `saveAndPush()` wraps save-then-push for both the
+  forex/crypto and OTC emit paths, inside `ctx.waitUntil`.
+- `history/stats.js` — result checker notifies exactly the subscribers recorded in
+  `pushLog:<id>`, then consumes the log so a re-resolve cannot double-notify.
+- `handlers/health.js` — `phase10` block. `wrangler.toml` — `BOT_KV` binding.
+- Engine untouched: `git diff src/signal/ src/fetch/ src/indicators/ src/analysis/`
+  is empty.
+
+### Verification — 80 assertions, 0 failures
+`node --check` 35/35 · smoke 61/61 · integration 19/19. The integration suite runs
+the real `handleSignalRaw` -> engine -> push chain and the real `scheduledTracker`
+with only HTTP stubbed: three back-to-back identical calls produce exactly one
+Telegram message, an unwatched pair produces none, a totally dead Telegram still
+returns a valid signal to the caller, and a resolved trade emits one "Result: WIN".
+
+**The grep assertion caught a real bug:** `saveAndPush` was never inserted, because
+my anchor matched `handleSignal(pair, env, ctx)` while Phase 7 had changed the
+signature to `(pair, env, ctx, opts)`. The push would never have fired. Two other
+failures were faults in my own test harness (a comment-vs-code grep, and a mock
+returning the candle at the bracket start so `fetchExpiryPrice` correctly rejected
+it as NO_MATCH).
+
+### Open
+- The Bot's autoScan still notifies users itself, so a user could receive both the
+  Bot's message and the worker's push for the same setup. The two locks live in
+  different keyspaces and cannot see each other. Fixing it properly needs a Bot
+  change, which this round forbade.
+- `BOT_TOKEN` is not set on this worker yet; until it is, nothing is pushed.
+
+---
+
+
 ## 2026-07-29 — Phase 7: unified cron-driven signal cache (NOT deployed)
 
 **Base:** `d80e989`. 10 files: 5 modified, 3 new, 2 test scripts. 968 insertions / 4 deletions.

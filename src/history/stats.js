@@ -4,6 +4,7 @@ import { HISTORY_CONFIG } from '../config.js';
 import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
 import { incrementQuota } from './quota.js';
 import { applyResult as cbApplyResult } from './circuitBreaker.js';
+import { pushResultToSubscribers } from '../handlers/pushToSubscribers.js';
 
 function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
@@ -212,6 +213,9 @@ export async function scheduledTracker(env) {
         await env.SIGNAL_CACHE.delete(kvEntry.name);
         // §3.3: shadow rows are outcome-tracked but never pollute WR / CB state
         if (!record.cbShadow) await updatePairStats(record.pair, winLoss, record, env);
+        // PHASE 10: tell whoever received the original signal how it resolved.
+        // Only fires for signals that were actually pushed (pushLog lookup).
+        await pushResultToSubscribers(record, winLoss, exitPrice, env);
         checked++;
         if (checked >= 10) break;
       } catch (e) {

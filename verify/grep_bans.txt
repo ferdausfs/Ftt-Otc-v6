@@ -1,67 +1,50 @@
-# §7 — grep verification
+# §5 — grep verification
 
-## 7.2 — no deploy / push in agent-authored content
-$ grep -rin "wrangler deploy|git push" src/ scripts/ verify/ wrangler.toml
-(0 hits)
-  note: .github/workflows/deploy.yml is pre-existing (untouched, not triggered).
+## §5.2 — push wiring
+$ grep -rn "pushSignalToSubscribers|pushResultToSubscribers|BOT_TOKEN" src/
+src/handlers/health.js:48:    // BOT_TOKEN secret is not set on this worker, so pushes are inert.
+src/handlers/signal.js:10:import { pushSignalToSubscribers } from './pushToSubscribers.js';
+src/handlers/signal.js:53:    await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+src/handlers/pushToSubscribers.js:149:export async function pushSignalToSubscribers(signal, env) {
+src/handlers/pushToSubscribers.js:155:  if (!env || !env.BOT_TOKEN) {
+src/handlers/pushToSubscribers.js:203:    console.warn('pushSignalToSubscribers error: ' + e.message);
+src/handlers/pushToSubscribers.js:212:export async function pushResultToSubscribers(record, winLoss, exitPrice, env) {
+src/handlers/pushToSubscribers.js:215:  if (!env || !env.BOT_TOKEN || !env.SIGNAL_CACHE) return { pushed: 0, skipped: 'not-configured' };
+src/handlers/pushToSubscribers.js:235:    console.warn('pushResultToSubscribers error: ' + e.message);
+src/handlers/pushToSubscribers.js:302:  const url = TELEGRAM_API + '/bot' + env.BOT_TOKEN + '/sendMessage';
+src/handlers/pushToSubscribers.js:323:  const enabled = !!(env && env.BOT_TOKEN);
+src/history/stats.js:7:import { pushResultToSubscribers } from '../handlers/pushToSubscribers.js';
+src/history/stats.js:218:        await pushResultToSubscribers(record, winLoss, exitPrice, env);
 
-## 7.3 — no WR guarantee language in shipped code
-$ grep -rinE "75%|guarantee|will achieve" src/
-(0 hits)
+## §5.3 — no deploy/push commands
+scripts/phase10_smoke.mjs:322:  ok('no deploy commands', !/wrangler deploy|git push/.test(sig + stats + health + wr));
+  note: .github/workflows/deploy.yml is pre-existing, untouched, not triggered.
 
-## 7.4 — new wiring present
-$ grep -rn "SCAN_PAIRS|scheduledScan|handleLatest" src/ | grep -v '^src/config.js'
-src/handlers/scheduledScan.js:4: * Keeps `latest:<PAIR>` warm for every pair in SCAN_PAIRS so the App and the
-src/handlers/scheduledScan.js:26:import { SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
-src/handlers/scheduledScan.js:41:export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketOpen()) {
-src/handlers/scheduledScan.js:46:      console.warn('scheduledScan: unsupported pair skipped: ' + raw);
-src/handlers/scheduledScan.js:56:export async function scheduledScan(env, ctx) {
-src/handlers/scheduledScan.js:59:    console.warn('scheduledScan: SIGNAL_CACHE not bound, aborting');
-src/handlers/scheduledScan.js:65:  const skipped = SCAN_PAIRS.length - activePairs.length;
-src/handlers/scheduledScan.js:66:  console.log('scheduledScan start ' + generationId
-src/handlers/scheduledScan.js:67:    + ' active=' + activePairs.length + '/' + SCAN_PAIRS.length
-src/handlers/scheduledScan.js:78:      console.warn('scheduledScan ' + generationId + ' hit MAX_SCAN_DURATION at '
-src/handlers/scheduledScan.js:93:          console.warn('scheduledScan batch rejection: ' + (r.reason && r.reason.message));
-src/handlers/scheduledScan.js:104:  console.log('scheduledScan done ' + generationId + ': ' + ok + ' ok, ' + failed
-src/handlers/latest.js:12:import { SCAN_PAIRS, SCAN_CONFIG } from '../config.js';
-src/handlers/latest.js:17:export async function handleLatest(url, env) {
-src/handlers/latest.js:41:        scanned: SCAN_PAIRS.includes(pair),
-src/handlers/latest.js:94:    scannedPairs: SCAN_PAIRS,
-src/handlers/latest.js:138:      scannedPairs: SCAN_PAIRS.length,
-src/history/latestCache.js:5: * (scheduledScan writes, /api/signals/latest reads, /api/signal?preferCache
-src/index.js:12:import { handleLatest } from './handlers/latest.js';
-src/index.js:14:import { scheduledScan } from './handlers/scheduledScan.js';
-src/index.js:31:      ctx.waitUntil(scheduledScan(env, ctx));
-src/index.js:76:        response = await handleLatest(url, env);
+## BOT_KV binding (Option B chosen — see report §2)
+13:binding = "BOT_KV"
+14-id = "39653d1f9b5147259cf3791658f131d7"
+15-
 
-## 7.5 — engine untouched (reuse, not fork)
-$ git diff --stat src/signal/engine.js src/signal/otcEngine.js
-(empty = zero engine changes; the scanner calls handleSignalRaw instead)
+## parse_mode must NOT appear in shipped code (Bot Bug#1)
+21: * 3. Messages are sent as PLAIN TEXT with no parse_mode. The Bot deliberately
+22: *    removed parse_mode after its Bug#1: signal text contains ( ) . ! - _ which
+24: *    logged, so users silently got nothing. The spec's `parse_mode:'HTML'`
+298: * Plain-text sendMessage. No parse_mode on purpose — see the header note and
 
-## 7.9 — both crons registered
-11:crons = ["*/2 * * * *", "*/5 * * * *"]
+## subscriber enumeration uses the Bot's own index
+10: * 1. Subscriber enumeration uses the Bot's OWN index (`auto_users`), not a
+88:    autoUsers = await env.BOT_KV.get('auto_users', 'json');
+90:    console.warn('push: auto_users read failed: ' + e.message);
+339:      const autoUsers = await env.BOT_KV.get('auto_users', 'json');
 
-## 7.10 — /health exposes scanCache
-22:  const scanCache      = await getScanCacheStats(env);   // Phase 7
-44:    scanCache,
+## no engine / signal-generation changes
+(empty = engine untouched)
 
-## backward compat — existing endpoints still routed
-  /api/signal    2 route hit(s)
-  /api/batch     2 route hit(s)
-  /api/history   1 route hit(s)
-  /api/stats     1 route hit(s)
-  /api/report    1 route hit(s)
-  /api/pairs     2 route hit(s)
-  /health        1 route hit(s)
-
-## KV prefix collision check
-existing prefixes:
-  'c:
-  'cb:
-  'latest:
-  'pending:
-  'quota:
-  'rr:
-  'sig:
-  'stats:
-  -> 'latest:' is new and distinct
+## existing endpoints still routed
+  /api/signal            2 hit(s)
+  /api/batch             2 hit(s)
+  /api/history           1 hit(s)
+  /api/stats             1 hit(s)
+  /api/report            1 hit(s)
+  /api/pairs             2 hit(s)
+  /api/signals/latest    2 hit(s)

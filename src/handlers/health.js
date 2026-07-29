@@ -6,6 +6,7 @@ import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
 import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stats.js';
 import { readQuota } from '../history/quota.js';
 import { getScanCacheStats } from './latest.js';
+import { getPushStats } from './pushToSubscribers.js';
 
 // ── HEALTH ──────────────────────────────────
 export async function handleHealth(env) {
@@ -20,6 +21,7 @@ export async function handleHealth(env) {
   const quotaUsedToday = await readQuota(env);
   const rotationIdx    = await readRotationIndex(env);
   const scanCache      = await getScanCacheStats(env);   // Phase 7
+  const phase10        = await getPushStats(env);        // Phase 10 push
 
   return jsonResponse({
     status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
@@ -42,6 +44,9 @@ export async function handleHealth(env) {
     // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
     // means the */5 scan is failing or being skipped.
     scanCache,
+    // Phase 10 — cross-surface Telegram push. pushEnabled false means the
+    // BOT_TOKEN secret is not set on this worker, so pushes are inert.
+    phase10,
     history: {
       enabled: !!env.SIGNAL_CACHE, maxPerPair: HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
       winRateLookback: HISTORY_CONFIG.WIN_RATE_LOOKBACK, resultCheckDelay: HISTORY_CONFIG.RESULT_CHECK_DELAY + 's after expiry',

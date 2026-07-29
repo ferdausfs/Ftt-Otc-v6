@@ -6,6 +6,13 @@ compatibility_date = "2025-01-01"
 binding = "SIGNAL_CACHE"
 id = "f553a3f10915478fa1b8165dd58ff6ea"
 
+# PHASE 10: read-only access to the Bot's KV so the worker can enumerate
+# Telegram subscribers (auto_users index + u:<chatId> records).
+# Same Cloudflare account, so binding by namespace id works.
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "39653d1f9b5147259cf3791658f131d7"
+
 [triggers]
 # */2 = result checker (Phase B) · */5 = signal scanner (Phase 7)
 crons = ["*/2 * * * *", "*/5 * * * *"]
