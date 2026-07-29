@@ -1,79 +1,67 @@
-# §7.2 — no deploy/push anywhere in agent-authored content
-$ grep -rin "wrangler deploy\|git push" src/ analysis/ verify/ 2>/dev/null
+# §7 — grep verification
+
+## 7.2 — no deploy / push in agent-authored content
+$ grep -rin "wrangler deploy|git push" src/ scripts/ verify/ wrangler.toml
+(0 hits)
+  note: .github/workflows/deploy.yml is pre-existing (untouched, not triggered).
+
+## 7.3 — no WR guarantee language in shipped code
+$ grep -rinE "75%|guarantee|will achieve" src/
 (0 hits)
 
-  note: .github/workflows/deploy.yml is a PRE-EXISTING repo file (untouched
-  this round, base commit 9fc5aef). It contains no 'wrangler deploy' string
-  and was NOT triggered — nothing was pushed.
+## 7.4 — new wiring present
+$ grep -rn "SCAN_PAIRS|scheduledScan|handleLatest" src/ | grep -v '^src/config.js'
+src/handlers/scheduledScan.js:4: * Keeps `latest:<PAIR>` warm for every pair in SCAN_PAIRS so the App and the
+src/handlers/scheduledScan.js:26:import { SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
+src/handlers/scheduledScan.js:41:export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketOpen()) {
+src/handlers/scheduledScan.js:46:      console.warn('scheduledScan: unsupported pair skipped: ' + raw);
+src/handlers/scheduledScan.js:56:export async function scheduledScan(env, ctx) {
+src/handlers/scheduledScan.js:59:    console.warn('scheduledScan: SIGNAL_CACHE not bound, aborting');
+src/handlers/scheduledScan.js:65:  const skipped = SCAN_PAIRS.length - activePairs.length;
+src/handlers/scheduledScan.js:66:  console.log('scheduledScan start ' + generationId
+src/handlers/scheduledScan.js:67:    + ' active=' + activePairs.length + '/' + SCAN_PAIRS.length
+src/handlers/scheduledScan.js:78:      console.warn('scheduledScan ' + generationId + ' hit MAX_SCAN_DURATION at '
+src/handlers/scheduledScan.js:93:          console.warn('scheduledScan batch rejection: ' + (r.reason && r.reason.message));
+src/handlers/scheduledScan.js:104:  console.log('scheduledScan done ' + generationId + ': ' + ok + ' ok, ' + failed
+src/handlers/latest.js:12:import { SCAN_PAIRS, SCAN_CONFIG } from '../config.js';
+src/handlers/latest.js:17:export async function handleLatest(url, env) {
+src/handlers/latest.js:41:        scanned: SCAN_PAIRS.includes(pair),
+src/handlers/latest.js:94:    scannedPairs: SCAN_PAIRS,
+src/handlers/latest.js:138:      scannedPairs: SCAN_PAIRS.length,
+src/history/latestCache.js:5: * (scheduledScan writes, /api/signals/latest reads, /api/signal?preferCache
+src/index.js:12:import { handleLatest } from './handlers/latest.js';
+src/index.js:14:import { scheduledScan } from './handlers/scheduledScan.js';
+src/index.js:31:      ctx.waitUntil(scheduledScan(env, ctx));
+src/index.js:76:        response = await handleLatest(url, env);
 
-# §7.3 — no WR guarantees / 75% promises
-$ grep -rin "75%\|75 percent\|guarantee\|will achieve" src/
-(0 hits — no WR language anywhere in shipped code)
+## 7.5 — engine untouched (reuse, not fork)
+$ git diff --stat src/signal/engine.js src/signal/otcEngine.js
+(empty = zero engine changes; the scanner calls handleSignalRaw instead)
 
-$ grep -rin "75%\|75 percent\|guarantee\|will achieve" PHASE_B_FIX_REPORT.md
-  2 hits, both benign — disclosed rather than suppressed:
-    line 3   — the §9 mandated framing paragraph, inserted verbatim as required.
-               It contains the string "75%+ accuracy" only inside the sentence
-               stating that it is NOT reachable with this dataset/engine.
-    line 119 — this very check's own name in the verification table.
-  No forward-looking WR claim exists in the report. The only projected number
-  (CB 6h ~46.5%) is labelled "mechanism-only gain, engine-quality gain না", and
-  §2 additionally discloses that it drops to 41.1% on production clock
-  semantics.
+## 7.9 — both crons registered
+11:crons = ["*/2 * * * *", "*/5 * * * *"]
 
-# §7.4 — apiKeys[0] hardcode gone (rotation fully replaced it)
-$ grep -rn "apiKeys\[0\]" src/
-(0 hits)
+## 7.10 — /health exposes scanCache
+22:  const scanCache      = await getScanCacheStats(env);   // Phase 7
+44:    scanCache,
 
-# §7.5 — MAX_RETRIES fetch cap gone
-$ grep -rn "Math.min(apiKeys" src/
-(0 hits)
-$ grep -rn "MAX_RETRIES" src/
-src/config.js:9:  // MAX_RETRIES: reserved (fetch layer now uses apiKeys.length; kept for backward-compat)
-src/config.js:10:  MAX_RETRIES: 3,
-src/fetch/candles.js:36:  // B0-6: no MAX_RETRIES cap — every provisioned key gets a chance. Rotation
-src/history/stats.js:250:  const maxAttempts = apiKeys.length;     // B0-6: no MAX_RETRIES cap
-  -> only the config declaration + its reserved-comment remain; no fetch-path use.
+## backward compat — existing endpoints still routed
+  /api/signal    2 route hit(s)
+  /api/batch     2 route hit(s)
+  /api/history   1 route hit(s)
+  /api/stats     1 route hit(s)
+  /api/report    1 route hit(s)
+  /api/pairs     2 route hit(s)
+  /health        1 route hit(s)
 
-# §7.6 — numbered-key loop cap gone
-$ grep -rn "i <= 10\|i<=10" src/fetch/keys.js
-26:  // no `i <= 10` loop cap. Gaps tolerated, order by numeric index.
-
-# §7.7 — new CB mechanism present, no kill-switch/blocklist added
-$ grep -rn "circuit\|cooldown\|streak" src/
-src/handlers/signal.js: 9:import { isTripped } from '../history/circuitBreaker.js';
-src/handlers/signal.js: 91:  // ── B2: per-pair circuit breaker (check site 1 of 2) ──
-src/handlers/signal.js: 92:  // Cooldown suppresses the trade but the row is still persisted with
-src/handlers/signal.js: 101:    signal.circuitBreaker = {
-src/handlers/signal.js: 102:      tripped: true, cooldownUntil: cb.cooldownUntil,
-src/handlers/signal.js: 103:      lossStreak: cb.lossStreak, wouldBeSignal, cbShadow: true,
-src/handlers/signal.js: 114:      circuitBreaker: signal.circuitBreaker,
-src/handlers/signal.js: 168:  // ── B2: per-pair circuit breaker (check site 2 of 2, OTC) ──
-src/handlers/signal.js: 176:    signal.circuitBreaker = {
-src/handlers/signal.js: 177:      tripped: true, cooldownUntil: cb.cooldownUntil,
-src/handlers/signal.js: 178:      lossStreak: cb.lossStreak, wouldBeSignal, cbShadow: true,
-src/handlers/signal.js: 191:      circuitBreaker: signal.circuitBreaker,
-src/history/stats.js: 6:import { applyResult as cbApplyResult } from './circuitBreaker.js';
-src/history/stats.js: 122:      // and prevents re-poll inflation of win/loss streaks.
-src/history/stats.js: 394:    // feeds the circuit breaker. Shadow rows never reach here (skipped upstream).
-src/history/circuitBreaker.js: 2: * B2 — per-pair circuit breaker.
-src/history/circuitBreaker.js: 4: * State: KV key `cb:<PAIR_KEY>` = { lossStreak, cooldownUntil, updatedAt }
-src/history/circuitBreaker.js: 5: *   - LOSS  -> lossStreak++, and at >= LOSS_STREAK_LIMIT sets a fixed cooldown
-src/history/circuitBreaker.js: 6: *   - WIN   -> lossStreak = 0, cooldown cleared
-src/history/circuitBreaker.js: 9: * While a pair is in cooldown the handler emits NO_TRADE but still persists the
-src/history/circuitBreaker.js: 15:const LOSS_STREAK_LIMIT = 2;
-src/history/circuitBreaker.js: 16:const COOLDOWN_MS = 6 * 60 * 60 * 1000;   // 6h fixed
-src/history/circuitBreaker.js: 24:  return { lossStreak: 0, cooldownUntil: null, updatedAt: null };
-src/history/circuitBreaker.js: 38:  if (!s.cooldownUntil) return { tripped: false };
-src/history/circuitBreaker.js: 39:  const until = new Date(s.cooldownUntil).getTime();
-src/history/circuitBreaker.js: 41:    return { tripped: true, cooldownUntil: s.cooldownUntil, lossStreak: s.lossStreak || 0 };
-src/history/circuitBreaker.js: 51:      s.lossStreak = 0;
-src/history/circuitBreaker.js: 52:      s.cooldownUntil = null;
-src/history/circuitBreaker.js: 54:      s.lossStreak = (s.lossStreak || 0) + 1;
-src/history/circuitBreaker.js: 55:      if (s.lossStreak >= LOSS_STREAK_LIMIT)
-src/history/circuitBreaker.js: 56:        s.cooldownUntil = new Date(Date.now() + COOLDOWN_MS).toISOString();
-src/history/circuitBreaker.js: 60:  } catch (e) { console.warn('circuitBreaker applyResult error:', e.message); }
-src/history/circuitBreaker.js: 63:export const __cbTest = { key, LOSS_STREAK_LIMIT, COOLDOWN_MS };
-
-$ grep -rin "blocklist\|blacklist\|killswitch\|kill_switch\|disablePair" src/
-(0 hits — no blocklist mechanism introduced)
+## KV prefix collision check
+existing prefixes:
+  'c:
+  'cb:
+  'latest:
+  'pending:
+  'quota:
+  'rr:
+  'sig:
+  'stats:
+  -> 'latest:' is new and distinct

@@ -1,143 +1,148 @@
-# §7.10 — smoke test output (3 suites, node 20, no network)
+# §7.6-7.8 — test output (2 suites, node 20, network stubbed)
 
 ==============================================================
-$ node analysis/phase_b_smoke.js       (§4.4f keys/rotation + CB + quota)
+$ node scripts/phase7_smoke.mjs        (unit: keys, freshness, latest, health)
 ==============================================================
-── §4.4f  key loading + rotation ──────────────────────────
-PASS  4.4f-1 numbered format loads all 19 keys
-PASS  4.4f-1 order preserved (first)
-PASS  4.4f-1 order preserved (last)
-PASS  4.4f-2 JSON array format loads all 19 keys
-PASS  4.4f-3 gap tolerance length
-PASS  4.4f-3 numeric-index ordering (not lexicographic)
-PASS  4.4f-4 duplicate keys deduped
-PASS  4.4f-5 rotation hits each of 5 keys 15-25 times
-PASS  4.4f-5 hits sum to 100
-PASS  4.4f-5 readRotationIndex readable
-PASS  4.4f-5 single key short-circuits to 0
-PASS  4.4f-5 no-KV env short-circuits to 0
-PASS  4.4f-6 all 19 keys attempted before success
-PASS  4.4f-6 19th attempt returns candles
-PASS  4.4f-6 quota counted 19 HTTP attempts
-PASS  4.4f-7 5 invocations => exactly 5 HTTP calls
-PASS  4.4f-7 5 distinct keys used (load actually spread)
-PASS  4.4f-7 quota == HTTP call count
+── KV key format (shared by 3 call sites) ─────────────────
+PASS  slash normalised
+PASS  lowercase upper-cased
+PASS  OTC dash normalised
+PASS  round-trip BTC/USD
+PASS  round-trip USD/JPY
+PASS  round-trip OTC keeps the dash
+PASS  prefix distinct from existing ones
 
-── §4.5  circuit breaker flow ─────────────────────────────
-PASS  CB fresh pair not tripped
-PASS  CB 1 loss -> streak 1
-PASS  CB 1 loss -> still not tripped
-PASS  CB 2 losses -> streak 2
-PASS  CB 2 losses -> cooldownUntil set
-PASS  CB 2 losses -> tripped
-PASS  CB cooldown is ~6h
-PASS  CB is per-pair (ETH untouched)
-PASS  CB UNKNOWN ignored (streak unchanged)
-PASS  CB WIN resets streak
-PASS  CB WIN clears cooldown
-PASS  CB WIN -> not tripped
-PASS  CB expired cooldown reads as not tripped
-PASS  CB OTC pair key normalised
-PASS  CB no-KV env is a no-op
+── freshness maths ────────────────────────────────────────
+PASS  age computed in seconds
+PASS  fresh entry not stale
+PASS  entry past TTL is stale
+PASS  isStale agrees with enrichAge
+PASS  nextRefreshIn mid-cycle
+PASS  nextRefreshIn wraps per interval
+PASS  unparseable generatedAt treated as stale
+PASS  null payload survives enrichAge
 
-── §4.3  quota counter ────────────────────────────────────
-PASS  quota starts at 0
-PASS  quota after 7 increments
-PASS  quota key is UTC-day scoped
-PASS  quota no-KV env returns -1
+── writeLatest / readLatest ───────────────────────────────
+PASS  write reports success
+PASS  TTL applied on write
+PASS  cached flag set
+PASS  generationId persisted
+PASS  opportunistic false for cron writes
+PASS  miss returns null
+PASS  no KV binding -> null, no throw
+PASS  write with no binding -> false
 
-── §3.2  entrySource mapping + §4.6 aiStatus ──────────────
-PASS  entrySource FRESH_API at cacheHits 0
-PASS  entrySource CACHE_PARTIAL at 1|2
-PASS  entrySource CACHE_ALL at 3
-PASS  record carries structureVerdict
-PASS  record carries aiStatus
-PASS  record carries coreConfidence
-PASS  record carries entrySource
-PASS  shadow rows skip updatePairStats
-PASS  CB funnel hook present in updatePairStats
-PASS  retry cap uses PENDING_MAX_CHECKS
+── scheduledScan (mocked engine) ──────────────────────────
+PASS  all 14 pairs active when forex open
+PASS  forex dropped when market closed
+PASS  crypto survives a closed forex market
+scheduledScan: unsupported pair skipped: XAU/USD
+PASS  unsupported symbol filtered out
+PASS  pairs are normalised
+
+── handleLatest ───────────────────────────────────────────
+PASS  single pair 200
+PASS  single pair payload
+PASS  age enriched
+PASS  nextRefreshIn present
+PASS  alternate spelling resolves to same entry
+PASS  cache miss is 404
+PASS  404 explains the escape hatch
+PASS  404 says whether the pair is scanned
+PASS  invalid pair is 400
+PASS  all-pairs count
+PASS  keys map back to display pairs
+PASS  oldestCachedAge reported
+PASS  stale single pair -> 404
+PASS  stale row excluded from all-list
+PASS  stale rows counted
+PASS  no KV binding -> 503
+
+── /health scanCache block ────────────────────────────────
+PASS  cachedPairCount
+PASS  scanIntervalSec surfaced
+PASS  ttl surfaced
+PASS  opportunistic entries counted
+PASS  cron generation id reported
+PASS  ages computed
+PASS  no binding -> null
+
+── backward compatibility (spec §9) ───────────────────────
+PASS  endpoint still routed: /api/signal
+PASS  endpoint still routed: /api/batch
+PASS  endpoint still routed: /api/history
+PASS  endpoint still routed: /api/stats
+PASS  endpoint still routed: /api/report
+PASS  endpoint still routed: /api/pairs
+PASS  new endpoint routed
+PASS  cron split on event.cron
+PASS  result checker still wired
+PASS  handleSignalRaw signature unchanged
+PASS  scanner does NOT call saveSignalToHistory (no double write)
+PASS  scanner does not import saveSignalToHistory
+PASS  scanner reuses handleSignalRaw (no forked engine)
+PASS  scanner skips DUMMY_FALLBACK
+PASS  both crons registered
+PASS  engine untouched by Phase 7: engine.js
+PASS  engine untouched by Phase 7: otcEngine.js
 
 ───────────────────────────────────────────────────────────
-PASS: 47   FAIL: 0
-ALL SMOKE TESTS PASSED
+PASS: 68   FAIL: 0
+ALL PHASE 7 SMOKE TESTS PASSED
 
 ==============================================================
-$ node analysis/phase_b_tracker_smoke.js  (scheduledTracker end-to-end)
+$ node scripts/phase7_integration.mjs  (real pipeline, stubbed HTTP)
 ==============================================================
-── B0-3  retry cap: transient failure must not burn the record ──
-PASS  pending record survives a failed check
-PASS  checks counter incremented
-PASS  lastCheckError recorded
-PASS  record dropped only after 15 checks
-PASS  give-up marks result UNKNOWN
-PASS  no stats written for UNKNOWN
+── scheduledScan writes the cache ─────────────────────────
+PASS  scan reported successes
+PASS  one cache entry per successful pair
+PASS  every active pair cached (14 while forex open)
+PASS  entry marked cached
+PASS  generationId stamped
+PASS  cron entries are not opportunistic
+PASS  generatedAt is an ISO timestamp
+PASS  TTL set to 10 min
+PASS  signal body preserved
+PASS  Phase B fields survive caching
+PASS  history written at most once per pair per scan
 
-── B0-1  bracket query + WIN/LOSS resolution ──────────────
-PASS  start_date param present
-PASS  end_date param present
-PASS  outputsize no longer used
-PASS  BUY above entry resolves WIN
-PASS  exit price persisted
-PASS  stats updated
-PASS  pending cleared on success
+── /api/signals/latest serves what the scan wrote ─────────
+PASS  latest returns the scanned pairs
+PASS  serving the cache costs zero upstream calls
+PASS  ages are small right after a scan
 
-── B2  circuit breaker trips after 2 losses via the funnel ──
-PASS  CB state written by funnel hook
-PASS  CB cooldown armed after 2 losses
+── preferCache=true ───────────────────────────────────────
+PASS  miss answers with cached:false
+PASS  miss actually hit upstream
+PASS  cache warmed after miss
+PASS  warm entry flagged opportunistic
+PASS  hit answers with cached:true
+PASS  hit is not a force refresh
+PASS  cache hit made no candle calls
+PASS  cache hit made no AI calls
+PASS  hit carries freshness metadata
 
-── §3.3  shadow rows: tracked, but excluded from WR ───────
-PASS  shadow row still gets its outcome
-PASS  shadow row excluded from pair stats
-PASS  shadow row excluded from CB state
+── default /api/signal is still a force refresh ───────────
+PASS  default response labelled uncached
+PASS  default response labelled forceRefresh
+PASS  force refresh re-ran the engine (new AI round-trips)
+PASS  force refresh produced a distinct signal id
+PASS  force refresh did NOT serve the latest: entry
+PASS  candle cache intentionally still reused (no extra TwelveData spend)
+PASS  backward-compatible shape kept
 
-── B5  additive fields persist through saveSignalToHistory ─
-PASS  structureVerdict persisted
-PASS  aiStatus persisted
-PASS  coreConfidence persisted
-PASS  entrySource persisted
-PASS  cbShadow omitted on normal rows
-PASS  legacy fields intact (direction)
-PASS  legacy fields intact (aiAgreed)
-PASS  OTC aiStatus disagree mapping
+── resilience ─────────────────────────────────────────────
+PASS  forex skipped when closed
+PASS  all scanned when open
+PASS  scan continued past a failing pair
+PASS  failing pair not cached
+PASS  other pairs still cached
+PASS  scan without KV aborts cleanly
 
 ───────────────────────────────────────────────────────────
-PASS: 26   FAIL: 0
-ALL TRACKER SMOKE TESTS PASSED
+PASS: 36   FAIL: 0
+ALL PHASE 7 INTEGRATION TESTS PASSED
 
 ==============================================================
-$ node analysis/phase_b_handler_smoke.js  (handler CB check sites)
-==============================================================
-── §4.5  CB NOT tripped: normal emit path unchanged ───────
-PASS  response has no circuitBreaker block
-PASS  entrySource exposed on response
-PASS  entrySource is a valid enum value
-PASS  coreConfidence present on signal
-
-── §3.3  CB tripped: NO_TRADE + shadow row ────────────────
-PASS  finalSignal forced to NO_TRADE
-PASS  circuitBreaker.tripped
-PASS  circuitBreaker.cbShadow
-PASS  cooldownUntil is in the future
-PASS  wouldBeSignal exposed for the client
-PASS  shadow row written to history
-PASS  shadow row tagged
-PASS  shadow row keeps the would-be direction
-PASS  shadow row carries entrySource
-PASS  no pair stats written by a shadow emit
-PASS  CB lossStreak untouched by a shadow emit
-
-── §4.5  OTC path check site ──────────────────────────────
-PASS  OTC finalSignal forced to NO_TRADE
-PASS  OTC circuitBreaker.tripped
-PASS  OTC shadow row written
-PASS  OTC shadow row tagged
-PASS  OTC stats untouched
-
-───────────────────────────────────────────────────────────
-PASS: 20   FAIL: 0
-ALL HANDLER SMOKE TESTS PASSED
-
-==============================================================
-TOTAL: 93 assertions passed, 0 failed
+TOTAL: 104 assertions passed, 0 failed
 ==============================================================

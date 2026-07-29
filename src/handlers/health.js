@@ -5,6 +5,7 @@ import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlac
 import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
 import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stats.js';
 import { readQuota } from '../history/quota.js';
+import { getScanCacheStats } from './latest.js';
 
 // ── HEALTH ──────────────────────────────────
 export async function handleHealth(env) {
@@ -18,6 +19,7 @@ export async function handleHealth(env) {
   // B0-4 / B0-6 instrumentation
   const quotaUsedToday = await readQuota(env);
   const rotationIdx    = await readRotationIndex(env);
+  const scanCache      = await getScanCacheStats(env);   // Phase 7
 
   return jsonResponse({
     status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
@@ -37,6 +39,9 @@ export async function handleHealth(env) {
       crypto: { status: 'ALWAYS OPEN (24/7)', bases: CRYPTO_BASES, quotes: CRYPTO_QUOTES, topPairs: POPULAR_CRYPTO_PAIRS.slice(0, 10) },
     },
     filters: { minConfidenceFloor: CONFIG.MIN_CONFIDENCE_FLOOR + '%', volumeSpikeMultiplier: CONFIG.VOLUME_SPIKE_FILTER_MULTIPLIER + 'x', newsBlackoutMargin: CONFIG.NEWS_BLACKOUT_MINUTES + ' min', batchMaxPairs: CONFIG.BATCH_MAX_PAIRS },
+    // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
+    // means the */5 scan is failing or being skipped.
+    scanCache,
     history: {
       enabled: !!env.SIGNAL_CACHE, maxPerPair: HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
       winRateLookback: HISTORY_CONFIG.WIN_RATE_LOOKBACK, resultCheckDelay: HISTORY_CONFIG.RESULT_CHECK_DELAY + 's after expiry',

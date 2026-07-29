@@ -7,4 +7,5 @@ binding = "SIGNAL_CACHE"
 id = "f553a3f10915478fa1b8165dd58ff6ea"
 
 [triggers]
-crons = ["*/2 * * * *"]
+# */2 = result checker (Phase B) · */5 = signal scanner (Phase 7)
+crons = ["*/2 * * * *", "*/5 * * * *"]

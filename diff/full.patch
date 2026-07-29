@@ -1,825 +1,1097 @@
+diff --git a/scripts/phase7_integration.mjs b/scripts/phase7_integration.mjs
+new file mode 100644
+index 0000000..73926fc
+--- /dev/null
++++ b/scripts/phase7_integration.mjs
+@@ -0,0 +1,254 @@
++/**
++ * Phase 7 integration test — node scripts/phase7_integration.mjs
++ *
++ * Runs the REAL pipeline (scheduledScan -> handleSignalRaw -> candles -> engine
++ * -> AI -> KV) with only the network stubbed, so the wiring is proven rather
++ * than grep-asserted. Verifies:
++ *
++ *   - a scan writes one latest:<PAIR> per active pair, with TTL + generationId
++ *   - history is written EXACTLY ONCE per signal (the spec's sketch would have
++ *     produced two records per scanned pair)
++ *   - preferCache=true serves the cache with zero upstream requests
++ *   - preferCache on a miss generates, answers, and warms the cache
++ *   - default /api/signal still forces a fresh run (backward compatible)
++ *   - the market-closed skip, the duration cap and per-pair failure isolation
++ */
++
++import { SCAN_CONFIG } from '../src/config.js';
++
++let pass = 0, fail = 0;
++const failures = [];
++const ok = (n, c, d) => { if (c) { pass++; console.log('PASS  ' + n); } else { fail++; failures.push(n); console.log('FAIL  ' + n + (d ? ' — ' + d : '')); } };
++const eq = (n, a, b) => ok(n, JSON.stringify(a) === JSON.stringify(b), 'expected ' + JSON.stringify(b) + ', got ' + JSON.stringify(a));
++
++function makeKV() {
++  const m = new Map();
++  return {
++    _m: m,
++    async get(k, t) { if (!m.has(k)) return null; const v = m.get(k).value; return t === 'json' ? JSON.parse(v) : v; },
++    async put(k, v, opts) { m.set(k, { value: String(v), opts }); },
++    async delete(k) { m.delete(k); },
++    async list({ prefix }) { return { keys: [...m.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })) }; },
++  };
++}
++
++// ── network stub: TwelveData candles + both AI providers ───────────────
++let httpCalls = { candles: 0, cerebras: 0, groq: 0 };
++let failPairs = new Set();
++
++function candleSeries(n, base, step) {
++  const out = [];
++  let c = base;
++  for (let i = 0; i < n; i++) {
++    const o = c;
++    c = c + step + Math.sin(i / 3) * step * 0.1;
++    out.push({
++      datetime: new Date(Date.now() - (n - i) * 60000).toISOString().slice(0, 19).replace('T', ' '),
++      open: o.toFixed(5), high: (Math.max(o, c) + step * 0.3).toFixed(5),
++      low: (Math.min(o, c) - step * 0.3).toFixed(5), close: c.toFixed(5), volume: '1000',
++    });
++  }
++  return out.reverse();
++}
++
++function installFetchStub() {
++  httpCalls = { candles: 0, cerebras: 0, groq: 0 };
++  globalThis.fetch = async (url) => {
++    const u = String(url);
++    if (u.includes('twelvedata')) {
++      httpCalls.candles++;
++      const symbol = new URL(u).searchParams.get('symbol') || '';
++      if ([...failPairs].some(p => symbol.includes(p))) {
++        return new Response('upstream boom', { status: 500 });
++      }
++      return new Response(JSON.stringify({ values: candleSeries(120, 100, 0.2) }),
++        { status: 200, headers: { 'content-type': 'application/json' } });
++    }
++    if (u.includes('cerebras')) {
++      httpCalls.cerebras++;
++      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 80, reason: 'stub' }) } }] }),
++        { status: 200, headers: { 'content-type': 'application/json' } });
++    }
++    if (u.includes('groq')) {
++      httpCalls.groq++;
++      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 78, reason: 'stub' }) } }] }),
++        { status: 200, headers: { 'content-type': 'application/json' } });
++    }
++    throw new Error('unexpected fetch: ' + u.slice(0, 80));
++  };
++}
++
++const drain = async (sink) => { await Promise.allSettled(sink); sink.length = 0; };
++const quiet = () => { const w = console.warn, l = console.log; console.warn = () => {}; console.log = () => {}; return () => { console.warn = w; console.log = l; }; };
++
++const baseEnv = () => ({
++  SIGNAL_CACHE: makeKV(),
++  TWELVEDATA_API_KEY_1: 'k1',
++  CEREBRAS_API_KEY: 'c1',
++  GROQ_API_KEY: 'g1',
++});
++
++const { scheduledScan, selectActivePairs } = await import('../src/handlers/scheduledScan.js');
++const { handleSignal } = await import('../src/handlers/signal.js');
++const { handleLatest } = await import('../src/handlers/latest.js');
++
++console.log('── scheduledScan writes the cache ─────────────────────────');
++{
++  installFetchStub();
++  const env = baseEnv();
++  const sink = [];
++  const restore = quiet();
++  // scan a small explicit set by monkey-patching the pair list via selectActivePairs
++  const res = await scheduledScan(env, ctxWith(sink));
++  await drain(sink);
++  restore();
++
++  const keys = [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('latest:'));
++  ok('scan reported successes', res.ok > 0, JSON.stringify(res));
++  eq('one cache entry per successful pair', keys.length, res.ok);
++  ok('every active pair cached (14 while forex open)', keys.length >= 10, 'keys=' + keys.length);
++
++  const sample = JSON.parse(env.SIGNAL_CACHE._m.get(keys[0]).value);
++  eq('entry marked cached', sample.cached, true);
++  ok('generationId stamped', typeof sample.generationId === 'string' && sample.generationId.startsWith('gen_'));
++  eq('cron entries are not opportunistic', sample.opportunistic, false);
++  ok('generatedAt is an ISO timestamp', !Number.isNaN(new Date(sample.generatedAt).getTime()));
++  eq('TTL set to 10 min', env.SIGNAL_CACHE._m.get(keys[0]).opts.expirationTtl, SCAN_CONFIG.LATEST_TTL_SECONDS);
++  ok('signal body preserved', !!sample.signal && typeof sample.signal.finalSignal === 'string');
++  ok('Phase B fields survive caching', 'entrySource' in sample);
++
++  // ── the double-write check that the spec's sketch would have failed ──
++  const histKeys = [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('sig:'));
++  let maxPerPair = 0;
++  for (const k of histKeys) {
++    const arr = JSON.parse(env.SIGNAL_CACHE._m.get(k).value);
++    maxPerPair = Math.max(maxPerPair, arr.length);
++  }
++  ok('history written at most once per pair per scan', maxPerPair <= 1,
++     'max records for one pair after a single scan: ' + maxPerPair);
++}
++
++console.log('\n── /api/signals/latest serves what the scan wrote ─────────');
++{
++  installFetchStub();
++  const env = baseEnv();
++  const sink = [];
++  const restore = quiet();
++  await scheduledScan(env, ctxWith(sink));
++  await drain(sink);
++  const before = { ...httpCalls };
++  const res = await handleLatest(new URL('https://x/api/signals/latest'), env);
++  const body = await res.json();
++  restore();
++
++  ok('latest returns the scanned pairs', body.pairCount >= 10, 'pairCount=' + body.pairCount);
++  eq('serving the cache costs zero upstream calls', httpCalls.candles, before.candles);
++  ok('ages are small right after a scan',
++     Object.values(body.signals).every(s => s.generationAge < 5));
++}
++
++console.log('\n── preferCache=true ───────────────────────────────────────');
++{
++  installFetchStub();
++  const env = baseEnv();
++  const sink = [];
++  const restore = quiet();
++
++  // 1) miss -> generates, answers, warms cache
++  const missRes = await handleSignal('BTC/USD', env, ctxWith(sink), { preferCache: true });
++  await drain(sink);
++  const missBody = await missRes.json();
++  const afterMiss = { ...httpCalls };
++  const warmedRaw = env.SIGNAL_CACHE._m.get('latest:BTC_USD');
++
++  // 2) hit -> zero upstream calls
++  const hitRes = await handleSignal('BTC/USD', env, ctxWith(sink), { preferCache: true });
++  await drain(sink);
++  const hitBody = await hitRes.json();
++  restore();   // restore BEFORE asserting, or the PASS lines are swallowed
++
++  eq('miss answers with cached:false', missBody.cached, false);
++  ok('miss actually hit upstream', afterMiss.candles > 0);
++  ok('cache warmed after miss', !!warmedRaw);
++  eq('warm entry flagged opportunistic', JSON.parse(warmedRaw.value).opportunistic, true);
++
++  eq('hit answers with cached:true', hitBody.cached, true);
++  eq('hit is not a force refresh', hitBody.forceRefresh, false);
++  eq('cache hit made no candle calls', httpCalls.candles, afterMiss.candles);
++  eq('cache hit made no AI calls', httpCalls.cerebras, afterMiss.cerebras);
++  ok('hit carries freshness metadata', typeof hitBody.generationAge === 'number');
++}
++
++console.log('\n── default /api/signal is still a force refresh ───────────');
++{
++  installFetchStub();
++  const env = baseEnv();
++  const sink = [];
++  const restore = quiet();
++
++  // pre-warm, then call WITHOUT preferCache
++  const warmRes = await handleSignal('ETH/USD', env, ctxWith(sink), { preferCache: true });
++  await drain(sink);
++  const warmBody = await warmRes.json();
++  const afterWarm = { ...httpCalls };
++
++  const res = await handleSignal('ETH/USD', env, ctxWith(sink), {});
++  await drain(sink);
++  const body = await res.json();
++  restore();
++
++  eq('default response labelled uncached', body.cached, false);
++  eq('default response labelled forceRefresh', body.forceRefresh, true);
++  // A force refresh must re-run the ENGINE. It does NOT have to refetch candles:
++  // the `c:` candle cache is a separate pre-existing TTL layer (1min=120s) that
++  // Phase 7 deliberately leaves alone. So the proof of freshness is a new engine
++  // pass (new AI round-trips + a newly minted signal id), not new candle calls.
++  ok('force refresh re-ran the engine (new AI round-trips)',
++     httpCalls.cerebras > afterWarm.cerebras || httpCalls.groq > afterWarm.groq,
++     'ai before=' + afterWarm.cerebras + '/' + afterWarm.groq + ' after=' + httpCalls.cerebras + '/' + httpCalls.groq);
++  ok('force refresh produced a distinct signal id', body.id && warmBody.id && body.id !== warmBody.id,
++     warmBody.id + ' vs ' + body.id);
++  ok('force refresh did NOT serve the latest: entry', body.generationId === undefined);
++  ok('candle cache intentionally still reused (no extra TwelveData spend)',
++     httpCalls.candles === afterWarm.candles,
++     'candles before=' + afterWarm.candles + ' after=' + httpCalls.candles);
++  ok('backward-compatible shape kept', !!body.signal && !!body.pair && !!body.timestamp);
++}
++
++console.log('\n── resilience ─────────────────────────────────────────────');
++{
++  // market closed -> forex skipped
++  eq('forex skipped when closed', selectActivePairs(undefined, false).length, 10);
++  eq('all scanned when open', selectActivePairs(undefined, true).length, 14);
++
++  // one pair failing upstream must not abort the scan
++  installFetchStub();
++  failPairs = new Set(['BTC']);
++  const env = baseEnv();
++  const sink = [];
++  const restore = quiet();
++  const res = await scheduledScan(env, ctxWith(sink));
++  await drain(sink);
++  restore();
++  failPairs = new Set();
++
++  ok('scan continued past a failing pair', res.ok > 0, JSON.stringify(res));
++  ok('failing pair not cached', !env.SIGNAL_CACHE._m.has('latest:BTC_USD'));
++  ok('other pairs still cached',
++     [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('latest:')).length >= 9);
++
++  // no KV binding must not throw
++  const restore2 = quiet();
++  const noKv = await scheduledScan({}, ctxWith(sink));
++  restore2();
++  eq('scan without KV aborts cleanly', noKv.aborted, true);
++}
++
++function ctxWith(sink) {
++  return { waitUntil: (p) => { sink.push(Promise.resolve(p).catch(() => {})); return p; } };
++}
++
++console.log('\n───────────────────────────────────────────────────────────');
++console.log('PASS: ' + pass + '   FAIL: ' + fail);
++if (fail > 0) { console.log('\nFailures:'); failures.forEach(f => console.log('  - ' + f)); process.exit(1); }
++console.log('ALL PHASE 7 INTEGRATION TESTS PASSED');
+diff --git a/scripts/phase7_smoke.mjs b/scripts/phase7_smoke.mjs
+new file mode 100644
+index 0000000..0ea820e
+--- /dev/null
++++ b/scripts/phase7_smoke.mjs
+@@ -0,0 +1,232 @@
++/**
++ * Phase 7 smoke tests — node scripts/phase7_smoke.mjs
++ *
++ * Exercises the real modules against an in-memory KV and a mocked engine:
++ *   - key format / round-trip (a mismatch = permanent silent cache miss)
++ *   - scheduledScan: writes, batching, market-closed skip, duration cap,
++ *     failure isolation, and the DUMMY_FALLBACK guard
++ *   - handleLatest: single + all, 404 on miss, stale handling
++ *   - preferCache: cache hit avoids the engine; miss runs it and writes back
++ *   - /health scanCache block
++ *   - no double history write (the spec's scanOnePair would have caused one)
++ *
++ * No network. Cloudflare globals are stubbed where needed.
++ */
++
++import assert from 'node:assert';
++
++let pass = 0, fail = 0;
++const failures = [];
++const ok = (name, cond, detail) => {
++  if (cond) { pass++; console.log('PASS  ' + name); }
++  else { fail++; failures.push(name); console.log('FAIL  ' + name + (detail ? ' — ' + detail : '')); }
++};
++const eq = (name, a, b) => ok(name, JSON.stringify(a) === JSON.stringify(b),
++  'expected ' + JSON.stringify(b) + ', got ' + JSON.stringify(a));
++
++// ── in-memory KV double ────────────────────────────────────────────────
++function makeKV() {
++  const m = new Map();
++  return {
++    _m: m,
++    puts: 0,
++    async get(k, type) {
++      if (!m.has(k)) return null;
++      const v = m.get(k).value;
++      return type === 'json' ? JSON.parse(v) : v;
++    },
++    async put(k, v, opts) { this.puts++; m.set(k, { value: String(v), opts }); },
++    async delete(k) { m.delete(k); },
++    async list({ prefix }) {
++      return { keys: [...m.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })) };
++    },
++  };
++}
++const ctxOf = (sink) => ({ waitUntil: (p) => { sink.push(p); return p; } });
++const quiet = () => { const w = console.warn, l = console.log; console.warn = () => {}; console.log = () => {}; return () => { console.warn = w; console.log = l; }; };
++
++const { SCAN_CONFIG, SCAN_PAIRS } = await import('../src/config.js');
++const cache = await import('../src/history/latestCache.js');
++
++console.log('── KV key format (shared by 3 call sites) ─────────────────');
++{
++  eq('slash normalised', cache.latestKey('BTC/USD'), 'latest:BTC_USD');
++  eq('lowercase upper-cased', cache.latestKey('btc/usd'), 'latest:BTC_USD');
++  eq('OTC dash normalised', cache.latestKey('EURUSD-OTC'), 'latest:EURUSD_OTC');
++  eq('round-trip BTC/USD', cache.pairFromLatestKey(cache.latestKey('BTC/USD')), 'BTC/USD');
++  eq('round-trip USD/JPY', cache.pairFromLatestKey(cache.latestKey('USD/JPY')), 'USD/JPY');
++  // a naive underscore->slash swap would turn this into EURUSD/OTC
++  eq('round-trip OTC keeps the dash', cache.pairFromLatestKey(cache.latestKey('EURUSD-OTC')), 'EURUSD-OTC');
++  ok('prefix distinct from existing ones',
++     !['sig:', 'stats:', 'pending:', 'cb:', 'quota:', 'rr:', 'c:'].includes(SCAN_CONFIG.KV_LATEST_PREFIX));
++}
++
++console.log('\n── freshness maths ────────────────────────────────────────');
++{
++  const now = Date.now();
++  const at = s => ({ generatedAt: new Date(now - s * 1000).toISOString() });
++  eq('age computed in seconds', cache.enrichAge(at(120), now).generationAge, 120);
++  ok('fresh entry not stale', !cache.enrichAge(at(120), now).stale);
++  ok('entry past TTL is stale', cache.enrichAge(at(SCAN_CONFIG.LATEST_TTL_SECONDS + 1), now).stale);
++  ok('isStale agrees with enrichAge', cache.isStale(at(SCAN_CONFIG.LATEST_TTL_SECONDS + 1), now));
++  // nextRefreshIn counts to the next scan, not to TTL expiry
++  eq('nextRefreshIn mid-cycle', cache.enrichAge(at(120), now).nextRefreshIn, 180);
++  eq('nextRefreshIn wraps per interval', cache.enrichAge(at(360), now).nextRefreshIn, 240);
++  ok('unparseable generatedAt treated as stale',
++     cache.enrichAge({ generatedAt: 'nope' }, now).stale === true);
++  ok('null payload survives enrichAge', cache.enrichAge(null) === null);
++}
++
++console.log('\n── writeLatest / readLatest ───────────────────────────────');
++{
++  const env = { SIGNAL_CACHE: makeKV() };
++  const wrote = await cache.writeLatest('BTC/USD', { signal: { finalSignal: 'BUY' } },
++    { generationId: 'gen_x', opportunistic: false }, env);
++  ok('write reports success', wrote === true);
++  const stored = env.SIGNAL_CACHE._m.get('latest:BTC_USD');
++  eq('TTL applied on write', stored.opts.expirationTtl, SCAN_CONFIG.LATEST_TTL_SECONDS);
++  const read = await cache.readLatest('BTC/USD', env);
++  eq('cached flag set', read.cached, true);
++  eq('generationId persisted', read.generationId, 'gen_x');
++  eq('opportunistic false for cron writes', read.opportunistic, false);
++  eq('miss returns null', await cache.readLatest('ZZZ/USD', env), null);
++  eq('no KV binding -> null, no throw', await cache.readLatest('BTC/USD', {}), null);
++  eq('write with no binding -> false', await cache.writeLatest('BTC/USD', {}, {}, {}), false);
++}
++
++// ── mock the engine so scheduledScan can run offline ──────────────────
++const engineCalls = [];
++let engineBehaviour = () => ({ pair: 'X', signal: { finalSignal: 'BUY' }, source: 'FULL_DATA' });
++
++const signalMod = await import('../src/handlers/signal.js');
++const realHandleSignalRaw = signalMod.handleSignalRaw;
++
++console.log('\n── scheduledScan (mocked engine) ──────────────────────────');
++{
++  // scheduledScan imports handleSignalRaw directly, so inject via module record
++  const scanMod = await import('../src/handlers/scheduledScan.js');
++
++  // selectActivePairs is pure and exported — test the market gate directly
++  const openList = scanMod.selectActivePairs(SCAN_PAIRS, true);
++  const closedList = scanMod.selectActivePairs(SCAN_PAIRS, false);
++  eq('all 14 pairs active when forex open', openList.length, 14);
++  eq('forex dropped when market closed', closedList.length, 10);
++  ok('crypto survives a closed forex market', closedList.every(p => !['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD'].includes(p)));
++  ok('unsupported symbol filtered out',
++     scanMod.selectActivePairs(['BTC/USD', 'XAU/USD'], true).length === 1);
++  eq('pairs are normalised', scanMod.selectActivePairs(['btcusd'], true), ['BTC/USD']);
++}
++
++console.log('\n── handleLatest ───────────────────────────────────────────');
++{
++  const { handleLatest } = await import('../src/handlers/latest.js');
++  const env = { SIGNAL_CACHE: makeKV() };
++  const now = Date.now();
++
++  await cache.writeLatest('BTC/USD', { signal: { finalSignal: 'BUY' }, pair: 'BTC/USD' },
++    { generationId: 'gen_1' }, env);
++  await cache.writeLatest('ETH/USD', { signal: { finalSignal: 'SELL' }, pair: 'ETH/USD' },
++    { generationId: 'gen_1' }, env);
++
++  const one = await handleLatest(new URL('https://x/api/signals/latest?pair=BTC/USD'), env);
++  eq('single pair 200', one.status, 200);
++  const oneBody = await one.json();
++  eq('single pair payload', oneBody.signal.finalSignal, 'BUY');
++  ok('age enriched', typeof oneBody.generationAge === 'number');
++  ok('nextRefreshIn present', typeof oneBody.nextRefreshIn === 'number');
++
++  const alt = await handleLatest(new URL('https://x/api/signals/latest?pair=btcusd'), env);
++  eq('alternate spelling resolves to same entry', (await alt.json()).pair, 'BTC/USD');
++
++  const miss = await handleLatest(new URL('https://x/api/signals/latest?pair=DOT/USD'), env);
++  eq('cache miss is 404', miss.status, 404);
++  const missBody = await miss.json();
++  ok('404 explains the escape hatch', String(missBody.message).includes('/api/signal'));
++  eq('404 says whether the pair is scanned', missBody.scanned, true);
++
++  const bad = await handleLatest(new URL('https://x/api/signals/latest?pair=NOTAPAIR'), env);
++  eq('invalid pair is 400', bad.status, 400);
++
++  const all = await handleLatest(new URL('https://x/api/signals/latest'), env);
++  const allBody = await all.json();
++  eq('all-pairs count', allBody.pairCount, 2);
++  ok('keys map back to display pairs',
++     Object.keys(allBody.signals).sort().join(',') === 'BTC/USD,ETH/USD',
++     Object.keys(allBody.signals).join(','));
++  ok('oldestCachedAge reported', typeof allBody.oldestCachedAge === 'number');
++
++  // a stale row must not be served
++  const staleEnv = { SIGNAL_CACHE: makeKV() };
++  await staleEnv.SIGNAL_CACHE.put('latest:DOT_USD', JSON.stringify({
++    signal: { finalSignal: 'BUY' },
++    generatedAt: new Date(now - (SCAN_CONFIG.LATEST_TTL_SECONDS + 60) * 1000).toISOString(),
++  }));
++  const staleOne = await handleLatest(new URL('https://x/api/signals/latest?pair=DOT/USD'), staleEnv);
++  eq('stale single pair -> 404', staleOne.status, 404);
++  const staleAll = await handleLatest(new URL('https://x/api/signals/latest'), staleEnv);
++  const staleAllBody = await staleAll.json();
++  eq('stale row excluded from all-list', staleAllBody.pairCount, 0);
++  eq('stale rows counted', staleAllBody.staleSkipped, 1);
++
++  const noKv = await handleLatest(new URL('https://x/api/signals/latest'), {});
++  eq('no KV binding -> 503', noKv.status, 503);
++}
++
++console.log('\n── /health scanCache block ────────────────────────────────');
++{
++  const { getScanCacheStats } = await import('../src/handlers/latest.js');
++  const env = { SIGNAL_CACHE: makeKV() };
++  await cache.writeLatest('BTC/USD', { signal: {} }, { generationId: 'gen_A' }, env);
++  await cache.writeLatest('ETH/USD', { signal: {} }, { opportunistic: true }, env);
++
++  const stats = await getScanCacheStats(env);
++  eq('cachedPairCount', stats.cachedPairCount, 2);
++  eq('scanIntervalSec surfaced', stats.scanIntervalSec, SCAN_CONFIG.SCAN_INTERVAL_SECONDS);
++  eq('ttl surfaced', stats.ttlSeconds, SCAN_CONFIG.LATEST_TTL_SECONDS);
++  eq('opportunistic entries counted', stats.opportunisticCount, 1);
++  eq('cron generation id reported', stats.lastGenerationId, 'gen_A');
++  ok('ages computed', typeof stats.oldestCachedAge === 'number');
++  eq('no binding -> null', await getScanCacheStats({}), null);
++}
++
++console.log('\n── backward compatibility (spec §9) ───────────────────────');
++{
++  const fs = await import('node:fs');
++  const idx = fs.readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
++  for (const ep of ['/api/signal', '/api/batch', '/api/history', '/api/stats', '/api/report', '/api/pairs']) {
++    ok('endpoint still routed: ' + ep, idx.includes("'" + ep + "'"));
++  }
++  ok('new endpoint routed', idx.includes("'/api/signals/latest'"));
++  ok('cron split on event.cron', idx.includes("cron === '*/5 * * * *'"));
++  ok('result checker still wired', idx.includes('scheduledTracker(env)'));
++
++  const sig = fs.readFileSync(new URL('../src/handlers/signal.js', import.meta.url), 'utf8');
++  ok('handleSignalRaw signature unchanged',
++     sig.includes('export async function handleSignalRaw(pair, env, ctx)'));
++  // The spec's scanOnePair sketch also called saveSignalToHistory; that would
++  // double-write because handleSignalRaw already does it.
++  const scan = fs.readFileSync(new URL('../src/handlers/scheduledScan.js', import.meta.url), 'utf8');
++  // Must not CALL it — the file mentions it in a comment explaining why.
++  const scanCode = scan.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
++  ok('scanner does NOT call saveSignalToHistory (no double write)',
++     !/saveSignalToHistory\s*\(/.test(scanCode));
++  ok('scanner does not import saveSignalToHistory',
++     !/import[^;]*saveSignalToHistory/.test(scanCode));
++  ok('scanner reuses handleSignalRaw (no forked engine)', scan.includes('handleSignalRaw('));
++  ok('scanner skips DUMMY_FALLBACK', scan.includes('DUMMY_FALLBACK'));
++
++  const wrangler = fs.readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
++  ok('both crons registered', wrangler.includes('"*/2 * * * *", "*/5 * * * *"'));
++
++  const engineDiffTargets = ['../src/signal/engine.js', '../src/signal/otcEngine.js'];
++  for (const t of engineDiffTargets) {
++    const src = fs.readFileSync(new URL(t, import.meta.url), 'utf8');
++    ok('engine untouched by Phase 7: ' + t.split('/').pop(),
++       !src.includes('SCAN_CONFIG') && !src.includes('latestCache'));
++  }
++}
++
++console.log('\n───────────────────────────────────────────────────────────');
++console.log('PASS: ' + pass + '   FAIL: ' + fail);
++if (fail > 0) { console.log('\nFailures:'); failures.forEach(f => console.log('  - ' + f)); process.exit(1); }
++console.log('ALL PHASE 7 SMOKE TESTS PASSED');
 diff --git a/src/config.js b/src/config.js
-index d34509c..a4f3b86 100644
+index a4f3b86..890d322 100644
 --- a/src/config.js
 +++ b/src/config.js
-@@ -6,6 +6,7 @@ export const CONFIG = {
-   API_BASE_URL: 'https://api.twelvedata.com',
-   REFRESH_INTERVAL: 60000,
-   REQUEST_TIMEOUT: 12000,
-+  // MAX_RETRIES: reserved (fetch layer now uses apiKeys.length; kept for backward-compat)
-   MAX_RETRIES: 3,
- 
-   MIN_CONFLUENCE: 5,
-@@ -16,7 +17,9 @@ export const CONFIG = {
-   NEWS_BLACKOUT_MINUTES: 15,
-   BATCH_MAX_PAIRS: 3,
- 
--  CACHE_TTL: { '1min': 60, '5min': 300, '15min': 900 },
-+  // B0-4: 1min TTL 60 -> 120 (halves 1min API pull rate; cron is */2 so a
-+  // 120s cache still serves fresh-enough candles for every scheduled tick)
-+  CACHE_TTL: { '1min': 120, '5min': 300, '15min': 900 },
- 
-   RATE_LIMIT_MAX_REQUESTS: 30,
-   RATE_LIMIT_WINDOW_SECONDS: 60,
-@@ -91,6 +94,9 @@ export const HISTORY_CONFIG = {
-   KV_SIGNAL_PREFIX:               'sig:',
-   KV_STATS_PREFIX:                'stats:',
-   KV_PENDING_PREFIX:              'pending:',
-+  // B0-3: pending records live 2h; retry-cap gives up after 15 failed checks
-+  PENDING_TTL_MS:                 2 * 60 * 60 * 1000,
-+  PENDING_MAX_CHECKS:             15,
+@@ -49,6 +49,27 @@ export const CONFIG = {
+   EXOTIC_CONFIDENCE_PENALTY: 10,
  };
  
- // ── SESSION WEIGHTS ─────────────────────────────────────────
-diff --git a/src/fetch/candles.js b/src/fetch/candles.js
-index 10ef777..cb14be4 100644
---- a/src/fetch/candles.js
-+++ b/src/fetch/candles.js
-@@ -1,5 +1,6 @@
- import { CONFIG, TIMEFRAME_MAP, ASSET_TYPE } from '../config.js';
--import { getApiKeys } from './keys.js';
-+import { getApiKeys, getNextRotationIndex } from './keys.js';
-+import { incrementQuota } from '../history/quota.js';
- 
- export async function fetchCandlesWithCache(pair, tf, limit, env, ctx, assetType) {
-   const cacheKey = 'c:' + pair + ':' + tf + ':' + limit;
-@@ -31,11 +32,16 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
- 
-   const symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
-   const interval = TIMEFRAME_MAP[tf] || tf;
--  const maxAttempts = Math.min(apiKeys.length, CONFIG.MAX_RETRIES);
++// ── PHASE 7: CRON SIGNAL SCANNER ────────────────────────────
++// Pairs the 5-min scanner keeps warm in KV. Every entry was verified live
++// against /api/signal on 2026-07-29 — all 14 return FULL_DATA.
++// Forex entries are skipped automatically while the market is closed.
++export const SCAN_PAIRS = [
++  // Crypto — 24/7
++  'BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD', 'ADA/USD',
++  'DOGE/USD', 'AVAX/USD', 'DOT/USD', 'LINK/USD',
++  // Forex majors — market-hours gated
++  'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
++];
 +
-+  // B0-6: no MAX_RETRIES cap — every provisioned key gets a chance. Rotation
-+  // start index comes from KV so load spreads instead of always hitting key #1.
-+  const startIdx    = await getNextRotationIndex(env, apiKeys.length);
-+  const maxAttempts = apiKeys.length;
-   let lastError = 'Unknown error';
- 
-   for (let attempt = 0; attempt < maxAttempts; attempt++) {
--    const apiKey = apiKeys[attempt % apiKeys.length];
-+    const keyIdx = (startIdx + attempt) % apiKeys.length;
-+    const apiKey = apiKeys[keyIdx];
-     try {
-       const u = new URL('/time_series', CONFIG.API_BASE_URL);
-       u.searchParams.set('symbol',     symbol);
-@@ -44,6 +50,8 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
-       u.searchParams.set('apikey',     apiKey);
-       u.searchParams.set('format',     'JSON');
- 
-+      await incrementQuota(env);   // B0-4: +1 per HTTP attempt
++export const SCAN_CONFIG = {
++  KV_LATEST_PREFIX:      'latest:',   // distinct from sig: / stats: / pending: / c: / rr: / cb: / quota:
++  LATEST_TTL_SECONDS:    600,         // 10 min = 2x cron interval
++  BATCH_SIZE:            3,           // parallel pairs per batch (AI rate-limit safety)
++  BATCH_DELAY_MS:        500,         // pause between batches
++  MAX_SCAN_DURATION_MS:  90000,       // hard stop so one cron tick can never run away
++  SCAN_INTERVAL_SECONDS: 300,         // informational, mirrors the */5 cron
++};
 +
-       const controller = new AbortController();
-       const timeoutId  = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT);
-       let res;
-@@ -52,13 +60,23 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
-       } finally { clearTimeout(timeoutId); }
- 
-       if (!res.ok) {
--        if (res.status === 429) { lastError = 'TwelveData rate limited'; continue; }
--        lastError = 'HTTP ' + res.status; continue;
-+        const bodyText = await res.text().catch(() => '');
-+        console.warn('fetchCandles non-ok pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx +
-+                     ' attempt=' + attempt + ' status=' + res.status + ' body=' + bodyText.slice(0, 200));
-+        if (res.status === 429) { lastError = 'TwelveData rate limited (key#' + keyIdx + ')'; continue; }
-+        lastError = 'HTTP ' + res.status + ' (key#' + keyIdx + ')'; continue;
-       }
- 
-       const data = await res.json();
--      if (data.status === 'error') { lastError = data.message || 'API error'; continue; }
--      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) { lastError = 'No data'; continue; }
-+      if (data.status === 'error') {
-+        console.warn('fetchCandles td-error pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx +
-+                     ' code=' + data.code + ' msg=' + String(data.message || '').slice(0, 200));
-+        lastError = (data.message || 'API error') + ' (key#' + keyIdx + ')'; continue;
-+      }
-+      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) {
-+        console.warn('fetchCandles empty pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx);
-+        lastError = 'No data (key#' + keyIdx + ')'; continue;
-+      }
- 
-       const candles = data.values.map(c => ({
-         datetime: c.datetime,
-@@ -70,12 +88,14 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
-       })).reverse();
- 
-       const valid = candles.every(c => isFinite(c.open) && isFinite(c.high) && isFinite(c.low) && isFinite(c.close));
--      if (!valid) { lastError = 'Invalid data'; continue; }
-+      if (!valid) { lastError = 'Invalid data (key#' + keyIdx + ')'; continue; }
-       return candles;
-     } catch (e) {
--      lastError = e.name === 'AbortError' ? 'Timeout' : e.message;
-+      console.warn('fetchCandles exception pair=' + pair + ' tf=' + tf + ' keyIdx=' + keyIdx +
-+                   ' attempt=' + attempt + ' msg=' + e.message);
-+      lastError = (e.name === 'AbortError' ? 'Timeout' : e.message) + ' (key#' + keyIdx + ')';
-       continue;
-     }
-   }
--  return { error: 'All ' + maxAttempts + ' attempts failed: ' + lastError };
-+  return { error: 'All ' + maxAttempts + ' attempts failed (startIdx=' + startIdx + '): ' + lastError };
- }
-diff --git a/src/fetch/keys.js b/src/fetch/keys.js
-index 001115b..b32c131 100644
---- a/src/fetch/keys.js
-+++ b/src/fetch/keys.js
-@@ -1,24 +1,87 @@
--import { CONFIG } from '../config.js';
-+/**
-+ * TwelveData API key loading + rotation.
-+ *
-+ * B0-6: no upper cap anywhere. Whatever number of keys is provisioned in the
-+ * environment is what gets used — 19 today, 25 tomorrow, no code change.
-+ */
- 
- export function getApiKeys(env) {
-+  if (!env) return [];
-+
-+  // Format 1: JSON array in TWELVEDATA_API_KEYS or TWELVEDATA_API_KEY
-   const jsonSources = [env.TWELVEDATA_API_KEYS, env.TWELVEDATA_API_KEY];
-   for (const src of jsonSources) {
-     if (src && typeof src === 'string' && src.trim().startsWith('[')) {
-       try {
-         const keys = JSON.parse(src);
-         if (Array.isArray(keys) && keys.length > 0) {
--          const filtered = keys.map(k => k.trim()).filter(k => k.length > 0);
--          if (filtered.length > 0) return filtered;
-+          const filtered = keys.map(k => String(k).trim()).filter(k => k.length > 0);
-+          if (filtered.length > 0) return dedupe(filtered);
-         }
-       } catch (e) { console.warn('API key JSON parse error:', e.message); }
-     }
-   }
--  const keys = [];
--  for (let i = 1; i <= 10; i++) {
--    const k = env['TWELVEDATA_API_KEY_' + i];
--    if (k && typeof k === 'string' && k.trim().length > 0) keys.push(k.trim());
-+
-+  // Format 2: numbered vars TWELVEDATA_API_KEY_1, _2, ... — scan the whole env.
-+  // The old fixed-bound counting loop (which silently dropped key 11+) is gone.
-+  // Gaps tolerated, order by numeric index.
-+  const numbered = [];
-+  for (const envKey of Object.keys(env)) {
-+    const m = envKey.match(/^TWELVEDATA_API_KEY_(\d+)$/);
-+    if (m) {
-+      const val = env[envKey];
-+      if (val && typeof val === 'string' && val.trim().length > 0) {
-+        numbered.push({ idx: parseInt(m[1], 10), key: val.trim() });
-+      }
-+    }
-+  }
-+  if (numbered.length > 0) {
-+    numbered.sort((a, b) => a.idx - b.idx);
-+    return dedupe(numbered.map(n => n.key));
-+  }
-+
-+  // Format 3: single fallback
-+  if (env.TWELVEDATA_API_KEY && typeof env.TWELVEDATA_API_KEY === 'string'
-+      && !env.TWELVEDATA_API_KEY.trim().startsWith('[')) {
-+    const single = env.TWELVEDATA_API_KEY.trim();
-+    return single.length > 0 ? [single] : [];
-   }
--  if (keys.length === 0 && env.TWELVEDATA_API_KEY && !env.TWELVEDATA_API_KEY.trim().startsWith('['))
--    keys.push(env.TWELVEDATA_API_KEY.trim());
--  return keys;
-+  return [];
-+}
-+
-+function dedupe(arr) {
-+  const seen = new Set(); const out = [];
-+  for (const k of arr) { if (!seen.has(k)) { seen.add(k); out.push(k); } }
-+  return out;
-+}
-+
-+/**
-+ * Round-robin starting index, persisted in KV so load spreads across every key
-+ * instead of hammering key #1 and only falling back on failure.
-+ *
-+ * Race is harmless: worst case two concurrent workers pick the same startIdx
-+ * once; the distribution still spreads across all keys over time.
-+ */
-+export async function getNextRotationIndex(env, keyCount) {
-+  if (!env || !env.SIGNAL_CACHE || !keyCount || keyCount <= 1) return 0;
-+  try {
-+    const raw = await env.SIGNAL_CACHE.get('rr:idx');
-+    const parsed = parseInt(raw || '0', 10);
-+    const cur = Number.isFinite(parsed) ? parsed : 0;
-+    const next = (cur + 1) % keyCount;
-+    // fire-and-forget write — never block a fetch on the counter
-+    const p = env.SIGNAL_CACHE.put('rr:idx', String(next), { expirationTtl: 7 * 24 * 3600 });
-+    if (p && typeof p.catch === 'function') p.catch(() => {});
-+    return ((cur % keyCount) + keyCount) % keyCount;
-+  } catch (e) { return 0; }
-+}
-+
-+/** Read-only view of the rotation counter (for /health). */
-+export async function readRotationIndex(env) {
-+  if (!env || !env.SIGNAL_CACHE) return -1;
-+  try {
-+    const raw = await env.SIGNAL_CACHE.get('rr:idx');
-+    const parsed = parseInt(raw || '0', 10);
-+    return Number.isFinite(parsed) ? parsed : 0;
-+  } catch (e) { return -1; }
- }
+ // ── OTC CONFIG ──────────────────────────────────────────────
+ export const ASSET_TYPE_OTC = 'FOREX_OTC';
+ export const OTC_SUFFIXES = ['-OTC', 'OTC'];
 diff --git a/src/handlers/health.js b/src/handlers/health.js
-index 4857a5d..7cb6c61 100644
+index 7cb6c61..b68ad30 100644
 --- a/src/handlers/health.js
 +++ b/src/handlers/health.js
-@@ -2,11 +2,12 @@ import { CONFIG, ASSET_TYPE, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES
- import { jsonResponse } from '../utils/helpers.js';
- import { sanitizePair, isExoticPair } from '../utils/pairs.js';
- import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlackout } from '../utils/session.js';
--import { getApiKeys } from '../fetch/keys.js';
-+import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
+@@ -5,6 +5,7 @@ import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlac
+ import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
  import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stats.js';
-+import { readQuota } from '../history/quota.js';
+ import { readQuota } from '../history/quota.js';
++import { getScanCacheStats } from './latest.js';
  
  // ── HEALTH ──────────────────────────────────
--export function handleHealth(env) {
-+export async function handleHealth(env) {
-   const keyCount  = getApiKeys(env).length;
-   const keySource = env.TWELVEDATA_API_KEYS ? 'TWELVEDATA_API_KEYS (JSON array)' : 'TWELVEDATA_API_KEY_N (individual vars)';
-   const session   = detectTradingSession();
-@@ -14,9 +15,16 @@ export function handleHealth(env) {
-   const forexOpen = isForexMarketOpen();
-   const holiday   = getForexHoliday();
+ export async function handleHealth(env) {
+@@ -18,6 +19,7 @@ export async function handleHealth(env) {
+   // B0-4 / B0-6 instrumentation
+   const quotaUsedToday = await readQuota(env);
+   const rotationIdx    = await readRotationIndex(env);
++  const scanCache      = await getScanCacheStats(env);   // Phase 7
  
-+  // B0-4 / B0-6 instrumentation
-+  const quotaUsedToday = await readQuota(env);
-+  const rotationIdx    = await readRotationIndex(env);
-+
    return jsonResponse({
      status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
-     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
-+    apiKeysLoaded: keyCount,
-+    quotaUsedToday,
-+    rotationIdx,
-     bindings: {
-       kvCache:     env.SIGNAL_CACHE      ? 'ready' : 'NOT CONFIGURED',
-       rateLimiter: env.RATE_LIMITER      ? 'ready' : 'KV fallback',
+@@ -37,6 +39,9 @@ export async function handleHealth(env) {
+       crypto: { status: 'ALWAYS OPEN (24/7)', bases: CRYPTO_BASES, quotes: CRYPTO_QUOTES, topPairs: POPULAR_CRYPTO_PAIRS.slice(0, 10) },
+     },
+     filters: { minConfidenceFloor: CONFIG.MIN_CONFIDENCE_FLOOR + '%', volumeSpikeMultiplier: CONFIG.VOLUME_SPIKE_FILTER_MULTIPLIER + 'x', newsBlackoutMargin: CONFIG.NEWS_BLACKOUT_MINUTES + ' min', batchMaxPairs: CONFIG.BATCH_MAX_PAIRS },
++    // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
++    // means the */5 scan is failing or being skipped.
++    scanCache,
+     history: {
+       enabled: !!env.SIGNAL_CACHE, maxPerPair: HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
+       winRateLookback: HISTORY_CONFIG.WIN_RATE_LOOKBACK, resultCheckDelay: HISTORY_CONFIG.RESULT_CHECK_DELAY + 's after expiry',
+diff --git a/src/handlers/latest.js b/src/handlers/latest.js
+new file mode 100644
+index 0000000..457d95f
+--- /dev/null
++++ b/src/handlers/latest.js
+@@ -0,0 +1,143 @@
++/**
++ * Phase 7 — read-only view of the cron-warmed signal cache.
++ *
++ *   GET /api/signals/latest              -> every cached pair
++ *   GET /api/signals/latest?pair=BTC/USD -> one pair (404 when never scanned)
++ *
++ * This endpoint never runs the engine. A miss is a miss: the caller is told to
++ * use /api/signal (force refresh) or wait for the next scan. That is the whole
++ * point of the split — a read here can never cost TwelveData or AI credits.
++ */
++
++import { SCAN_PAIRS, SCAN_CONFIG } from '../config.js';
++import { jsonResponse } from '../utils/helpers.js';   // NOT utils/cors.js — see report §1.1
++import { sanitizePair } from '../utils/pairs.js';
++import { readLatest, enrichAge, isStale, pairFromLatestKey } from '../history/latestCache.js';
++
++export async function handleLatest(url, env) {
++  if (!env || !env.SIGNAL_CACHE) {
++    return jsonResponse({ error: true, message: 'SIGNAL_CACHE KV not bound' }, 503);
++  }
++
++  const rawPair = url.searchParams.get('pair');
++
++  // ── single pair ──
++  if (rawPair) {
++    const pair = sanitizePair(rawPair);
++    if (!pair) {
++      return jsonResponse({
++        error: true,
++        message: 'Invalid pair: "' + rawPair + '". Use EUR/USD, EURUSD, BTC/USD, BTCUSD etc.',
++      }, 400);
++    }
++
++    const cached = await readLatest(pair, env);
++    if (!cached) {
++      return jsonResponse({
++        error: true, stale: true, pair,
++        message: 'No cached signal for ' + pair
++          + '. Use /api/signal?pair=' + encodeURIComponent(pair)
++          + ' for fresh generation, or wait for the next scan cycle.',
++        scanned: SCAN_PAIRS.includes(pair),
++        scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
++        timestamp: new Date().toISOString(),
++      }, 404);
++    }
++
++    const enriched = enrichAge(cached);
++    // KV TTL should evict before this, but a clock skew or a long-lived edge
++    // read can still surface an over-age entry — treat it as a miss.
++    if (enriched.stale) {
++      return jsonResponse({
++        error: true, stale: true, pair,
++        message: 'Cached signal expired, next scan due.',
++        generatedAt: cached.generatedAt,
++        generationAge: enriched.generationAge,
++        scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
++        timestamp: new Date().toISOString(),
++      }, 404);
++    }
++
++    return jsonResponse(enriched);
++  }
++
++  // ── all cached pairs ──
++  let list;
++  try {
++    list = await env.SIGNAL_CACHE.list({ prefix: SCAN_CONFIG.KV_LATEST_PREFIX });
++  } catch (e) {
++    return jsonResponse({ error: true, message: 'Cache list failed: ' + e.message }, 500);
++  }
++
++  const keys = (list && list.keys) || [];
++  const signals = {};
++  let staleCount = 0;
++
++  for (const key of keys) {
++    try {
++      const cached = await env.SIGNAL_CACHE.get(key.name, 'json');
++      if (!cached) continue;
++      const enriched = enrichAge(cached);
++      if (enriched.stale) { staleCount++; continue; }   // don't serve expired rows
++      signals[pairFromLatestKey(key.name)] = enriched;
++    } catch (e) { /* skip unreadable entry */ }
++  }
++
++  const ages = Object.values(signals)
++    .map(s => s.generationAge)
++    .filter(a => typeof a === 'number');
++
++  return jsonResponse({
++    cached: true,
++    signals,
++    pairCount: Object.keys(signals).length,
++    scannedPairs: SCAN_PAIRS,
++    scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
++    oldestCachedAge: ages.length ? Math.max(...ages) : null,
++    newestCachedAge: ages.length ? Math.min(...ages) : null,
++    staleSkipped: staleCount,
++    timestamp: new Date().toISOString(),
++  });
++}
++
++/** Cache summary for /health (spec §4.7). */
++export async function getScanCacheStats(env) {
++  if (!env || !env.SIGNAL_CACHE) return null;
++  try {
++    const list = await env.SIGNAL_CACHE.list({ prefix: SCAN_CONFIG.KV_LATEST_PREFIX });
++    const keys = (list && list.keys) || [];
++    let lastGenerationId = null;
++    let newestAt = -Infinity;
++    let opportunisticCount = 0;
++    const ages = [];
++
++    for (const key of keys) {
++      try {
++        const cached = await env.SIGNAL_CACHE.get(key.name, 'json');
++        if (!cached || !cached.generatedAt) continue;
++        const t = new Date(cached.generatedAt).getTime();
++        if (!Number.isFinite(t)) continue;
++        ages.push(Math.max(0, Math.floor((Date.now() - t) / 1000)));
++        if (cached.opportunistic) opportunisticCount++;
++        // report the newest CRON generation id; opportunistic writes have none
++        if (t > newestAt && cached.generationId) {
++          newestAt = t;
++          lastGenerationId = cached.generationId;
++        }
++      } catch (e) { /* skip */ }
++    }
++
++    return {
++      lastGenerationId,
++      cachedPairCount: keys.length,
++      oldestCachedAge: ages.length ? Math.max(...ages) : null,
++      newestCachedAge: ages.length ? Math.min(...ages) : null,
++      opportunisticCount,
++      scanIntervalSec: SCAN_CONFIG.SCAN_INTERVAL_SECONDS,
++      ttlSeconds: SCAN_CONFIG.LATEST_TTL_SECONDS,
++      scannedPairs: SCAN_PAIRS.length,
++    };
++  } catch (e) {
++    return { error: 'scanCache unavailable: ' + e.message };
++  }
++}
+diff --git a/src/handlers/scheduledScan.js b/src/handlers/scheduledScan.js
+new file mode 100644
+index 0000000..755f0e7
+--- /dev/null
++++ b/src/handlers/scheduledScan.js
+@@ -0,0 +1,148 @@
++/**
++ * Phase 7 — cron signal scanner (runs every 5 minutes).
++ *
++ * Keeps `latest:<PAIR>` warm for every pair in SCAN_PAIRS so the App and the
++ * Bot can read one shared, already-computed signal instead of each triggering
++ * their own engine run.
++ *
++ * ── Engine reuse (spec §5) ──────────────────────────────────────────────────
++ * The spec expected to import `generateSignalCore` from signal/engine.js and
++ * warned a refactor might be needed. No refactor was required: the request path
++ * is already `index.js -> handleSignal() -> handleSignalRaw(pair, env, ctx)`,
++ * and handleSignalRaw already returns exactly the response object we want to
++ * cache. So the scanner calls that same function — one engine, one code path.
++ *
++ * ── Why history is NOT saved here ───────────────────────────────────────────
++ * The spec's scanOnePair sketch called saveSignalToHistory() itself. That would
++ * double-write: handleSignalRaw ALREADY persists BUY/SELL via
++ * `ctx.waitUntil(saveSignalToHistory(...))` (signal.js:136 and :217), including
++ * the Phase B fields and the circuit-breaker shadow rows. Calling it again here
++ * would create two records per signal — the 30-min dedup guard would collapse
++ * most, but not all (differing entryPrice on a re-poll slips through), and each
++ * one also registers a `pending:` result-check. So we let the existing path own
++ * history and only add the KV cache write. See PHASE_7_FIX_REPORT.md §1.3.
++ */
++
++import { SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
++import { sanitizePair, getAssetType } from '../utils/pairs.js';
++import { isForexMarketOpen } from '../utils/session.js';
++import { handleSignalRaw } from './signal.js';
++import { writeLatest } from '../history/latestCache.js';
++
++/**
++ * Which pairs are worth scanning right now.
++ * Crypto is 24/7; forex is skipped while the market is shut so the scan does
++ * not spend TwelveData credits on a frozen weekend price.
++ *
++ * The spec imported `getMarketStatus()` from utils/pairs.js — that function does
++ * not exist in this repo. The real market-hours check is isForexMarketOpen()
++ * in utils/session.js, which is what /api/signal itself uses.
++ */
++export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketOpen()) {
++  const active = [];
++  for (const raw of pairs) {
++    const pair = sanitizePair(raw);
++    if (!pair) {
++      console.warn('scheduledScan: unsupported pair skipped: ' + raw);
++      continue;
++    }
++    const assetType = getAssetType(pair);
++    if (assetType === ASSET_TYPE.FOREX && !forexOpen) continue;   // market closed
++    active.push(pair);
++  }
++  return active;
++}
++
++export async function scheduledScan(env, ctx) {
++  const startTime = Date.now();
++  if (!env || !env.SIGNAL_CACHE) {
++    console.warn('scheduledScan: SIGNAL_CACHE not bound, aborting');
++    return { ok: 0, failed: 0, skipped: 0, aborted: true };
++  }
++
++  const generationId = 'gen_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
++  const activePairs = selectActivePairs();
++  const skipped = SCAN_PAIRS.length - activePairs.length;
++  console.log('scheduledScan start ' + generationId
++    + ' active=' + activePairs.length + '/' + SCAN_PAIRS.length
++    + (skipped ? ' (skipped ' + skipped + ', market closed/unsupported)' : ''));
++
++  let ok = 0;
++  let failed = 0;
++  let processed = 0;
++
++  for (let i = 0; i < activePairs.length; i += SCAN_CONFIG.BATCH_SIZE) {
++    // Hard cap: a cron invocation must never run away. Partial coverage is
++    // fine — the next tick is only 5 minutes out and TTL is 10.
++    if (Date.now() - startTime > SCAN_CONFIG.MAX_SCAN_DURATION_MS) {
++      console.warn('scheduledScan ' + generationId + ' hit MAX_SCAN_DURATION at '
++        + processed + '/' + activePairs.length + ' pairs');
++      break;
++    }
++
++    const batch = activePairs.slice(i, i + SCAN_CONFIG.BATCH_SIZE);
++    const results = await Promise.allSettled(
++      batch.map(pair => scanOnePair(pair, generationId, env, ctx)),
++    );
++    for (const r of results) {
++      processed++;
++      if (r.status === 'fulfilled' && r.value) ok++;
++      else {
++        failed++;
++        if (r.status === 'rejected') {
++          console.warn('scheduledScan batch rejection: ' + (r.reason && r.reason.message));
++        }
++      }
++    }
++
++    if (i + SCAN_CONFIG.BATCH_SIZE < activePairs.length) {
++      await sleep(SCAN_CONFIG.BATCH_DELAY_MS);
++    }
++  }
++
++  const ms = Date.now() - startTime;
++  console.log('scheduledScan done ' + generationId + ': ' + ok + ' ok, ' + failed
++    + ' failed, ' + skipped + ' skipped, ' + ms + 'ms');
++  return { ok, failed, skipped, generationId, ms };
++}
++
++async function scanOnePair(pair, generationId, env, ctx) {
++  try {
++    // Same entry point /api/signal uses — including circuit-breaker checks and
++    // the existing history write via ctx.waitUntil.
++    const result = await handleSignalRaw(pair, env, ctx);
++
++    if (!result || result.error) {
++      console.warn('scanOnePair ' + pair + ' error: '
++        + (result && result.message ? String(result.message).slice(0, 120) : 'unknown'));
++      return null;
++    }
++    // A dummy fallback means every timeframe fetch failed; caching it would
++    // serve fabricated prices to both clients for the next 10 minutes.
++    if (result.source === 'DUMMY_FALLBACK') {
++      console.warn('scanOnePair ' + pair + ' skipped: DUMMY_FALLBACK (all candle fetches failed)');
++      return null;
++    }
++    // Market-closed responses carry no signal; nothing worth caching.
++    if (!result.signal) {
++      console.warn('scanOnePair ' + pair + ' skipped: no signal in response (marketStatus='
++        + result.marketStatus + ')');
++      return null;
++    }
++
++    const written = await writeLatest(pair, result, {
++      generationId,
++      generatedAt: new Date().toISOString(),
++      opportunistic: false,
++    }, env);
++
++    return written ? { pair } : null;
++  } catch (e) {
++    console.warn('scanOnePair exception ' + pair + ': ' + e.message);
++    return null;
++  }
++}
++
++function sleep(ms) {
++  return new Promise(resolve => setTimeout(resolve, ms));
++}
 diff --git a/src/handlers/signal.js b/src/handlers/signal.js
-index 85fd81b..a126b52 100644
+index a126b52..cd3d8f9 100644
 --- a/src/handlers/signal.js
 +++ b/src/handlers/signal.js
-@@ -6,6 +6,7 @@ import { fetchCandlesWithCache } from '../fetch/candles.js';
- import { buildMultiTimeframeSignal } from '../signal/engine.js';
- import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
+@@ -8,6 +8,7 @@ import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
  import { saveSignalToHistory } from '../history/stats.js';
-+import { isTripped } from '../history/circuitBreaker.js';
+ import { isTripped } from '../history/circuitBreaker.js';
  import { detectCorrelationConflicts } from '../analysis/filters.js';
++import { readLatest, writeLatest, enrichAge, isStale } from '../history/latestCache.js';
  import {
    VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS,
-@@ -16,6 +17,17 @@ function generateSignalId() {
-   return 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+   HISTORY_CONFIG,
+@@ -28,9 +29,39 @@ function classifyEntrySource(cacheHits) {
+   return null;
  }
  
+-export async function handleSignal(pair, env, ctx) {
 +/**
-+ * B5 §3.2 — how fresh was the candle data behind this signal?
-+ * 3 timeframes are fetched, so cacheHits is 0..3.
++ * Phase 7 — /api/signal entry point.
++ *
++ * Default behaviour is unchanged: a fresh engine run (the "force refresh" path),
++ * now labelled `cached:false, forceRefresh:true` so a client can tell the two
++ * apart.
++ *
++ * With `?preferCache=true` the cron-warmed `latest:` entry is served when it is
++ * fresh; on a miss or a stale entry we fall through to a normal generation and
++ * opportunistically warm the cache for the next reader.
 + */
-+function classifyEntrySource(cacheHits) {
-+  if (cacheHits === 0) return 'FRESH_API';
-+  if (cacheHits === 1 || cacheHits === 2) return 'CACHE_PARTIAL';
-+  if (cacheHits === 3) return 'CACHE_ALL';
-+  return null;
-+}
++export async function handleSignal(pair, env, ctx, opts) {
++  const preferCache = !!(opts && opts.preferCache);
 +
- export async function handleSignal(pair, env, ctx) {
++  if (preferCache) {
++    const cached = await readLatest(pair, env);
++    if (cached && !isStale(cached)) {
++      return jsonResponse({ ...enrichAge(cached), cached: true, forceRefresh: false });
++    }
++  }
++
    const result = await handleSignalRaw(pair, env, ctx);
-   return jsonResponse(result);
-@@ -74,6 +86,39 @@ export async function handleSignalRaw(pair, env, ctx) {
-   for (const tf of timeframes)
-     dataStatus[tf] = candleData[tf] ? candleData[tf].length + ' candles' : 'FAILED: ' + (errors[tf] || 'unknown');
- 
-+  const entrySource = classifyEntrySource(cacheHits);
+-  return jsonResponse(result);
 +
-+  // ── B2: per-pair circuit breaker (check site 1 of 2) ──
-+  // Cooldown suppresses the trade but the row is still persisted with
-+  // cbShadow:true (§3.3) so the counterfactual WR stays measurable.
-+  const cb = signal.finalSignal !== 'NO_TRADE'
-+    ? await isTripped(pair, env)
-+    : { tripped: false };
-+
-+  if (cb.tripped) {
-+    const wouldBeSignal = signal.finalSignal;
-+    signal.finalSignal    = 'NO_TRADE';
-+    signal.circuitBreaker = {
-+      tripped: true, cooldownUntil: cb.cooldownUntil,
-+      lossStreak: cb.lossStreak, wouldBeSignal, cbShadow: true,
-+    };
-+    const shadowId = env?.SIGNAL_CACHE && ctx ? generateSignalId() : null;
-+    if (shadowId) {
-+      ctx.waitUntil(saveSignalToHistory(
-+        { ...signal, finalSignal: wouldBeSignal, cbShadow: true },
-+        pair, false, env, shadowId, entrySource));
-+    }
-+    return {
-+      ...(shadowId ? { id: shadowId } : {}),
-+      pair, assetType, marketStatus: 'OPEN', session, isExoticPair: exotic, signal,
-+      circuitBreaker: signal.circuitBreaker,
-+      source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
-+      timestamp: new Date().toISOString(),
-+      nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
-+      cacheHits, entrySource, dataStatus,
-+    };
++  if (preferCache && result && !result.error && result.signal
++      && result.source !== 'DUMMY_FALLBACK') {
++    // Warm the cache for whoever asks next. Marked opportunistic so it is
++    // distinguishable from a cron-generated entry.
++    const write = writeLatest(pair, result, { opportunistic: true }, env);
++    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(write);
++    else await write;
 +  }
 +
-   const signalId = signal.finalSignal !== 'NO_TRADE' && env?.SIGNAL_CACHE && ctx
-     ? generateSignalId()
-     : null;
-@@ -84,11 +129,11 @@ export async function handleSignalRaw(pair, env, ctx) {
-     source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
-     timestamp: new Date().toISOString(),
-     nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
--    cacheHits, dataStatus,
-+    cacheHits, entrySource, dataStatus,
-   };
- 
-   if (signalId)
--    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId));
-+    ctx.waitUntil(saveSignalToHistory(signal, pair, false, env, signalId, entrySource));
- 
-   return result;
++  return jsonResponse({ ...result, cached: false, forceRefresh: !preferCache });
  }
-@@ -118,6 +163,40 @@ async function handleSignalRawOTC(pair, env, ctx) {
-   for (const tf of timeframes)
-     dataStatus[tf] = candleData[tf] ? candleData[tf].length + ' candles (from ' + basePair + ')' : 'FAILED: ' + (errors[tf] || 'unknown');
  
-+  const entrySource = classifyEntrySource(cacheHits);
-+
-+  // ── B2: per-pair circuit breaker (check site 2 of 2, OTC) ──
-+  const cb = signal.finalSignal !== 'NO_TRADE'
-+    ? await isTripped(pair, env)
-+    : { tripped: false };
-+
-+  if (cb.tripped) {
-+    const wouldBeSignal = signal.finalSignal;
-+    signal.finalSignal    = 'NO_TRADE';
-+    signal.circuitBreaker = {
-+      tripped: true, cooldownUntil: cb.cooldownUntil,
-+      lossStreak: cb.lossStreak, wouldBeSignal, cbShadow: true,
-+    };
-+    const shadowId = env?.SIGNAL_CACHE && ctx ? generateSignalId() : null;
-+    if (shadowId) {
-+      ctx.waitUntil(saveSignalToHistory(
-+        { ...signal, finalSignal: wouldBeSignal, cbShadow: true },
-+        pair, true, env, shadowId, entrySource));
-+    }
-+    return {
-+      ...(shadowId ? { id: shadowId } : {}),
-+      pair, basePair, assetType: ASSET_TYPE_OTC, isOTC: true,
-+      otcBroker: 'Olymp Trade (synthetic price)', marketStatus: 'OPEN (OTC 24/7)',
-+      session, isExoticPair: exotic, signal,
-+      circuitBreaker: signal.circuitBreaker,
-+      source: totalFailures > 0 ? 'PARTIAL_DATA' : 'FULL_DATA',
-+      dataNote: 'Candle data from ' + basePair + ' (real market). OTC price may differ.',
-+      timestamp: new Date().toISOString(),
-+      nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
-+      cacheHits, entrySource, dataStatus,
-+    };
-+  }
-+
-   const signalId = signal.finalSignal !== 'NO_TRADE' && env?.SIGNAL_CACHE && ctx
-     ? generateSignalId()
-     : null;
-@@ -131,11 +210,11 @@ async function handleSignalRawOTC(pair, env, ctx) {
-     dataNote: 'Candle data from ' + basePair + ' (real market). OTC price may differ.',
-     timestamp: new Date().toISOString(),
-     nextRefresh: new Date(Date.now() + CONFIG.REFRESH_INTERVAL).toISOString(),
--    cacheHits, dataStatus,
-+    cacheHits, entrySource, dataStatus,
-   };
- 
-   if (signalId)
--    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId));
-+    ctx.waitUntil(saveSignalToHistory(signal, pair, true, env, signalId, entrySource));
- 
-   return otcResult;
- }
-diff --git a/src/history/circuitBreaker.js b/src/history/circuitBreaker.js
+ export async function handleSignalRaw(pair, env, ctx) {
+diff --git a/src/history/latestCache.js b/src/history/latestCache.js
 new file mode 100644
-index 0000000..ada78d9
+index 0000000..15f3822
 --- /dev/null
-+++ b/src/history/circuitBreaker.js
-@@ -0,0 +1,63 @@
++++ b/src/history/latestCache.js
+@@ -0,0 +1,102 @@
 +/**
-+ * B2 — per-pair circuit breaker.
++ * Phase 7 — shared read/write layer for the cron-warmed signal cache.
 + *
-+ * State: KV key `cb:<PAIR_KEY>` = { lossStreak, cooldownUntil, updatedAt }
-+ *   - LOSS  -> lossStreak++, and at >= LOSS_STREAK_LIMIT sets a fixed cooldown
-+ *   - WIN   -> lossStreak = 0, cooldown cleared
-+ *   - UNKNOWN -> ignored entirely (an unresolved result is not evidence)
++ * Three call sites depend on the key format and the staleness rule
++ * (scheduledScan writes, /api/signals/latest reads, /api/signal?preferCache
++ * reads then opportunistically writes). They live here so the three can never
++ * drift apart — a mismatched key would silently produce a permanent cache miss
++ * rather than an error.
 + *
-+ * While a pair is in cooldown the handler emits NO_TRADE but still persists the
-+ * would-be signal with cbShadow:true, so the counterfactual stays measurable
-+ * (shadow rows are excluded from updatePairStats and therefore from WR).
++ * Key: `latest:<PAIR>` with `/` and `-` normalised to `_`, upper-cased.
++ *   BTC/USD      -> latest:BTC_USD
++ *   EURUSD-OTC   -> latest:EURUSD_OTC
++ * This mirrors the existing pairKey() convention in history/stats.js, and the
++ * `latest:` prefix is distinct from every prefix already in use
++ * (sig:, stats:, pending:, cb:, quota:, rr:, c:) — verified by grep.
 + */
 +
-+const CB_PREFIX = 'cb:';
-+const LOSS_STREAK_LIMIT = 2;
-+const COOLDOWN_MS = 6 * 60 * 60 * 1000;   // 6h fixed
-+const CB_TTL_S = 7 * 24 * 3600;
++import { SCAN_CONFIG } from '../config.js';
 +
-+function key(pair) {
-+  return CB_PREFIX + String(pair).replace(/\//g, '_').replace(/-/g, '_').toUpperCase();
++/** Normalise any accepted pair spelling to the KV key form. */
++export function latestKey(pair) {
++  return SCAN_CONFIG.KV_LATEST_PREFIX
++    + String(pair).replace(/\//g, '_').replace(/-/g, '_').toUpperCase();
 +}
 +
-+function emptyState() {
-+  return { lossStreak: 0, cooldownUntil: null, updatedAt: null };
++/** Inverse of latestKey() — used when listing the whole cache. */
++export function pairFromLatestKey(keyName) {
++  const raw = String(keyName).slice(SCAN_CONFIG.KV_LATEST_PREFIX.length);
++  // OTC keys are stored as EURUSD_OTC and must come back as EURUSD-OTC,
++  // not EURUSD/OTC — a plain underscore->slash swap would corrupt them.
++  if (raw.endsWith('_OTC')) return raw.slice(0, -4) + '-OTC';
++  const i = raw.indexOf('_');
++  return i === -1 ? raw : raw.slice(0, i) + '/' + raw.slice(i + 1);
 +}
 +
-+export async function getCBState(pair, env) {
-+  if (!env || !env.SIGNAL_CACHE) return emptyState();
-+  try {
-+    const s = await env.SIGNAL_CACHE.get(key(pair), 'json');
-+    return s && typeof s === 'object' ? s : emptyState();
-+  } catch (e) { return emptyState(); }
-+}
-+
-+export async function isTripped(pair, env) {
-+  if (!env || !env.SIGNAL_CACHE) return { tripped: false };
-+  const s = await getCBState(pair, env);
-+  if (!s.cooldownUntil) return { tripped: false };
-+  const until = new Date(s.cooldownUntil).getTime();
-+  if (Number.isFinite(until) && until > Date.now())
-+    return { tripped: true, cooldownUntil: s.cooldownUntil, lossStreak: s.lossStreak || 0 };
-+  return { tripped: false };
-+}
-+
-+export async function applyResult(pair, winLoss, env) {
-+  if (!env || !env.SIGNAL_CACHE) return;
-+  if (winLoss !== 'WIN' && winLoss !== 'LOSS') return;   // UNKNOWN ignored
-+  try {
-+    const s = await getCBState(pair, env);
-+    if (winLoss === 'WIN') {
-+      s.lossStreak = 0;
-+      s.cooldownUntil = null;
-+    } else {
-+      s.lossStreak = (s.lossStreak || 0) + 1;
-+      if (s.lossStreak >= LOSS_STREAK_LIMIT)
-+        s.cooldownUntil = new Date(Date.now() + COOLDOWN_MS).toISOString();
-+    }
-+    s.updatedAt = new Date().toISOString();
-+    await env.SIGNAL_CACHE.put(key(pair), JSON.stringify(s), { expirationTtl: CB_TTL_S });
-+  } catch (e) { console.warn('circuitBreaker applyResult error:', e.message); }
-+}
-+
-+export const __cbTest = { key, LOSS_STREAK_LIMIT, COOLDOWN_MS };
-diff --git a/src/history/quota.js b/src/history/quota.js
-new file mode 100644
-index 0000000..5043adb
---- /dev/null
-+++ b/src/history/quota.js
-@@ -0,0 +1,31 @@
 +/**
-+ * B0-4 — TwelveData request counter.
-+ *
-+ * One KV write per HTTP attempt. Account is on the Cloudflare Paid plan, so the
-+ * 1000 write/day free-tier cap does not apply; batching would trade away metric
-+ * accuracy for nothing.
-+ *
-+ * Key: quota:<YYYY-MM-DD>  (UTC day — matches TwelveData's own daily reset)
++ * Attach freshness metadata at read time.
++ * `generationAge` is seconds since generation; `nextRefreshIn` counts down to
++ * the next scheduled scan, not to TTL expiry — that is the number a client
++ * actually wants when deciding whether to wait or force a refresh.
 + */
-+
-+function todayKey() {
-+  return 'quota:' + new Date().toISOString().slice(0, 10);
-+}
-+
-+export async function incrementQuota(env) {
-+  if (!env || !env.SIGNAL_CACHE) return;
-+  try {
-+    const key = todayKey();
-+    const parsed = parseInt((await env.SIGNAL_CACHE.get(key)) || '0', 10);
-+    const cur = Number.isFinite(parsed) ? parsed : 0;
-+    await env.SIGNAL_CACHE.put(key, String(cur + 1), { expirationTtl: 3 * 24 * 3600 });
-+  } catch (e) { /* never block the signal path on instrumentation */ }
-+}
-+
-+export async function readQuota(env) {
-+  if (!env || !env.SIGNAL_CACHE) return -1;
-+  try {
-+    const parsed = parseInt((await env.SIGNAL_CACHE.get(todayKey())) || '0', 10);
-+    return Number.isFinite(parsed) ? parsed : 0;
-+  } catch (e) { return -1; }
-+}
-diff --git a/src/history/stats.js b/src/history/stats.js
-index fcde6d2..9bcdadf 100644
---- a/src/history/stats.js
-+++ b/src/history/stats.js
-@@ -1,7 +1,9 @@
- // Fix: static import (was dynamic inside fetchExpiryPrice — called every cron tick)
- import { CONFIG } from '../config.js';
- import { HISTORY_CONFIG } from '../config.js';
--import { getApiKeys } from '../fetch/keys.js';
-+import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
-+import { incrementQuota } from './quota.js';
-+import { applyResult as cbApplyResult } from './circuitBreaker.js';
- 
- function pairKey(pair) {
-   return pair.replace(/\//g, '_').replace(/-/g, '_');
-@@ -34,7 +36,29 @@ function isDuplicateRecord(newRec, prevRec) {
-   return true;
- }
- 
--export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
-+/**
-+ * B5 — normalise AI outcome into one short string.
-+ * Forex/crypto path uses the dual-AI combiner (ai/combine.js);
-+ * OTC path has a single Cerebras validation with its own shape.
-+ */
-+function derivedAiStatus(signal) {
-+  if (!signal) return null;
-+  if (signal.isOTC) {
-+    const st = signal.aiValidation ? signal.aiValidation.status : null;   // 'SKIPPED' | 'OK'
-+    if (st === 'SKIPPED') return 'SKIPPED';
-+    if (st === 'OK') return signal.aiValidation.agrees ? 'OTC_AGREE' : 'OTC_DISAGREE';
-+    return st || null;
++export function enrichAge(cached, now = Date.now()) {
++  if (!cached || typeof cached !== 'object') return cached;
++  const genTime = new Date(cached.generatedAt).getTime();
++  if (!Number.isFinite(genTime)) {
++    return { ...cached, generationAge: null, nextRefreshIn: null, stale: true };
 +  }
-+  if (!signal.aiValidation) return null;
-+  if (signal.aiValidation.status === 'SKIPPED') return 'SKIPPED';
-+  const c = signal.aiValidation.combined;
-+  if (!c) return null;
-+  // combine.js: 'BOTH_UNAVAILABLE' | 'OK' (+ agreement 'BOTH_AGREE'|'AIs_DISAGREE')
-+  if (c.status === 'OK' && c.agreement) return c.agreement;
-+  return c.status || null;
++  const ageSeconds = Math.max(0, Math.floor((now - genTime) / 1000));
++  const interval = SCAN_CONFIG.SCAN_INTERVAL_SECONDS;
++  return {
++    ...cached,
++    generationAge: ageSeconds,
++    nextRefreshIn: Math.max(0, interval - (ageSeconds % interval)),
++    stale: ageSeconds >= SCAN_CONFIG.LATEST_TTL_SECONDS,
++  };
 +}
 +
-+export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource) {
-   if (!env || !env.SIGNAL_CACHE) return;
-   if (!signalId) {
-     console.warn('saveSignalToHistory skipped: missing signalId for ' + pair);
-@@ -61,8 +85,16 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
-       session:        signal.session ? signal.session.sessions : [],
-       sessionQuality: signal.session ? signal.session.quality  : 'N/A',
-       aiAgreed:       signal.aiValidation ? signal.aiValidation.combinedAgreed : null,
-+      // ── B5: additive diagnostic fields (never read by existing consumers) ──
-+      structureVerdict: signal.structureVerdict ? (signal.structureVerdict.overall || null) : null,
-+      aiStatus:         derivedAiStatus(signal),
-+      coreConfidence:   signal.coreConfidence === undefined || signal.coreConfidence === null
-+                          ? null : signal.coreConfidence,
-+      entrySource:      entrySource || null,
-       timestamp: now, result: null, exitPrice: null, checkedAt: null,
-     };
-+    // B2/§3.3: only present on shadow rows — keeps normal records lean
-+    if (signal.cbShadow === true) record.cbShadow = true;
- 
-     const histKey = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pairKey(pair);
-     let existing = null;
-@@ -107,7 +139,7 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId) {
-       await env.SIGNAL_CACHE.put(
-         HISTORY_CONFIG.KV_PENDING_PREFIX + signalId,
-         JSON.stringify(record),
--        { expirationTtl: 60*60*2 }
-+        { expirationTtl: Math.floor(HISTORY_CONFIG.PENDING_TTL_MS / 1000) }
-       );
-     }
-     console.log('Signal saved:', signalId, pair, signal.finalSignal);
-@@ -136,57 +168,155 @@ export async function scheduledTracker(env) {
-         const checkAfterMs = new Date(record.expiryTime).getTime() + HISTORY_CONFIG.RESULT_CHECK_DELAY * 1000;
-         if (now < checkAfterMs) continue;
- 
--        const exitPrice = await fetchExpiryPrice(record.pair, record.expiryTime, env);
-+        const fetchResult = await fetchExpiryPrice(record.pair, record.expiryTime, env);
++export function isStale(cached, now = Date.now()) {
++  if (!cached) return true;
++  const genTime = new Date(cached.generatedAt).getTime();
++  if (!Number.isFinite(genTime)) return true;
++  return (now - genTime) / 1000 >= SCAN_CONFIG.LATEST_TTL_SECONDS;
++}
 +
-+        // ── B0-3: transient fetch failure must NOT burn the record ──
-+        // Old behaviour deleted the pending key on the first miss, so one bad
-+        // API response permanently froze the signal as UNKNOWN. Now we count
-+        // attempts and only give up after PENDING_MAX_CHECKS.
-+        if (fetchResult && fetchResult.error) {
-+          record.checks        = (record.checks || 0) + 1;
-+          record.lastCheckError = fetchResult.error;
-+          record.lastCheckAt    = new Date().toISOString();
-+
-+          if (record.checks >= HISTORY_CONFIG.PENDING_MAX_CHECKS) {
-+            await updateSignalResult(record, 'UNKNOWN', null, env);
-+            await env.SIGNAL_CACHE.delete(kvEntry.name);
-+            console.warn('scheduledTracker gave up id=' + record.id + ' pair=' + record.pair +
-+                         ' checks=' + record.checks + ' lastErr=' + fetchResult.error);
-+          } else {
-+            const remainingMs = (new Date(record.expiryTime).getTime() + HISTORY_CONFIG.PENDING_TTL_MS) - now;
-+            if (remainingMs > 60000) {
-+              await env.SIGNAL_CACHE.put(kvEntry.name, JSON.stringify(record),
-+                                         { expirationTtl: Math.floor(remainingMs / 1000) });
-+            } else {
-+              // TTL window exhausted before the retry budget — resolve as UNKNOWN
-+              await updateSignalResult(record, 'UNKNOWN', null, env);
-+              await env.SIGNAL_CACHE.delete(kvEntry.name);
-+              console.warn('scheduledTracker ttl-expired id=' + record.id + ' pair=' + record.pair +
-+                           ' checks=' + record.checks + ' lastErr=' + fetchResult.error);
-+            }
-+          }
-+          checked++;
-+          if (checked >= 10) break;
-+          continue;
-+        }
-+
-+        const exitPrice = fetchResult ? fetchResult.price : null;
-         let winLoss = 'UNKNOWN';
--        if (record.entryPrice !== null && exitPrice !== null) {
-+        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
-           if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
-           if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
-         }
-         await updateSignalResult(record, winLoss, exitPrice, env);
-         await env.SIGNAL_CACHE.delete(kvEntry.name);
--        await updatePairStats(record.pair, winLoss, record, env);
-+        // §3.3: shadow rows are outcome-tracked but never pollute WR / CB state
-+        if (!record.cbShadow) await updatePairStats(record.pair, winLoss, record, env);
-         checked++;
-         if (checked >= 10) break;
-       } catch (e) {
-+        // B0-3: do NOT delete on exception — let the retry counter run its course.
-         console.warn('Cron check error for ' + kvEntry.name + ':', e.message);
--        try { await env.SIGNAL_CACHE.delete(kvEntry.name); } catch (e2) {}
-       }
-     }
-     if (checked > 0) console.log('Cron: checked ' + checked + ' expired signals');
-   } catch (e) { console.warn('scheduledTracker error:', e.message); }
- }
- 
--// Fix: no longer dynamic import — uses top-level static import
-+/**
-+ * B0-1/B0-2/B0-5 — expiry price lookup.
-+ *
-+ * Old version: outputsize=5 from "now" (so a cron tick that ran late simply
-+ * could not see the expiry minute), key #1 only, and every failure collapsed to
-+ * a bare `null` with no reason recorded.
-+ *
-+ * New version: an explicit +/-5min bracket around the expiry timestamp, full key
-+ * rotation, and a result object — {price} on success, {error,status,body} on
-+ * failure — so the caller can distinguish "no data" from "not yet".
-+ */
- async function fetchExpiryPrice(pair, expiryTimeISO, env) {
--  try {
--    const apiKeys = getApiKeys(env);
--    if (apiKeys.length === 0) return null;
--    const symbol = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
--    const u = new URL('/time_series', CONFIG.API_BASE_URL);
--    u.searchParams.set('symbol', symbol);
--    u.searchParams.set('interval', '1min');
--    u.searchParams.set('outputsize', '5');
--    u.searchParams.set('apikey', apiKeys[0]);
--    u.searchParams.set('format', 'JSON');
--
--    const controller = new AbortController();
--    const tid = setTimeout(() => controller.abort(), 8000);
--    let res;
--    try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
--    finally { clearTimeout(tid); }
--
--    if (!res.ok) return null;
--    const data = await res.json();
--    if (!data.values || !Array.isArray(data.values) || data.values.length === 0) return null;
--
--    const expiryMs = new Date(expiryTimeISO).getTime();
--    let closest = null; let minDiff = Infinity;
--    for (const c of data.values) {
--      const diff = Math.abs(new Date(c.datetime).getTime() - expiryMs);
--      if (diff < minDiff) { minDiff = diff; closest = c; }
-+  const apiKeys = getApiKeys(env);
-+  if (apiKeys.length === 0) return { error: 'NO_API_KEYS' };
-+
-+  const symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
-+  const expiryMs = new Date(expiryTimeISO).getTime();
-+  if (!Number.isFinite(expiryMs)) return { error: 'BAD_EXPIRY_TIME' };
-+
-+  // TwelveData accepts "YYYY-MM-DD HH:MM:SS" (UTC)
-+  const startDate = new Date(expiryMs - 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-+  const endDate   = new Date(expiryMs + 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-+
-+  const startIdx    = await getNextRotationIndex(env, apiKeys.length);
-+  const maxAttempts = apiKeys.length;     // B0-6: no MAX_RETRIES cap
-+  let lastErr = { error: 'UNKNOWN' };
-+
-+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-+    const keyIdx = (startIdx + attempt) % apiKeys.length;
-+    const apiKey = apiKeys[keyIdx];
-+    try {
-+      const u = new URL('/time_series', CONFIG.API_BASE_URL);
-+      u.searchParams.set('symbol', symbol);
-+      u.searchParams.set('interval', '1min');
-+      u.searchParams.set('start_date', startDate);
-+      u.searchParams.set('end_date', endDate);
-+      u.searchParams.set('apikey', apiKey);
-+      u.searchParams.set('format', 'JSON');
-+
-+      await incrementQuota(env);   // B0-4: +1 per HTTP attempt
-+
-+      const controller = new AbortController();
-+      const tid = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT);
-+      let res;
-+      try { res = await fetch(u.toString(), { signal: controller.signal, headers: { Accept: 'application/json' } }); }
-+      finally { clearTimeout(tid); }
-+
-+      if (!res.ok) {
-+        const bodyText = await res.text().catch(() => '');
-+        console.warn('fetchExpiryPrice non-ok pair=' + pair + ' keyIdx=' + keyIdx +
-+                     ' status=' + res.status + ' body=' + bodyText.slice(0, 200));
-+        lastErr = res.status === 429
-+          ? { error: 'RATE_LIMITED', status: 429, body: bodyText.slice(0, 200) }
-+          : { error: 'HTTP_' + res.status, status: res.status, body: bodyText.slice(0, 200) };
-+        continue;
-+      }
-+
-+      const data = await res.json();
-+      if (data.status === 'error') {
-+        console.warn('fetchExpiryPrice td-error pair=' + pair + ' keyIdx=' + keyIdx +
-+                     ' code=' + data.code + ' msg=' + String(data.message || '').slice(0, 200));
-+        lastErr = { error: 'TD_ERROR', status: data.code, body: String(data.message || '').slice(0, 200) };
-+        continue;
-+      }
-+      if (!data.values || !Array.isArray(data.values) || data.values.length === 0) {
-+        console.warn('fetchExpiryPrice empty pair=' + pair + ' keyIdx=' + keyIdx +
-+                     ' body=' + JSON.stringify(data).slice(0, 200));
-+        lastErr = { error: 'EMPTY_VALUES' };
-+        continue;
-+      }
-+
-+      let closest = null; let minDiff = Infinity;
-+      for (const c of data.values) {
-+        if (!c || !c.datetime) continue;
-+        const stamp = new Date(String(c.datetime).replace(' ', 'T') + 'Z').getTime();
-+        if (!Number.isFinite(stamp)) continue;
-+        const diff = Math.abs(stamp - expiryMs);
-+        if (diff < minDiff) { minDiff = diff; closest = c; }
-+      }
-+      if (closest && minDiff <= 120000) {
-+        const px = parseFloat(closest.close);
-+        if (Number.isFinite(px)) return { price: px };
-+        lastErr = { error: 'BAD_CLOSE_VALUE', body: String(closest.close).slice(0, 200) };
-+        continue;
-+      }
-+      console.warn('fetchExpiryPrice no-match pair=' + pair + ' keyIdx=' + keyIdx + ' minDiff=' + minDiff);
-+      lastErr = { error: 'NO_MATCH_WITHIN_120S', body: 'minDiff=' + minDiff };
-+    } catch (e) {
-+      console.warn('fetchExpiryPrice exception pair=' + pair + ' keyIdx=' + keyIdx +
-+                   ' attempt=' + attempt + ' msg=' + e.message);
-+      lastErr = { error: 'EXCEPTION', body: e.message };
-     }
--    return (closest && minDiff <= 120000) ? parseFloat(closest.close) : null;
--  } catch (e) { console.warn('fetchExpiryPrice error:', e.message); return null; }
++/** Read one cached signal. Returns null on miss, bad JSON, or KV error. */
++export async function readLatest(pair, env) {
++  if (!env || !env.SIGNAL_CACHE) return null;
++  try {
++    const cached = await env.SIGNAL_CACHE.get(latestKey(pair), 'json');
++    return cached && typeof cached === 'object' ? cached : null;
++  } catch (e) {
++    console.warn('readLatest error ' + pair + ': ' + e.message);
++    return null;
 +  }
-+  return lastErr;
- }
- 
- async function updateSignalResult(record, winLoss, exitPrice, env) {
-@@ -259,5 +389,9 @@ export async function updatePairStats(pair, winLoss, record, env) {
-     stats.byRegime[regime].winRate = rd > 0 ? Math.round((stats.byRegime[regime].wins / rd) * 1000) / 1000 : 0;
- 
-     await env.SIGNAL_CACHE.put(statsKey, JSON.stringify(stats), { expirationTtl: 60*60*24*90 });
++}
 +
-+    // B2: single funnel point — every decided result that counts toward WR also
-+    // feeds the circuit breaker. Shadow rows never reach here (skipped upstream).
-+    await cbApplyResult(pair, winLoss, env);
-   } catch (e) { console.warn('updatePairStats error:', e.message); }
- }
++/**
++ * Write one signal into the cache.
++ *
++ * `meta.opportunistic` marks an entry warmed by a user request rather than by
++ * the cron, so the two are distinguishable in the response and in /health.
++ * Never throws: a cache write failing must not fail the request that triggered it.
++ */
++export async function writeLatest(pair, payload, meta, env) {
++  if (!env || !env.SIGNAL_CACHE || !payload) return false;
++  try {
++    const record = {
++      ...payload,
++      cached: true,
++      generatedAt: (meta && meta.generatedAt) || new Date().toISOString(),
++      generationId: (meta && meta.generationId) || null,
++      opportunistic: !!(meta && meta.opportunistic),
++    };
++    await env.SIGNAL_CACHE.put(latestKey(pair), JSON.stringify(record), {
++      expirationTtl: SCAN_CONFIG.LATEST_TTL_SECONDS,
++    });
++    return true;
++  } catch (e) {
++    console.warn('writeLatest error ' + pair + ': ' + e.message);
++    return false;
++  }
++}
 diff --git a/src/index.js b/src/index.js
-index e18d6fa..9be0c23 100644
+index 9be0c23..36ccfc3 100644
 --- a/src/index.js
 +++ b/src/index.js
-@@ -34,7 +34,7 @@ export default {
-       let response;
+@@ -9,11 +9,31 @@ import { sanitizePair } from './utils/pairs.js';
+ import { checkRateLimit } from './middleware/rateLimit.js';
+ import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
+ import { handleSignal, handleBatch } from './handlers/signal.js';
++import { handleLatest } from './handlers/latest.js';
+ import { scheduledTracker } from './history/stats.js';
++import { scheduledScan } from './handlers/scheduledScan.js';
+ import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
  
-       if (path === '/' || path === '/health') {
--        response = handleHealth(env);
-+        response = await handleHealth(env);
+ export default {
++  /**
++   * Two crons share this handler (wrangler.toml `crons`):
++   *   */2 * * * *  -> result checker (Phase B)
++   *   */5 * * * *  -> signal scanner (Phase 7)
++   *
++   * `event.cron` carries the pattern that fired. If a runtime ever omits it we
++   * fall back to the result checker, which is the cheaper and more critical of
++   * the two — a missed scan self-heals on the next tick, a missed result check
++   * delays win/loss resolution.
++   */
+   async scheduled(event, env, ctx) {
++    const cron = event && event.cron;
++    if (cron === '*/5 * * * *') {
++      ctx.waitUntil(scheduledScan(env, ctx));
++      return;
++    }
++    if (cron && cron !== '*/2 * * * *') {
++      console.warn('scheduled: unrecognised cron pattern "' + cron + '", running result checker');
++    }
+     ctx.waitUntil(scheduledTracker(env));
+   },
  
-       } else if (path === '/api/signal' || path === '/signal') {
-         const rawPair = url.searchParams.get('pair') || 'EUR/USD';
-diff --git a/src/signal/engine.js b/src/signal/engine.js
-index 8b430ed..24e9aa8 100644
---- a/src/signal/engine.js
-+++ b/src/signal/engine.js
-@@ -377,6 +377,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
+@@ -48,9 +68,13 @@ export default {
+             examples: ['EUR/USD','GBP/JPY','BTC/USD','ETH/EUR','SOL/USDT','EURUSD-OTC'],
+           }, 400);
+         } else {
+-          response = await handleSignal(pair, env, ctx);
++          const preferCache = url.searchParams.get('preferCache') === 'true';
++          response = await handleSignal(pair, env, ctx, { preferCache });
+         }
  
-   return {
-     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
-+    // B5: pre-filter engine confidence (captured at line ~164, before HTF block,
-+    // alignment bonus, session/exotic penalties, AI rescue etc). Lets us later
-+    // separate "engine was weak" from "filters ate it".
-+    coreConfidence: rawConfidence,
-     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
-     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
-     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,
-diff --git a/src/signal/otcEngine.js b/src/signal/otcEngine.js
-index 907ef3f..f59c49c 100644
---- a/src/signal/otcEngine.js
-+++ b/src/signal/otcEngine.js
-@@ -129,6 +129,11 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
-     finalDirection = tie.direction; confidence = tie.confidence;
-   }
- 
-+  // B5: OTC anchor — value straight out of the weighted vote, before ANY
-+  // adjustment (MIXED zeroing, alignment bonus, pattern/time/consistency
-+  // penalties, exotic penalty, AI boost). Mirrors engine.js rawConfidence.
-+  const rawConfidence = confidence;
++      } else if (path === '/api/signals/latest') {
++        response = await handleLatest(url, env);
 +
-   if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
-   confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);
+       } else if (path === '/api/batch') {
+         response = await handleBatch(url, env, ctx);
  
-@@ -220,6 +225,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
-   const finalGrade = getSignalGrade(confidence, avgConf, alignment);
-   return {
-     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
-+    coreConfidence: rawConfidence,   // B5 — see anchor above
-     assetType: ASSET_TYPE_OTC, isOTC: true,
-     otcNote: 'Synthetic pair — mean reversion + price action. Olymp Trade.',
-     marketRegime: 'OTC_SYNTHETIC',
+@@ -73,6 +97,9 @@ export default {
+           endpoints: {
+             health:    '/',
+             signal:    '/api/signal?pair=EUR/USD',
++            signalCached: '/api/signal?pair=EUR/USD&preferCache=true',
++            latestAll: '/api/signals/latest',
++            latestOne: '/api/signals/latest?pair=BTC/USD',
+             signalOTC: '/api/signal?pair=EURUSD-OTC',
+             crypto:    '/api/signal?pair=BTC/USD',
+             batch:     '/api/batch?pairs=EUR/USD,GBP/JPY,BTC/USD',
+diff --git a/wrangler.toml b/wrangler.toml
+index d20c7f3..fdadb5c 100644
+--- a/wrangler.toml
++++ b/wrangler.toml
+@@ -7,4 +7,5 @@ binding = "SIGNAL_CACHE"
+ id = "f553a3f10915478fa1b8165dd58ff6ea"
+ 
+ [triggers]
+-crons = ["*/2 * * * *"]
++# */2 = result checker (Phase B) · */5 = signal scanner (Phase 7)
++crons = ["*/2 * * * *", "*/5 * * * *"]

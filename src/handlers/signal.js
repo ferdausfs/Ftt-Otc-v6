@@ -8,6 +8,7 @@ import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
 import { saveSignalToHistory } from '../history/stats.js';
 import { isTripped } from '../history/circuitBreaker.js';
 import { detectCorrelationConflicts } from '../analysis/filters.js';
+import { readLatest, writeLatest, enrichAge, isStale } from '../history/latestCache.js';
 import {
   VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS,
   HISTORY_CONFIG,
@@ -28,9 +29,39 @@ function classifyEntrySource(cacheHits) {
   return null;
 }
 
-export async function handleSignal(pair, env, ctx) {
+/**
+ * Phase 7 — /api/signal entry point.
+ *
+ * Default behaviour is unchanged: a fresh engine run (the "force refresh" path),
+ * now labelled `cached:false, forceRefresh:true` so a client can tell the two
+ * apart.
+ *
+ * With `?preferCache=true` the cron-warmed `latest:` entry is served when it is
+ * fresh; on a miss or a stale entry we fall through to a normal generation and
+ * opportunistically warm the cache for the next reader.
+ */
+export async function handleSignal(pair, env, ctx, opts) {
+  const preferCache = !!(opts && opts.preferCache);
+
+  if (preferCache) {
+    const cached = await readLatest(pair, env);
+    if (cached && !isStale(cached)) {
+      return jsonResponse({ ...enrichAge(cached), cached: true, forceRefresh: false });
+    }
+  }
+
   const result = await handleSignalRaw(pair, env, ctx);
-  return jsonResponse(result);
+
+  if (preferCache && result && !result.error && result.signal
+      && result.source !== 'DUMMY_FALLBACK') {
+    // Warm the cache for whoever asks next. Marked opportunistic so it is
+    // distinguishable from a cron-generated entry.
+    const write = writeLatest(pair, result, { opportunistic: true }, env);
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(write);
+    else await write;
+  }
+
+  return jsonResponse({ ...result, cached: false, forceRefresh: !preferCache });
 }
 
 export async function handleSignalRaw(pair, env, ctx) {

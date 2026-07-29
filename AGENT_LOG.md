@@ -1,5 +1,78 @@
 # Ftt-Otc-v6 — Agent Log
 
+## 2026-07-29 — Phase 7: unified cron-driven signal cache (NOT deployed)
+
+**Base:** `d80e989`. 10 files: 5 modified, 3 new, 2 test scripts. 968 insertions / 4 deletions.
+
+**Five spec assumptions checked live before coding — three were broken imports:**
+- `getMarketStatus` from `utils/pairs.js` (spec §4.2) does not exist anywhere; the real
+  market-hours check is `isForexMarketOpen()` in `utils/session.js`.
+- `generateSignalCore` from `signal/engine.js` (spec §4.2) does not exist; the engine
+  exports `buildMultiTimeframeSignal`.
+- `jsonResponse` is in `utils/helpers.js`, not `utils/cors.js` (spec §4.3).
+  All three are import statements — copying the spec verbatim would have failed at
+  module resolution, not silently.
+- **No engine refactor was needed** (spec §5 expected one). The path is already
+  `index.js -> handleSignal -> handleSignalRaw(pair, env, ctx)`, which returns exactly
+  the object worth caching. `git diff src/signal/engine.js src/signal/otcEngine.js`
+  is empty: one engine, one code path, zero fork.
+- **The spec's `scanOnePair` would have double-written history.** `handleSignalRaw`
+  already persists BUY/SELL via `ctx.waitUntil(saveSignalToHistory(...))`
+  (signal.js:136, :217). Calling it again in the scanner would create two records and
+  two `pending:` result-checks per scanned signal; the 30-min dedup guard catches most
+  but not all (a re-poll with a slightly different entryPrice slips through — the exact
+  duplicate inflation Phase A2 had to clean up). The scanner therefore writes only the
+  KV cache and leaves history to the existing path.
+
+**Changes**
+- `config.js` — `SCAN_PAIRS` (14 pairs, each verified live against /api/signal:
+  all return FULL_DATA) and `SCAN_CONFIG` (prefix `latest:`, TTL 600s, batch 3,
+  500ms delay, 90s hard cap).
+- `history/latestCache.js` (new) — one shared key/TTL/freshness layer for the three
+  call sites, so a key-format drift can't turn into a permanent silent cache miss.
+  Handles OTC round-trip (`EURUSD-OTC` <-> `latest:EURUSD_OTC`; a naive underscore
+  swap would produce `EURUSD/OTC`).
+- `handlers/scheduledScan.js` (new) — 5-min scan, forex skipped while the market is
+  closed, batches of 3 with a 500ms gap, 90s cap, per-pair failure isolation. Refuses
+  to cache `DUMMY_FALLBACK` (all candle fetches failed) or market-closed responses.
+- `handlers/latest.js` (new) — `/api/signals/latest` single + all, 404 on miss/stale,
+  400 on an invalid pair, plus `getScanCacheStats()` for /health. Never runs the engine.
+- `handlers/signal.js` — `handleSignal(pair, env, ctx, {preferCache})`. Default is
+  unchanged fresh generation, now labelled `cached:false, forceRefresh:true`;
+  `preferCache=true` serves a fresh cache entry or generates and warms it
+  (`opportunistic:true`).
+- `index.js` — cron split on `event.cron` (`*/5` scan, everything else result checker),
+  new route, `preferCache` param. `wrangler.toml` — both crons registered.
+- `handlers/health.js` — `scanCache` block (generation id, pair count, oldest/newest
+  age, opportunistic count).
+
+**Measured, not estimated**
+- Per scan: 42 candle calls, 28 AI calls, 126 KV puts. Per hour: 504 candles, 336 AI.
+  The spec's "~1000-1500 credits/hour" was ~2-3x high; an immediate second scan costs
+  0 candle calls because the `c:` cache absorbs it.
+- **AI is currently exhausted**: Cerebras and Groq both return 429 on every pair,
+  sampled twice 20s apart. AI fires on 13/14 pairs, so a scan costs ~26-28 AI calls.
+  Caching bounds that (fixed 336/hour regardless of user count) but does not fix it —
+  and a cache filled with `BOTH_UNAVAILABLE` signals would serve that for 10 minutes.
+  Flagged as blocking in the report's OPEN QUESTIONS; no engine change made (spec §9).
+
+**Verification:** `node --check` 34/34 · smoke 68/68 · integration 36/36 (104 assertions,
+0 failures). The integration suite runs the real scan -> real handleSignalRaw -> real
+engine with only HTTP stubbed, and asserts history stays at <=1 record per pair per scan,
+that a cache hit costs 0 candle and 0 AI calls, and that a force refresh still re-runs the
+engine. Three test failures along the way were all faults in my tests, not the code —
+including my own wrong assumption that a force refresh must refetch candles (it re-runs
+the engine; the `c:` candle cache is a separate pre-existing layer left untouched).
+
+**Not implemented (deliberate, see report §5):** the §3.3 auto-fallback that would make
+`/api/signals/latest` run the engine on a cache miss. Kept as 404 because §2.3 defines
+that endpoint as cache-read-only and because it is not rate-limited — making it
+engine-triggering would open an abuse vector. `?preferCache=true` provides the same
+fallback behind the existing rate limit.
+
+---
+
+
 Changelog-স্টাইল টেকনিক্যাল লগ — commit/date/exact-change ভিত্তিক। Project-এর overall মিশন/context জানতে `FTT-PROJECT-MASTER-PROTOCOL.md` দেখো, এখানে সেটা repeat করা হয় না। নতুন entry সবসময় উপরে যোগ হবে।
 
 ---

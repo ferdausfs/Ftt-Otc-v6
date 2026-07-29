@@ -49,6 +49,27 @@ export const CONFIG = {
   EXOTIC_CONFIDENCE_PENALTY: 10,
 };
 
+// ── PHASE 7: CRON SIGNAL SCANNER ────────────────────────────
+// Pairs the 5-min scanner keeps warm in KV. Every entry was verified live
+// against /api/signal on 2026-07-29 — all 14 return FULL_DATA.
+// Forex entries are skipped automatically while the market is closed.
+export const SCAN_PAIRS = [
+  // Crypto — 24/7
+  'BTC/USD', 'ETH/USD', 'BNB/USD', 'XRP/USD', 'SOL/USD', 'ADA/USD',
+  'DOGE/USD', 'AVAX/USD', 'DOT/USD', 'LINK/USD',
+  // Forex majors — market-hours gated
+  'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
+];
+
+export const SCAN_CONFIG = {
+  KV_LATEST_PREFIX:      'latest:',   // distinct from sig: / stats: / pending: / c: / rr: / cb: / quota:
+  LATEST_TTL_SECONDS:    600,         // 10 min = 2x cron interval
+  BATCH_SIZE:            3,           // parallel pairs per batch (AI rate-limit safety)
+  BATCH_DELAY_MS:        500,         // pause between batches
+  MAX_SCAN_DURATION_MS:  90000,       // hard stop so one cron tick can never run away
+  SCAN_INTERVAL_SECONDS: 300,         // informational, mirrors the */5 cron
+};
+
 // ── OTC CONFIG ──────────────────────────────────────────────
 export const ASSET_TYPE_OTC = 'FOREX_OTC';
 export const OTC_SUFFIXES = ['-OTC', 'OTC'];
