@@ -105,7 +105,7 @@ export const OTC_DURATION_CONFIG = {
 
 // ── HISTORY CONFIG ──────────────────────────────────────────
 export const HISTORY_CONFIG = {
-  MAX_SIGNALS_PER_PAIR:           50,
+  MAX_SIGNALS_PER_PAIR:           500,   // Phase 11: raised from 50 for Phase C slice analysis
   WIN_RATE_LOOKBACK:              20,
   RESULT_CHECK_DELAY:             90,
   CONFIDENCE_BONUS_THRESHOLD:     0.65,

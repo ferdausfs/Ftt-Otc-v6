@@ -78,7 +78,7 @@ export async function handleHistory(url, env) {
   const rawPair = url.searchParams.get('pair') || 'EUR/USD';
   const pair    = sanitizePair(rawPair);
   if (!pair) return jsonResponse({ error: true, message: 'Invalid pair: ' + rawPair }, 400);
-  const limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 50);
+  const limit = Math.min(parseInt(url.searchParams.get('limit') || '20'), 500);   // Phase 11: raised from 50 for slice analysis
   try {
     const histKey = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pair.replace(/\//g,'_').replace(/-/g,'_');
     let history = await env.SIGNAL_CACHE.get(histKey, 'json');
