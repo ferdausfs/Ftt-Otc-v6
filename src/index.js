@@ -17,8 +17,8 @@ import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js
 export default {
   /**
    * Two crons share this handler (wrangler.toml `crons`):
-   *   */2 * * * *  -> result checker (Phase B)
-   *   */5 * * * *  -> signal scanner (Phase 7)
+   *   * / 2 * * * *  -> result checker (Phase B)
+   *   * / 5 * * * *  -> signal scanner (Phase 7)
    *
    * `event.cron` carries the pattern that fired. If a runtime ever omits it we
    * fall back to the result checker, which is the cheaper and more critical of
