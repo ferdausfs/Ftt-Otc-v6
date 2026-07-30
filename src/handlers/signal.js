@@ -14,9 +14,50 @@ import {
   VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS,
   HISTORY_CONFIG,
 } from '../config.js';
+// R7.1: private shadow admission (standard engine only).
+import { getEngineAudit } from '../signal/r71shadow.js';
+import { admitShadowObservation } from '../history/r71store.js';
 
 function generateSignalId() {
   return 'sig_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+}
+
+/**
+ * R7.1 — admit a private structure-suppressed shadow observation when the
+ * standard production engine is NO_TRADE (both pre-AI and post-AI) but the
+ * deterministic no-structure shadow produces a BUY/SELL. Runs off the live
+ * response path (ctx.waitUntil) and is fully fail-open. Standard engine only:
+ * OTC signals carry no engine audit, so getEngineAudit() returns null.
+ */
+async function maybeAdmitShadowObservation(signal, pair, assetType, env) {
+  try {
+    const audit = getEngineAudit(signal);
+    if (!audit || !audit.isolatedObservationEligible || !audit.shadowTradeContext) return null;
+    const stc = audit.shadowTradeContext;
+    if (!stc.expiryTime) return null;
+    const obsId = 'r71_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+    return await admitShadowObservation({
+      id: obsId,
+      pair,
+      assetType,
+      direction: stc.direction,
+      entryPrice: stc.entryPrice,
+      expiryTime: stc.expiryTime,
+      bestTF: stc.bestTF,
+      shadowConfidence: stc.confidence,
+      attribution: audit.attribution,
+      auditSummary: {
+        decisionScope: audit.decisionScope,
+        comparability: audit.comparability,
+        diagnostic: audit.diagnostic,
+        productionPreAiDirection: audit.productionPreAiDirection,
+        shadowConfidence: audit.shadowConfidence,
+      },
+    }, env);
+  } catch (e) {
+    console.warn('R7.1 shadow admission error (fail-open): ' + e.message);
+    return null;
+  }
 }
 
 /**
@@ -139,6 +180,12 @@ export async function handleSignalRaw(pair, env, ctx) {
   if (assetType === ASSET_TYPE.FOREX && session.quality === 'LOW')
     signal.sessionWarning = 'Low liquidity session. Best: London (07-16 UTC), NY (12-21 UTC).';
   if (exotic) signal.exoticWarning = 'Exotic pair. Higher spreads. Confidence reduced.';
+
+  // R7.1: admit a private structure-suppressed shadow observation off the live
+  // response path (fail-open). Standard engine only.
+  if (ctx && env && env.SIGNAL_CACHE) {
+    ctx.waitUntil(maybeAdmitShadowObservation(signal, pair, assetType, env));
+  }
 
   const dataStatus = {};
   for (const tf of timeframes)

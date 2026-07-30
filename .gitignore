@@ -1,0 +1,3 @@
+# R7.1 test artifact: baseline src tree is regenerated on demand by
+# scripts/r71_tests.mjs from the base commit (git archive 71e87eb src).
+verify/baseline/

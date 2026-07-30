@@ -1,0 +1,19 @@
+########## phase7_smoke ##########
+───────────────────────────────────────────────────────────
+PASS: 68   FAIL: 0
+ALL PHASE 7 SMOKE TESTS PASSED
+
+########## phase10_smoke ##########
+───────────────────────────────────────────────────────────
+PASS: 61   FAIL: 0
+ALL PHASE 10 SMOKE TESTS PASSED
+
+########## phase7_integration ##########
+───────────────────────────────────────────────────────────
+PASS: 36   FAIL: 0
+ALL PHASE 7 INTEGRATION TESTS PASSED
+
+########## phase10_integration ##########
+───────────────────────────────────────────────────────────
+PASS: 19   FAIL: 0
+ALL PHASE 10 INTEGRATION TESTS PASSED

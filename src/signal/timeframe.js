@@ -5,6 +5,9 @@ import { safeLastValue, safeLastTwo, safeLastN, r2, fmt } from '../utils/helpers
 import { detectRSIDivergence, detectMACDDivergence } from '../indicators/divergence.js';
 import { getRegimeWeights, isTrendingMarket, detectDICrossover } from '../indicators/regime.js';
 import { scoreCamarillaLevels } from '../indicators/math.js';
+// R7.1: shared per-TF decision + private shadow capture transport.
+import { decideTfDirection } from './voteFilters.js';
+import { attachShadowTf } from './r71shadow.js';
 
 export function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTrend, marketRegime) {
   const vt = VOLATILITY_THRESHOLDS[assetType] || VOLATILITY_THRESHOLDS.FOREX;
@@ -440,10 +443,21 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     structureApplied = 'BIAS_' + structure.bias;
   }
 
+  // R7.1: capture the no-structure (pre-multiplier) scores & pre-vote confluence.
+  // These are the inputs the structure-excluded shadow decision reuses via the
+  // shared decideTfDirection helper. Captured BEFORE any structure influence so
+  // they are the faithful "structure removed" counterfactual at TF level.
+  const __r71PreStructUp    = upScore;
+  const __r71PreStructDown  = downScore;
+  const __r71PreStructUpCat = upCat;
+  const __r71PreStructDownCat = downCat;
+
   upScore   *= structureMultUp;
   downScore *= structureMultDn;
 
   // Structure category score add (for display/confluence)
+  let __r71CategoryVoteApplied = false;
+  let __r71VoteDirection = null;
   if (structure && structure.structureScore) {
     catScores.structure = {
       up:      structure.structureScore.up,
@@ -456,23 +470,24 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     };
     // Structure category confluence vote
     if (structure.structureScore.up > structure.structureScore.down &&
-        structure.structureScore.up >= 1.5) upCat++;
+        structure.structureScore.up >= 1.5) { upCat++; __r71CategoryVoteApplied = true; __r71VoteDirection = 'BUY'; }
     else if (structure.structureScore.down > structure.structureScore.up &&
-             structure.structureScore.down >= 1.5) downCat++;
+             structure.structureScore.down >= 1.5) { downCat++; __r71CategoryVoteApplied = true; __r71VoteDirection = 'SELL'; }
   }
 
   // ── DECISION ──
   const scoreDiff  = Math.abs(upScore - downScore);
   const confluence = Math.max(upCat, downCat);
-  let direction;
-  if (upScore >= minScoreThreshold && upScore > downScore && upCat >= CONFIG.MIN_CONFLUENCE) direction = 'BUY';
-  else if (downScore >= minScoreThreshold && downScore > upScore && downCat >= CONFIG.MIN_CONFLUENCE) direction = 'SELL';
-  else if (scoreDiff >= 4.0 && confluence >= 4) direction = upScore > downScore ? 'BUY' : 'SELL';
-  else direction = 'NO_TRADE';
+  // R7.1: shared decision helper (identical logic; production + shadow share it).
+  let direction = decideTfDirection(upScore, downScore, upCat, downCat, minScoreThreshold);
+  // R7.1: production direction BEFORE the structure hard-block (audit field).
+  const __r71PreHardBlockDirection = direction;
 
   // ── STRUCTURE HARD FILTER ──
   // CHoCH বা strong BOS এর বিরুদ্ধে signal → block করো
   // এটাই false signal সবচেয়ে বেশি কমাবে
+  let __r71HardBlocked = false;
+  let __r71HardBlockReason = null;
   if (direction !== 'NO_TRADE' && structure) {
     const sDir = structure.multiplier ? structure.multiplier.direction : null;
     const hasStrongStructure = structure.choch || (structure.bos && structure.multiplier.value >= 1.20);
@@ -480,6 +495,8 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     if (hasStrongStructure && sDir !== null && sDir !== direction) {
       // Signal is COUNTER to confirmed BOS/CHoCH → hard block
       direction = 'NO_TRADE';
+      __r71HardBlocked = true;
+      __r71HardBlockReason = 'COUNTER_' + structure.summary;
       catScores.structure = { ...(catScores.structure || {}), hardBlocked: true, reason: 'COUNTER_' + structure.summary };
     }
 
@@ -498,7 +515,54 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     if (direction === 'SELL' && lastBullish  && bodyRatio > 0.5) { candleConfirmed = false; downScore *= 0.85; }
   }
 
-  return {
+  // R7.1 (Report-7 correction): faithful shadow confirmation-candle penalty.
+  // Production applies the x0.85 penalty AFTER per-TF direction selection. The
+  // shadow must apply the SAME non-structure penalty, relative to
+  // shadowCoreDirection, to the shadow ENGINE score only. shadowCoreDirection is
+  // decided on the pre-structure/pre-confirmation score and is NOT re-decided —
+  // exactly mirroring production (direction decided first, penalty after).
+  const __r71ShadowCoreDir = decideTfDirection(
+    __r71PreStructUp, __r71PreStructDown, __r71PreStructUpCat, __r71PreStructDownCat, minScoreThreshold
+  );
+  let __r71ShadowCandleConfirmed = true;
+  let __r71ShadowConfPenalty = false;
+  if (__r71ShadowCoreDir !== 'NO_TRADE') {
+    const sLastBullish = lastCandle.close >= lastCandle.open;
+    const sBodyRatio   = Math.abs(lastCandle.close - lastCandle.open) / ((lastCandle.high - lastCandle.low) || 0.00001);
+    if (__r71ShadowCoreDir === 'BUY'  && !sLastBullish && sBodyRatio > 0.5) __r71ShadowCandleConfirmed = false;
+    if (__r71ShadowCoreDir === 'SELL' && sLastBullish  && sBodyRatio > 0.5) __r71ShadowCandleConfirmed = false;
+    __r71ShadowConfPenalty = !__r71ShadowCandleConfirmed;
+  }
+  const __r71ShadowEngUp   = (__r71ShadowCoreDir === 'BUY'  && __r71ShadowConfPenalty) ? r2(__r71PreStructUp   * 0.85) : r2(__r71PreStructUp);
+  const __r71ShadowEngDown = (__r71ShadowCoreDir === 'SELL' && __r71ShadowConfPenalty) ? r2(__r71PreStructDown * 0.85) : r2(__r71PreStructDown);
+
+  // R7.1: freshness semantics (honest names — see R7_1_IMPLEMENTATION_REPORT §4).
+  // CHoCH/BOS detectors test a break on the LATEST candle, so a present event
+  // is age 0; swing-index ages are NOT event ages.
+  let __r71ChochEventAgeBars = null;
+  let __r71BrokenSwingAgeBars = null;
+  let __r71BosReferenceSwingBarsAgo = null;
+  let __r71RecentBosBreakBarsAgo = null;
+  if (structure) {
+    __r71ChochEventAgeBars = structure.choch ? 0 : null;   // present CHoCH = break on latest candle
+    __r71BosReferenceSwingBarsAgo = structure.bos ? structure.bos.barsAgo : null; // n-1-swingIdx, NOT break-event age
+    if (structure.choch) {
+      const swings = structure.choch.direction === 'BUY' ? structure.swingHighs : structure.swingLows;
+      const lastSwing = swings && swings.length ? swings[swings.length - 1] : null;
+      if (lastSwing && typeof lastSwing.idx === 'number')
+        __r71BrokenSwingAgeBars = (candles.length - 1) - lastSwing.idx;   // broken swing pivot age
+    } else if (structure.bos) {
+      __r71BrokenSwingAgeBars = structure.bos.barsAgo;     // same reference swing as BOS
+    }
+    if (Array.isArray(structure.recentEvents) && structure.recentEvents.length) {
+      let minAgo = Infinity;
+      for (const ev of structure.recentEvents)
+        if (typeof ev.barsAgo === 'number' && ev.barsAgo < minAgo) minAgo = ev.barsAgo;
+      __r71RecentBosBreakBarsAgo = minAgo === Infinity ? null : minAgo;   // break-candle age
+    }
+  }
+
+  const __r71Result = {
     direction, timeframe, assetType,
     score: { up: r2(upScore), down: r2(downScore), diff: r2(scoreDiff) },
     confluence, confluenceDetail: { bullish: upCat, bearish: downCat, total: 12 }, // 12 categories now
@@ -529,4 +593,34 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
       patterns: patterns ? patterns.map(p => p.name) : [],
     },
   };
+
+  // R7.1: attach the private, non-enumerable shadow capture. Symbols are
+  // invisible to JSON.stringify / public responses; read back only via
+  // getShadowTfRaw(). Production fields above are byte-identical to 71e87eb.
+  attachShadowTf(__r71Result, {
+    preStructUp:        r2(__r71PreStructUp),
+    preStructDown:      r2(__r71PreStructDown),
+    preStructUpCat:     __r71PreStructUpCat,
+    preStructDownCat:   __r71PreStructDownCat,
+    shadowCoreDirection:        __r71ShadowCoreDir,
+    shadowCandleConfirmed:      __r71ShadowCandleConfirmed,
+    shadowConfirmationPenaltyApplied: __r71ShadowConfPenalty,
+    shadowEngineScoreUp:        __r71ShadowEngUp,
+    shadowEngineScoreDown:      __r71ShadowEngDown,
+    structureMultUp,
+    structureMultDn,
+    preHardBlockDirection: __r71PreHardBlockDirection,
+    hardBlocked:        __r71HardBlocked,
+    hardBlockReason:    __r71HardBlockReason,
+    categoryVoteApplied: __r71CategoryVoteApplied,
+    voteDirection:      __r71VoteDirection,
+    freshness: {
+      chochEventAgeBars:       __r71ChochEventAgeBars,
+      brokenSwingAgeBars:      __r71BrokenSwingAgeBars,
+      bosReferenceSwingBarsAgo: __r71BosReferenceSwingBarsAgo,
+      recentBosBreakBarsAgo:   __r71RecentBosBreakBarsAgo,
+    },
+  });
+
+  return __r71Result;
 }

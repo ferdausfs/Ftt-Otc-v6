@@ -12,6 +12,7 @@ import { handleSignal, handleBatch } from './handlers/signal.js';
 import { handleLatest } from './handlers/latest.js';
 import { scheduledTracker } from './history/stats.js';
 import { scheduledScan } from './handlers/scheduledScan.js';
+import { resolveShadowObservations } from './history/r71store.js';
 import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
 
 export default {
@@ -35,6 +36,9 @@ export default {
       console.warn('scheduled: unrecognised cron pattern "' + cron + '", running result checker');
     }
     ctx.waitUntil(scheduledTracker(env));
+    // R7.1: resolve private shadow observations on the same result-checker tick.
+    // Pending TTL (~2h) aligns with the normal result-resolution window.
+    ctx.waitUntil(resolveShadowObservations(env));
   },
 
   async fetch(request, env, ctx) {

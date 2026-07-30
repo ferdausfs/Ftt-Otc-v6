@@ -84,6 +84,12 @@ export async function handleHistory(url, env) {
     let history = await env.SIGNAL_CACHE.get(histKey, 'json');
     if (!Array.isArray(history)) history = [];
     const limited = history.slice(0, limit);
+    // R7.1: strip the private structure-audit field from every row before it
+    // leaves the worker. The audit is internal-only; public /api/history must
+    // never expose it (asserted in scripts/r71_tests.mjs #10).
+    for (const s of limited) {
+      if (s && Object.prototype.hasOwnProperty.call(s, 'structureAudit')) delete s.structureAudit;
+    }
     const decided = limited.filter(s => s.result === 'WIN' || s.result === 'LOSS');
     const wins    = decided.filter(s => s.result === 'WIN').length;
     return jsonResponse({ pair, total: history.length, showing: limited.length, decided: decided.length, pending: limited.filter(s => s.result === null).length, winRate: decided.length > 0 ? Math.round((wins / decided.length) * 1000) / 1000 : null, signals: limited, timestamp: new Date().toISOString() });

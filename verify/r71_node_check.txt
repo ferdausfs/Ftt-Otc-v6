@@ -1,0 +1,4 @@
+=== R7.1 node --check (all src+scripts js/mjs) ===
+45
+=== git diff --check 71e87eb ===
+(clean — exit 0)

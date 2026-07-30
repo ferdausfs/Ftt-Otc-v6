@@ -5,6 +5,8 @@ import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
 import { incrementQuota } from './quota.js';
 import { applyResult as cbApplyResult } from './circuitBreaker.js';
 import { pushResultToSubscribers } from '../handlers/pushToSubscribers.js';
+// R7.1: read the private engine audit (Symbol transport) + sanitize for storage.
+import { getEngineAudit, sanitizeAuditForHistory } from '../signal/r71shadow.js';
 
 function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
@@ -96,6 +98,15 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
     };
     // B2/§3.3: only present on shadow rows — keeps normal records lean
     if (signal.cbShadow === true) record.cbShadow = true;
+
+    // R7.1: attach the bounded structure-attribution audit (standard engine
+    // only — OTC signals carry no audit, so getEngineAudit returns null and
+    // OTC records stay lean). This enumerable field is the ONLY audit surface;
+    // handleHistory() strips it from public /api/history responses.
+    try {
+      const r71Audit = getEngineAudit(signal);
+      if (r71Audit) record.structureAudit = sanitizeAuditForHistory(r71Audit);
+    } catch (e) { /* audit persistence must never break a normal save */ }
 
     const histKey = HISTORY_CONFIG.KV_SIGNAL_PREFIX + pairKey(pair);
     let existing = null;
@@ -238,7 +249,10 @@ export async function scheduledTracker(env) {
  * rotation, and a result object — {price} on success, {error,status,body} on
  * failure — so the caller can distinguish "no data" from "not yet".
  */
-async function fetchExpiryPrice(pair, expiryTimeISO, env) {
+// R7.1: exported so the shadow observation resolver can reuse the EXACT same
+// expiry-price fetcher (no duplicate implementation). Adding `export` does not
+// change any existing behaviour.
+export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
   const apiKeys = getApiKeys(env);
   if (apiKeys.length === 0) return { error: 'NO_API_KEYS' };
 
