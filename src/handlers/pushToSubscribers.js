@@ -250,18 +250,30 @@ export function formatSignalMessage(signal) {
   const countdown = rec.expiry && rec.expiry.countdown && rec.expiry.countdown.label;
   const grade = (sig.grade && sig.grade.grade) || '';
   const label = (sig.grade && sig.grade.label) || '';
+  const confNum = parseInt(String(sig.confidence || '0%').replace('%', '')) || 0;
+  const filled = Math.round(confNum / 10);
+  const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+  const barEmoji = confNum >= 85 ? '🟢' : confNum >= 70 ? '🟡' : '🔴';
+  const sv = sig.structureVerdict;
 
   const lines = [];
   lines.push('📌 Signal No. ' + idShort);
   lines.push('📊 ' + signal.pair + ' | ' + bestTF);
   lines.push('━━━━━━━━━━━━━━');
   lines.push(emoji + ' ' + dir + '  ' + (sig.confidence || '') + '  ' + (grade + ' ' + label).trim());
+  lines.push(barEmoji + ' ' + bar);
   if (entry != null) lines.push('💰 Entry: ' + entry);
   if (expMin != null) lines.push('⏰ Expiry: ' + expMin + ' min');
   if (countdown) lines.push('🕐 Candle closes: ' + countdown);
   if (sig.higherTFTrend) lines.push('📈 HTF: ' + sig.higherTFTrend);
   if (sig.marketRegime) lines.push('🟡 Regime: ' + sig.marketRegime);
   if (sig.regimeAdvice) lines.push('💡 ' + sig.regimeAdvice);
+  if (sv && sv.overall && sv.overall !== 'N/A') {
+    const sE = sv.overall === 'ALIGNED' ? '✅' : sv.overall === 'AGAINST' ? '⚠️' : sv.overall === 'MIXED' ? '🔀' : '➡️';
+    let sLine = sE + ' Structure: ' + sv.overall;
+    if (sv.direction && sv.direction !== 'NEUTRAL') sLine += ' (' + sv.direction + ' ' + (sv.strength || '') + ')';
+    lines.push(sLine);
+  }
   if (sig.entryReason) { lines.push(''); lines.push('📝 ' + sig.entryReason); }
   lines.push('');
   lines.push('⏳ Result will be tracked automatically');
