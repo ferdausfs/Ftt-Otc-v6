@@ -143,6 +143,22 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   const weightedSell    = det.weightedSell;
   const weightedNoTrade = det.weightedNoTrade;
 
+  // ── Phase D2: verified-bad-slice negative quality filters ──
+  // Source: Phase C verified analysis (n=1460 public + n=490 audit).
+  // These slices lose consistently; blocking them raises pooled WR.
+  if (finalDirection !== 'NO_TRADE') {
+    if (marketRegime === 'TRENDING') {
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('D2_TRENDING_BLOCK (29.5% WR n=356)');
+    } else if (['USD/JPY', 'AUD/USD', 'DOT/USD'].includes(pair)) {
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('D2_BAD_PAIR_BLOCK (' + pair + ' <20% WR)');
+    } else if (assetType === ASSET_TYPE.FOREX && session.quality === 'HIGHEST') {
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('D2_HIGHEST_SESSION_BLOCK (6.1% WR n=66)');
+    }
+  }
+
   // ── AI VALIDATION ──
   // Runs on valid signal OR raw direction (when borderline filters blocked it)
   const aiTargetDir = finalDirection !== 'NO_TRADE'

@@ -178,9 +178,11 @@ export const VOLATILITY_THRESHOLDS = {
   },
 };
 
+// Phase D1: expiry raised to 15-30min (was 1-10min). Short expiry = noise;
+// 15-30min lets trends develop and indicators become meaningful.
 export const DURATION_CONFIG = {
-  FOREX:  { '1min':{base:2,min:1,max:5}, '5min':{base:2,min:1,max:4}, '15min':{base:1,min:1,max:2} },
-  CRYPTO: { '1min':{base:2,min:1,max:4}, '5min':{base:2,min:1,max:3}, '15min':{base:1,min:1,max:2} },
+  FOREX:  { '1min':{base:20,min:15,max:30}, '5min':{base:4,min:3,max:6}, '15min':{base:2,min:1,max:2} },
+  CRYPTO: { '1min':{base:20,min:15,max:30}, '5min':{base:4,min:3,max:6}, '15min':{base:2,min:1,max:2} },
 };
 
 export const CANDLE_MINUTES = { '1min':1, '5min':5, '15min':15 };
