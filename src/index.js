@@ -13,6 +13,7 @@ import { handleLatest } from './handlers/latest.js';
 import { scheduledTracker } from './history/stats.js';
 import { scheduledScan } from './handlers/scheduledScan.js';
 import { resolveShadowObservations } from './history/r71store.js';
+import { resolveD2ShadowObservations } from './history/d2store.js';
 import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
 
 export default {
@@ -39,6 +40,8 @@ export default {
     // R7.1: resolve private shadow observations on the same result-checker tick.
     // Pending TTL (~2h) aligns with the normal result-resolution window.
     ctx.waitUntil(resolveShadowObservations(env));
+    // D2 Shadow: resolve private D2-blocked counterfactuals on the same tick.
+    ctx.waitUntil(resolveD2ShadowObservations(env));
   },
 
   async fetch(request, env, ctx) {

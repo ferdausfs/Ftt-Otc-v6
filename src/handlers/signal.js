@@ -16,6 +16,7 @@ import {
 } from '../config.js';
 // R7.1: private shadow admission (standard engine only).
 import { getEngineAudit } from '../signal/r71shadow.js';
+import { maybeAdmitD2ShadowObservation } from '../signal/d2shadow.js';
 import { admitShadowObservation } from '../history/r71store.js';
 
 function generateSignalId() {
@@ -185,6 +186,9 @@ export async function handleSignalRaw(pair, env, ctx) {
   // response path (fail-open). Standard engine only.
   if (ctx && env && env.SIGNAL_CACHE) {
     ctx.waitUntil(maybeAdmitShadowObservation(signal, pair, assetType, env));
+    // D2 Shadow: track would-be signals that Phase-D2 negative filters blocked
+    // (standard engine only, fail-open, private d2 KV namespace).
+    ctx.waitUntil(maybeAdmitD2ShadowObservation(signal, pair, assetType, env));
   }
 
   const dataStatus = {};

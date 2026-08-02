@@ -16,6 +16,8 @@ import { combineDualAIResults, buildIndicatorSnapshot } from '../ai/combine.js';
 // R7.1: shared deterministic pipeline + shadow attribution (standard engine only).
 import { runDeterministicVoteAndFilters } from './voteFilters.js';
 import { computeEngineAudit, attachEngineAudit } from './r71shadow.js';
+// D2 Shadow: private would-be-signal counterfactual for Phase-D2 filters.
+import { attachD2Audit } from './d2shadow.js';
 
 export async function buildMultiTimeframeSignal(pair, candleData, assetType, env) {
   const now     = new Date();
@@ -146,16 +148,50 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   // ── Phase D2: verified-bad-slice negative quality filters ──
   // Source: Phase C verified analysis (n=1460 public + n=490 audit).
   // These slices lose consistently; blocking them raises pooled WR.
+  // D2 Shadow: whenever a D2 branch fires, the would-be signal is captured
+  // under a private Symbol (d2shadow.js) and — if the block holds post-AI —
+  // tracked as a counterfactual observation (d2store.js). Blocked slices keep
+  // producing forward evidence for Phase F instead of silently disappearing.
+  // Phase F (2026-08-02): BAD_PAIR block SUSPENDED behind
+  // CONFIG.D2_BAD_PAIR_BLOCK_ENABLED=false so USD/JPY, AUD/USD, DOT/USD can
+  // generate the forward signals needed to validate (or reject) those blocks.
+  let d2Audit = null;
   if (finalDirection !== 'NO_TRADE') {
+    const d2PreDir = finalDirection;
+    const d2PreConf = confidence;
     if (marketRegime === 'TRENDING') {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_TRENDING_BLOCK (29.5% WR n=356)');
-    } else if (['USD/JPY', 'AUD/USD', 'DOT/USD'].includes(pair)) {
+      d2Audit = { attribution: 'D2_TRENDING_BLOCKED' };
+    } else if (CONFIG.D2_BAD_PAIR_BLOCK_ENABLED && ['USD/JPY', 'AUD/USD', 'DOT/USD'].includes(pair)) {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_BAD_PAIR_BLOCK (' + pair + ' <20% WR)');
+      d2Audit = { attribution: 'D2_BAD_PAIR_BLOCKED' };
     } else if (assetType === ASSET_TYPE.FOREX && session.quality === 'HIGHEST') {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_HIGHEST_SESSION_BLOCK (6.1% WR n=66)');
+      d2Audit = { attribution: 'D2_HIGHEST_SESSION_BLOCKED' };
+    }
+    if (d2Audit) {
+      // capture the would-be signal (best TF for the pre-D2 direction)
+      try {
+        const best = findBestTimeframe(tfResults, d2PreDir);
+        const bestTFAnalysis = (best && best.timeframe && best.timeframe !== 'N/A') ? tfResults[best.timeframe] : null;
+        d2Audit = {
+          ...d2Audit,
+          wouldBeDirection: d2PreDir,
+          wouldBeConfidence: d2PreConf,
+          bestTF: bestTFAnalysis ? best.timeframe : null,
+          entryPrice: bestTFAnalysis && bestTFAnalysis.entry ? bestTFAnalysis.entry.price : null,
+          expiryTime: best && best.expiry ? best.expiry.expiryTime : null,
+          marketRegime, sessionQuality: session ? session.quality : null,
+          filtersApplied: filtersApplied.slice(),
+          pair,
+        };
+      } catch (e) {
+        console.warn('D2 shadow capture failed (fail-open): ' + e.message);
+        d2Audit = null;
+      }
     }
   }
 
@@ -304,6 +340,13 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     attachEngineAudit(__signal, r71Audit);
   } catch (e) {
     console.warn('R7.1 shadow audit failed (production unaffected): ' + e.message);
+  }
+
+  // ── D2 Shadow: attach the would-be-signal counterfactual (private Symbol,
+  // non-enumerable — public responses and history never see it). ──
+  if (d2Audit) {
+    try { attachD2Audit(__signal, d2Audit); }
+    catch (e) { console.warn('D2 shadow attach failed (production unaffected): ' + e.message); }
   }
 
   return __signal;

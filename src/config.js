@@ -12,6 +12,12 @@ export const CONFIG = {
   MIN_CONFLUENCE: 5,
   MIN_CATEGORY_SCORE: 0.3,
   MIN_CONFIDENCE_FLOOR: 72,
+
+  // Phase F (2026-08-02): D2 bad-pair block SUSPENDED. USD/JPY, AUD/USD, DOT/USD
+  // must keep producing forward signals so the Phase F window (7–14 fresh days,
+  // ≥50 platform-matched observations) can validate them. Branch stays in code
+  // behind this flag for a one-line re-enable after the window.
+  D2_BAD_PAIR_BLOCK_ENABLED: false,
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
   NEWS_BLACKOUT_MINUTES: 15,

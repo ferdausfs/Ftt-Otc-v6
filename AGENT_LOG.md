@@ -216,3 +216,53 @@ Changelog-স্টাইল টেকনিক্যাল লগ — commit/da
 ---
 
 *(এর উপরে নতুন entry যোগ করবে। Format: date header → commit hash + one-line change (repo commit হলে) → investigation round হলে trend-table row + এক লাইনে status।)*
+
+## 2026-08-02 — D2 Shadow Collector + BAD_PAIR block suspend (NOT deployed)
+
+**Base:** `3acc465`. Scope: worker engine instrumentation + one filter suspend.
+User-approved. 6 files: 4 modified (`config.js`, `signal/engine.js`,
+`handlers/signal.js`, `index.js`), 2 new (`signal/d2shadow.js`,
+`history/d2store.js`), 1 new test suite (`scripts/d2_tests.mjs`).
+
+### Why
+Phase F needs 7–14 fresh forward days, but the Phase-D2 negative filters
+(TRENDING / BAD_PAIR / HIGHEST_SESSION) convert would-be BUY/SELL into
+NO_TRADE — the exact slices Phase F must study were being starved of data.
+Also verified live: the AI rescue path can revive a D2-blocked signal
+(DOT/USD 8 fresh trades all conf 79–92, aiAgreed=True), so the block is not
+absolute and its real forward value was never measurable.
+
+### What
+1. **D2 Shadow Collector** — mirrors R7.1 design in its own KV namespace
+   (`d2obs:`, `d2pending:`, `d2idx:`): whenever a D2 branch fires, the
+   would-be signal (direction, confidence, entry, expiry, bestTF) is captured
+   under a non-enumerable Symbol and — IF the block holds post-AI (final
+   NO_TRADE) — admitted as a private counterfactual observation, resolved at
+   expiry via `fetchExpiryPrice` (injectable in tests). Max 30/pair/30d,
+   2h dedup, capped resolver, fail-open, zero public API / history / push
+   contamination. AI-rescued signals are NOT admitted (normal history owns
+   them) — no double counting.
+2. **D2_BAD_PAIR_BLOCK suspended** behind `CONFIG.D2_BAD_PAIR_BLOCK_ENABLED=false`
+   so USD/JPY, AUD/USD, DOT/USD produce forward signals for Phase F
+   validation. Branch stays in code for one-line re-enable.
+3. TRENDING + HIGHEST_SESSION blocks remain active (Phase C/E/F evidence).
+
+### Verification
+- `scripts/d2_tests.mjs`: **39/39 PASS** (isolation, invalid input, dedup,
+  cap, resolver WIN/LOSS/tie/cap/retry-UNKNOWN, engine audit attach + zero
+  JSON leak, suspend flag, admission gate no-double-count, fail-open).
+- Phase 7: 68 smoke + 36 integration = 104 PASS. Phase 10: 61 smoke + 19
+  integration = 80 PASS.
+- R7.1: 113/116 — the 3 failures (`#1a`, `#2`, `#17`) are PRE-EXISTING at
+  HEAD `3acc465` (verified by stash): the D2 commit (`4ea6368`) changed
+  TRENDING-fixture behavior vs R7.1's 71e87eb baseline. Not introduced here.
+- `node --check` clean on all changed files.
+
+### Counterfactual honesty note
+The shadow measures the deterministic PRE-AI would-be signal. AI-layer effects
+(rescue/boost/disagree) are outside the counterfactual; AI-rescued rows are
+excluded, so D2 shadow data must not be read as "what production would have
+done" — it is "what the pre-AI engine slice that D2 blocked did".
+
+### Deploy
+NOT deployed. Requires user push (PAT) from Termux. Bundle + runbook provided.
