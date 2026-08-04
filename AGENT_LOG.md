@@ -301,3 +301,28 @@ scores "overbought -> SELL" but short expiries keep trending up.
 - Conditional fix (restrict/flip specific slices) instead of blanket changes
 
 NOT deployed. Bundle + runbook provided.
+
+## 2026-08-04 — D4 ML prototype v0 (data-driven, NOT deployed)
+
+**What:** d4_prototype.py — gradient-boosted (XGBoost) model that tries to
+predict WIN/LOSS from engine signals + context (pair, direction, confidence,
+grade, regime, alignment, structure, session, hour, dow). Trains on engine
+outputs as features; learns the weak anti-correlation without a hand-coded flip.
+
+**Method (honesty rules baked in):**
+- Chronological split ONLY (train = days 1-3, test = last day)
+- Wilson CI vs 55.6% breakeven (80% payout)
+- Confident-only subset (proba >= .55 / <= .45) reported separately
+- Requires >= 50 rows and warns if test n < 30
+- Re-runnable: python3 d4_prototype.py --data-dir <snapshots>
+
+**First run (4 days, n=1012):**
+- Engine baseline 46.2% (CI 43.2-49.3%)
+- Model on 08-04 (n=145): confident-only WR 44.8% (CI 36.1-53.9%) — below
+  breakeven, no edge. Expected: 4 clustered days, 1 test day = noise floor.
+- Feature importances spread thin; no dominant feature.
+
+**Interpretation:** the pipeline is the deliverable (working, honest, re-runnable
+as data accumulates). Results are NOT an edge claim. Re-run after 7-14 days;
+only if confident-only CI clears 55.6% on multiple test days does a conditional
+strategy get considered. Prototype only — nothing deployed, engine untouched.
