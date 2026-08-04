@@ -202,7 +202,7 @@ console.log('\n── backward compatibility (spec §9) ────────
 
   const sig = fs.readFileSync(new URL('../src/handlers/signal.js', import.meta.url), 'utf8');
   ok('handleSignalRaw signature unchanged',
-     sig.includes('export async function handleSignalRaw(pair, env, ctx)'));
+     sig.includes('export async function handleSignalRaw(pair, env, ctx'));
   // The spec's scanOnePair sketch also called saveSignalToHistory; that would
   // double-write because handleSignalRaw already does it.
   const scan = fs.readFileSync(new URL('../src/handlers/scheduledScan.js', import.meta.url), 'utf8');

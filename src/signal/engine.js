@@ -8,7 +8,7 @@ import { calculateAllIndicators } from '../indicators/index.js';
 import { detectMarketRegime, getRegimeAdvice } from '../indicators/regime.js';
 import { analyzeTimeframe } from './timeframe.js';
 import { calculateCandleDuration } from '../analysis/duration.js';
-import { generateEntryReason, getSessionWeightMultiplier, getCandleQualityMultiplier } from '../analysis/filters.js';
+import { generateEntryReason, getSessionWeightMultiplier, getCandleQualityMultiplier, computeFxLevels } from '../analysis/filters.js';
 import { getSignalGrade } from '../analysis/grade.js';
 import { callCerebrasValidation } from '../ai/cerebras.js';
 import { callGroqValidation } from '../ai/groq.js';
@@ -21,7 +21,8 @@ import { attachD2Audit } from './d2shadow.js';
 // Forex SELL Probe: forward-evidence context collector (instrumentation only).
 import { attachProbeAudit } from './probeShadow.js';
 
-export async function buildMultiTimeframeSignal(pair, candleData, assetType, env) {
+export async function buildMultiTimeframeSignal(pair, candleData, assetType, env, opts = {}) {
+  const fxMode = !!opts.fxMode;
   const now     = new Date();
   const session = detectTradingSession();
   const exotic  = isExoticPair(pair);
@@ -349,6 +350,30 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (d2Audit) {
     try { attachD2Audit(__signal, d2Audit); }
     catch (e) { console.warn('D2 shadow attach failed (production unaffected): ' + e.message); }
+  }
+
+  // ── FX Mode: attach ATR-based SL/TP levels + mode tag (phase F addition).
+  // Output-only enrichment — direction/confidence logic untouched. ──
+  if (fxMode && (finalDirection === 'BUY' || finalDirection === 'SELL')) {
+    try {
+      const atrTF = tfResults['15min'] || tfResults['5min'] || tfResults['1min'];
+      const atrArr = atrTF && atrTF.indicators ? atrTF.indicators.atr : null;
+      let atr = null;
+      if (typeof atrArr === 'number') atr = atrArr;
+      else if (typeof atrArr === 'string') atr = parseFloat(atrArr);
+      else if (Array.isArray(atrArr)) { const v = atrArr[atrArr.length - 1]; atr = typeof v === 'number' ? v : parseFloat(v); }
+      if (atr !== null && isNaN(atr)) atr = null;
+      const best = findBestTimeframe(tfResults, finalDirection);
+      const bestTFA = (best && best.timeframe && best.timeframe !== 'N/A') ? tfResults[best.timeframe] : null;
+      const entry = bestTFA && bestTFA.entry ? bestTFA.entry.price : null;
+      const levels = computeFxLevels({ entry, atr, direction: finalDirection });
+      __signal.mode = 'fx';
+      __signal.fxLevels = levels;
+    } catch (e) {
+      console.warn('FX mode attach failed (production unaffected): ' + e.message);
+      __signal.mode = 'fx';
+      __signal.fxLevels = null;
+    }
   }
 
   // ── Forex SELL Probe: capture signal-time context when engine outputs a

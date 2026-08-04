@@ -145,3 +145,51 @@ export function detectCorrelationConflicts(pairSignals) {
   }
   return { conflicts, warnings, hasConflict: conflicts.length > 0 };
 }
+
+/**
+ * FX Mode — ATR-based SL/TP levels (Phase F FX-mode addition, 2026-08-04).
+ *
+ * The FTT (fixed-time) engine outputs direction + expiry. FX mode needs
+ * stop-loss / take-profit instead. Levels are derived from ATR so they scale
+ * with volatility:
+ *   SL = entry ∓ (ATR × SL_ATR_MULT)        (opposite direction)
+ *   TP = entry ± (ATR × SL_ATR_MULT × RR)   (same direction)
+ * R:R configurable (default 1:2.5). Direction convention: BUY → SL below,
+ * TP above; SELL → SL above, TP below.
+ *
+ * Honesty note: levels are volatility-scaled defaults, NOT a prediction of
+ * profit. They only make sense combined with a real backtest/demo forward run.
+ */
+export const FX_RR_DEFAULT = 2.5;
+export const FX_SL_ATR_MULT_DEFAULT = 1.0;
+
+/**
+ * Compute FX-mode SL/TP from an entry price + ATR.
+ * Returns null if inputs invalid (caller then omits levels).
+ */
+export function computeFxLevels({ entry, atr, direction, rr = FX_RR_DEFAULT, slAtrMult = FX_SL_ATR_MULT_DEFAULT }) {
+  if (entry === null || entry === undefined || !isFinite(entry)) return null;
+  if (atr === null || atr === undefined || !isFinite(atr) || atr <= 0) return null;
+  if (direction !== 'BUY' && direction !== 'SELL') return null;
+  const stopDist = atr * slAtrMult;
+  const tpDist   = stopDist * rr;
+  let sl, tp;
+  if (direction === 'BUY') {
+    sl = entry - stopDist;
+    tp = entry + tpDist;
+  } else {
+    sl = entry + stopDist;
+    tp = entry - tpDist;
+  }
+  // round to sensible precision for forex (5th decimal) / crypto (4-6)
+  const dec = Math.abs(entry) < 10 ? 5 : (Math.abs(entry) < 1000 ? 4 : 2);
+  const round = (v) => Number(v.toFixed(dec));
+  return {
+    entry: round(entry),
+    sl: round(sl),
+    tp: round(tp),
+    rr,
+    slAtrMult,
+    atr: Number(atr.toFixed(dec)),
+  };
+}

@@ -326,3 +326,32 @@ outputs as features; learns the weak anti-correlation without a hand-coded flip.
 as data accumulates). Results are NOT an edge claim. Re-run after 7-14 days;
 only if confident-only CI clears 55.6% on multiple test days does a conditional
 strategy get considered. Prototype only — nothing deployed, engine untouched.
+
+## 2026-08-04 — FX Mode (signal output mode, NOT deployed)
+
+User decision: keep FTT (fixed-time, Olymp-style) as-is; add an FX mode for
+MetaTrader/Exness spot trading. FX mode outputs ATR-based SL/TP levels (1:2.5
+R:R, demo-first, no real money).
+
+### What
+- `computeFxLevels()` in analysis/filters.js — ATR-scaled SL/TP. SL = ATR*1,
+  TP = SL*RR (default RR 2.5). BUY: SL below / TP above; SELL reversed.
+- engine.js: `buildMultiTimeframeSignal(..., opts)` — `opts.fxMode` attaches
+  `signal.mode='fx'` + `signal.fxLevels={entry,sl,tp,rr,slAtrMult,atr}` when
+  final is BUY/SELL. Default (no opts) = FTT mode, unchanged output.
+- signal.js / index.js: `?mode=fx` query flows through to engine. FTT default
+  when absent.
+
+### Verification
+- scripts/fx_mode_tests.mjs: 20/20 (levels correctness BUY/SELL, ATR scaling,
+  invalid inputs, engine attach, FTT-mode unchanged).
+- phase7_smoke: fixed one overly-strict signature string check
+  (`handleSignalRaw(pair, env, ctx` now prefix-match — backward-compatible
+  optional param). 68/68.
+- d2 39/39, probe 34/34, phase10 80. r71 back to the same 3 pre-existing
+  failures at HEAD.
+
+### Honesty note
+FX mode changes OUTPUT shape only — prediction quality is unchanged (~46%).
+Levels are volatility-scaled defaults, not profit predictions. Demo only.
+NOT deployed.

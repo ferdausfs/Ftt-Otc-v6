@@ -110,7 +110,7 @@ async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, resp
  * fresh; on a miss or a stale entry we fall through to a normal generation and
  * opportunistically warm the cache for the next reader.
  */
-export async function handleSignal(pair, env, ctx, opts) {
+export async function handleSignal(pair, env, ctx, opts = {}) {
   const preferCache = !!(opts && opts.preferCache);
 
   if (preferCache) {
@@ -120,7 +120,7 @@ export async function handleSignal(pair, env, ctx, opts) {
     }
   }
 
-  const result = await handleSignalRaw(pair, env, ctx);
+  const result = await handleSignalRaw(pair, env, ctx, { fxMode: !!opts?.fxMode });
 
   if (preferCache && result && !result.error && result.signal
       && result.source !== 'DUMMY_FALLBACK') {
@@ -134,8 +134,9 @@ export async function handleSignal(pair, env, ctx, opts) {
   return jsonResponse({ ...result, cached: false, forceRefresh: !preferCache });
 }
 
-export async function handleSignalRaw(pair, env, ctx) {
+export async function handleSignalRaw(pair, env, ctx, opts = {}) {
   const assetType = getAssetType(pair);
+  const reqFxMode = !!opts.fxMode;
   if (assetType === ASSET_TYPE_OTC) return await handleSignalRawOTC(pair, env, ctx);
 
   const session = detectTradingSession();
@@ -177,7 +178,7 @@ export async function handleSignalRaw(pair, env, ctx) {
     return { pair, assetType, signal: generateDummySignal(pair), source: 'DUMMY_FALLBACK', errors, timestamp: new Date().toISOString() };
   }
 
-  const signal = await buildMultiTimeframeSignal(pair, candleData, assetType, env);
+  const signal = await buildMultiTimeframeSignal(pair, candleData, assetType, env, { fxMode: reqFxMode });
   if (holidayWarning) signal.holidayWarning = holidayWarning;
   if (assetType === ASSET_TYPE.FOREX && session.quality === 'LOW')
     signal.sessionWarning = 'Low liquidity session. Best: London (07-16 UTC), NY (12-21 UTC).';

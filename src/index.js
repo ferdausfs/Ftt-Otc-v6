@@ -79,7 +79,7 @@ export default {
           }, 400);
         } else {
           const preferCache = url.searchParams.get('preferCache') === 'true';
-          response = await handleSignal(pair, env, ctx, { preferCache });
+          response = await handleSignal(pair, env, ctx, { preferCache, fxMode: url.searchParams.get('mode') === 'fx' });
         }
 
       } else if (path === '/api/signals/latest') {
