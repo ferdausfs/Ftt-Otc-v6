@@ -45,6 +45,7 @@ const PUSH_LOG_TTL_S   = 24 * 3600;
 const PUSH_LOCK_TTL_S  = 30 * 60;
 
 const TELEGRAM_API = 'https://api.telegram.org';
+const SELF_URL = 'https://fttotcv6.umuhammadiswa.workers.dev';
 
 /** Bot stores pairs slash-less ("EURUSD"); normalise both sides before compare. */
 function normPair(p) {
@@ -110,7 +111,7 @@ export async function getMatchingSubscribers(signal, env) {
       if (!passGrade(sig, user.gradeFilter)) continue;
       if (!passAI(sig, user.aiOnlyMode)) continue;
 
-      matches.push({ chatId: String(cid), channelId: user.channelId || null });
+      matches.push({ chatId: String(cid), channelId: user.channelId || null, fxMode: user.fxMode || 'ftt' });
     } catch (e) {
       console.warn('push: user read failed for ' + cid + ': ' + e.message);
     }
@@ -170,9 +171,26 @@ export async function pushSignalToSubscribers(signal, env) {
     }
     if (eligible.length === 0) return { pushed: 0, skipped: 'locked' };
 
-    const message = formatSignalMessage(signal);
+    // Per-subscriber message: FX-mode users get SL/TP levels (fetched with
+    // mode=fx&nopush=1 to avoid a push loop), others get FTT.
+    const messages = new Map();
     const results = await Promise.allSettled(
-      eligible.map(sub => sendTelegramMessage(sub.chatId, message, env)),
+      eligible.map(async (sub) => {
+        let msgSignal = signal;
+        if ((sub.fxMode === 'fx' || sub.fxMode === 'both') && !signal.signal.fxLevels) {
+          try {
+            const fx = await fetch(`${SELF_URL}/api/signal?pair=${encodeURIComponent(signal.pair)}&mode=fx&nopush=1`,
+              { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+            if (fx.ok) {
+              const fd = await fx.json();
+              if (fd && fd.signal && fd.signal.fxLevels) msgSignal = fd;
+            }
+          } catch (e) { console.warn('push: fx fetch failed (fallback FTT): ' + e.message); }
+        }
+        const fxOnly = sub.fxMode === 'fx';
+        const message = formatSignalMessage(msgSignal, { fx: sub.fxMode === 'fx' || sub.fxMode === 'both', fxOnly });
+        return sendTelegramMessage(sub.chatId, message, env);
+      }),
     );
 
     const delivered = [];
@@ -238,7 +256,7 @@ export async function pushResultToSubscribers(record, winLoss, exitPrice, env) {
 }
 
 // ── message formatting ─────────────────────────────────────────────────
-export function formatSignalMessage(signal) {
+export function formatSignalMessage(signal, opts = {}) {
   const sig = signal.signal;
   const dir = sig.finalSignal;
   const emoji = dir === 'BUY' ? '🟢' : '🔴';
@@ -246,6 +264,9 @@ export function formatSignalMessage(signal) {
   const bestTF = (sig.bestTimeframe && sig.bestTimeframe.timeframe) || '5min';
   const rec = (sig.recommendations && sig.recommendations[bestTF]) || {};
   const entry = rec.entry && rec.entry.price;
+  const isFx = opts.fx === true || sig.mode === 'fx';
+  const isBoth = opts.fx === true && opts.fxOnly !== true;
+  const levels = sig.fxLevels || null;
   const expMin = rec.expiry && rec.expiry.totalMinutes;
   const countdown = rec.expiry && rec.expiry.countdown && rec.expiry.countdown.label;
   const grade = (sig.grade && sig.grade.grade) || '';
@@ -258,13 +279,21 @@ export function formatSignalMessage(signal) {
 
   const lines = [];
   lines.push('📌 Signal No. ' + idShort);
-  lines.push('📊 ' + signal.pair + ' | ' + bestTF);
+  lines.push('📊 ' + signal.pair + ' | ' + bestTF + (isFx ? (isBoth ? ' | 🔄 BOTH' : ' | 💹 FX') : ' | ⏱ FTT'));
   lines.push('━━━━━━━━━━━━━━');
   lines.push(emoji + ' ' + dir + '  ' + (sig.confidence || '') + '  ' + (grade + ' ' + label).trim());
   lines.push(barEmoji + ' ' + bar);
   if (entry != null) lines.push('💰 Entry: ' + entry);
-  if (expMin != null) lines.push('⏰ Expiry: ' + expMin + ' min');
-  if (countdown) lines.push('🕐 Candle closes: ' + countdown);
+  if (isFx && levels && levels.sl && levels.tp) {
+    lines.push('🛑 SL: ' + levels.sl);
+    lines.push('🎯 TP: ' + levels.tp + '  (1:' + (levels.rr || '2.5') + ')');
+  }
+  if (isFx && opts.fxOnly === true) {
+    // pure FX: no fixed expiry lines
+  } else {
+    if (expMin != null) lines.push('⏰ Expiry: ' + expMin + ' min');
+    if (countdown) lines.push('🕐 Candle closes: ' + countdown);
+  }
   if (sig.higherTFTrend) lines.push('📈 HTF: ' + sig.higherTFTrend);
   if (sig.marketRegime) lines.push('🟡 Regime: ' + sig.marketRegime);
   if (sig.regimeAdvice) lines.push('💡 ' + sig.regimeAdvice);

@@ -93,7 +93,7 @@ async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, resp
   }
   if (saveResult && saveResult.deduped) return;   // re-poll — already announced
   try {
-    await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+    if (!noPush) await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
   } catch (e) {
     console.warn('saveAndPush: push failed for ' + pair + ': ' + e.message);
   }
@@ -137,6 +137,7 @@ export async function handleSignal(pair, env, ctx, opts = {}) {
 export async function handleSignalRaw(pair, env, ctx, opts = {}) {
   const assetType = getAssetType(pair);
   const reqFxMode = !!opts.fxMode;
+  const noPush = !!opts.noPush;
   if (assetType === ASSET_TYPE_OTC) return await handleSignalRawOTC(pair, env, ctx);
 
   const session = detectTradingSession();

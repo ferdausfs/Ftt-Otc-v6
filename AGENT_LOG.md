@@ -355,3 +355,25 @@ R:R, demo-first, no real money).
 FX mode changes OUTPUT shape only — prediction quality is unchanged (~46%).
 Levels are volatility-scaled defaults, not profit predictions. Demo only.
 NOT deployed.
+
+## 2026-08-04 — Worker push: FX/BOTH mode + per-user SL/TP (NOT deployed)
+
+Root cause (user report): bot FX-mode signals showed the badge but no SL/TP.
+Investigation: auto-push messages come from the WORKER's formatSignalMessage
+(not the bot's fmtSignal) — it had no FX support, and cron-generated signals
+are FTT mode (no fxLevels).
+
+Fix:
+- formatSignalMessage(signal, opts): mode badge (⏱ FTT / 💹 FX / 🔄 BOTH),
+  SL/TP lines when fxLevels present, FX hides fixed-expiry lines, BOTH shows
+  both.
+- pushSignalToSubscribers: per-subscriber message — user fxMode ('fx'|'both')
+  users get FX message; if signal lacks fxLevels, fetch
+  /api/signal?pair=X&mode=fx&nopush=1 (new noPush flag prevents push loop).
+- signal.js/index.js: ?nopush=1 flag → skip push (used by the FX level fetch).
+
+Verify: formatSignalMessage unit test — FTT/FX/BOTH all render correctly.
+Regression: d2/probe/fx_mode have a few fixture fails that are SESSION-
+DEPENDENT (verified identical at HEAD — LONDON/NY session changes fixture
+directions; ASIAN/SYDNEY hours pass 34/34 & 20/20). Not introduced here.
+NOT deployed.
