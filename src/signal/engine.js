@@ -18,6 +18,8 @@ import { runDeterministicVoteAndFilters } from './voteFilters.js';
 import { computeEngineAudit, attachEngineAudit } from './r71shadow.js';
 // D2 Shadow: private would-be-signal counterfactual for Phase-D2 filters.
 import { attachD2Audit } from './d2shadow.js';
+// Forex SELL Probe: forward-evidence context collector (instrumentation only).
+import { attachProbeAudit } from './probeShadow.js';
 
 export async function buildMultiTimeframeSignal(pair, candleData, assetType, env) {
   const now     = new Date();
@@ -347,6 +349,36 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (d2Audit) {
     try { attachD2Audit(__signal, d2Audit); }
     catch (e) { console.warn('D2 shadow attach failed (production unaffected): ' + e.message); }
+  }
+
+  // ── Forex SELL Probe: capture signal-time context when engine outputs a
+  // FOREX SELL (instrumentation only — production unchanged). ──
+  if (CONFIG.FOREX_SELL_PROBE_ENABLED && assetType === ASSET_TYPE.FOREX && finalDirection === 'SELL') {
+    try {
+      const best = findBestTimeframe(tfResults, finalDirection);
+      const bestTFA = (best && best.timeframe && best.timeframe !== 'N/A') ? tfResults[best.timeframe] : null;
+      const rsiArr = bestTFA && bestTFA.indicators ? bestTFA.indicators.rsi : null;
+      let rsi = null;
+      if (typeof rsiArr === 'number') rsi = rsiArr;
+      else if (typeof rsiArr === 'string') rsi = parseFloat(rsiArr);
+      else if (Array.isArray(rsiArr)) { const v = rsiArr[rsiArr.length - 1]; rsi = typeof v === 'number' ? v : parseFloat(v); }
+      if (rsi === null || isNaN(rsi)) rsi = null;
+      attachProbeAudit(__signal, {
+        attribution: 'FOREX_SELL_PROBE',
+        direction: 'SELL',
+        confidence,
+        bestTF: bestTFA ? best.timeframe : null,
+        entryPrice: bestTFA && bestTFA.entry ? bestTFA.entry.price : null,
+        expiryTime: best && best.expiry ? best.expiry.expiryTime : null,
+        regime: marketRegime,
+        sessionQuality: session ? session.quality : null,
+        higherTFTrend,
+        alignment: det.alignment,
+        rsi: (rsi !== null && isFinite(rsi)) ? Math.round(rsi * 100) / 100 : null,
+      });
+    } catch (e) {
+      console.warn('probe attach failed (production unaffected): ' + e.message);
+    }
   }
 
   return __signal;

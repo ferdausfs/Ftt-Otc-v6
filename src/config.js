@@ -18,6 +18,12 @@ export const CONFIG = {
   // ≥50 platform-matched observations) can validate them. Branch stays in code
   // behind this flag for a one-line re-enable after the window.
   D2_BAD_PAIR_BLOCK_ENABLED: false,
+
+  // Phase F (2026-08-04): Forex SELL probe instrumentation. Tracks every
+  // forex SELL with its signal-time context (regime/session/HTF/RSI) in a
+  // private KV namespace so the forward window can decide whether forex SELL
+  // is systematically wrong — WITHOUT changing production behavior.
+  FOREX_SELL_PROBE_ENABLED: true,
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
   NEWS_BLACKOUT_MINUTES: 15,

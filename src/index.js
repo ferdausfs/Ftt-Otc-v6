@@ -14,6 +14,7 @@ import { scheduledTracker } from './history/stats.js';
 import { scheduledScan } from './handlers/scheduledScan.js';
 import { resolveShadowObservations } from './history/r71store.js';
 import { resolveD2ShadowObservations } from './history/d2store.js';
+import { resolveProbeObservations } from './history/probeStore.js';
 import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
 
 export default {
@@ -42,6 +43,8 @@ export default {
     ctx.waitUntil(resolveShadowObservations(env));
     // D2 Shadow: resolve private D2-blocked counterfactuals on the same tick.
     ctx.waitUntil(resolveD2ShadowObservations(env));
+    // Forex SELL Probe: resolve private probe observations on the same tick.
+    ctx.waitUntil(resolveProbeObservations(env));
   },
 
   async fetch(request, env, ctx) {

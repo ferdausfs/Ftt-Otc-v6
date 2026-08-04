@@ -266,3 +266,38 @@ done" — it is "what the pre-AI engine slice that D2 blocked did".
 
 ### Deploy
 NOT deployed. Requires user push (PAT) from Termux. Bundle + runbook provided.
+
+## 2026-08-04 — Forex SELL Probe instrumentation (NOT deployed)
+
+**Base:** `dd0d473`. Phase F forward finding: forex SELL running ~20% WR
+(n=60) while same pairs' BUY is 40-60%; 10+ pip moves on forex SELL lost 97%
+of the time. Root cause hypothesis (code+data): RANGING mean-reversion RSI
+scores "overbought -> SELL" but short expiries keep trending up.
+
+### What
+1. **probeStore.js** (new) — private `probe:` KV namespace. Stores ONLY forex
+   SELL signals (post-AI final=SELL, actually traded) with signal-time context
+   (regime, session quality, higherTF trend, alignment, RSI) + at resolve BOTH
+   actual result AND flipped (BUY) counterfactual. Cap 50/pair/30d, 2h dedup,
+   capped resolver, fail-open, zero public API/history/push leakage.
+2. **probeShadow.js** (new) — non-enumerable Symbol transport + admission gate
+   (only FOREX + final SELL).
+3. **engine.js** — attach probe audit when CONFIG.FOREX_SELL_PROBE_ENABLED &&
+   assetType FOREX && finalDirection SELL (instrumentation only; production
+   byte-identical). RSI parsed from formatted indicator string.
+4. **signal.js / index.js** — admission off live path + resolver on 2-min cron.
+
+### Verification
+- scripts/probe_tests.mjs: 34/34 PASS (isolation, invalid input, dedup, cap,
+  resolver WIN/LOSS/tie + flipped correctness, transient->UNKNOWN, engine
+  attach + zero JSON leak, non-SELL/non-forex carry none, admission gate).
+- d2_tests 39/39, phase7 104, phase10 80 all pass.
+- r71_tests 113/116 — same 3 pre-existing failures at HEAD (not introduced).
+- node --check clean.
+
+### Decision support this enables (after 7-14 days)
+- Which forex-SELL slices (regime/RSI/session) are systematically wrong
+- Whether flipped BUY clears breakeven with CI on the same trades
+- Conditional fix (restrict/flip specific slices) instead of blanket changes
+
+NOT deployed. Bundle + runbook provided.
