@@ -376,6 +376,33 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     }
   }
 
+  // ── Fill status (2026-08-05): is the entry actionable RIGHT NOW, or is
+  // price away from entry (wait/pending)? Based on best-TF entry price vs the
+  // current (last close) price — tells the app/bot whether this signal can be
+  // taken instantly or needs the price to come to the entry first.
+  if (finalDirection === 'BUY' || finalDirection === 'SELL') {
+    try {
+      const best = findBestTimeframe(tfResults, finalDirection);
+      const bestTFA = (best && best.timeframe && best.timeframe !== 'N/A') ? tfResults[best.timeframe] : null;
+      const entryPx = bestTFA && bestTFA.entry ? bestTFA.entry.price : null;
+      // current price = last close of the best TF's candles
+      const tfCandles = candleData[best ? best.timeframe : '5min'];
+      const lastClose = tfCandles && tfCandles.length ? tfCandles[tfCandles.length - 1].close : null;
+      if (entryPx != null && lastClose != null) {
+        const dist = Math.abs(lastClose - entryPx);
+        const rel = entryPx !== 0 ? dist / entryPx : 0;
+        // actionable if within ~0.05% (5 pips-ish for forex, scaled for crypto)
+        const actionable = rel <= 0.0005;
+        __signal.fillStatus = actionable ? 'INSTANT' : 'PENDING_ENTRY';
+        __signal.entryPrice = entryPx;
+        __signal.currentPrice = lastClose;
+        __signal.entryDistancePct = Number((rel * 100).toFixed(4));
+      }
+    } catch (e) {
+      console.warn('fill status failed (production unaffected): ' + e.message);
+    }
+  }
+
   // ── Forex SELL Probe: capture signal-time context when engine outputs a
   // FOREX SELL (instrumentation only — production unchanged). ──
   if (CONFIG.FOREX_SELL_PROBE_ENABLED && assetType === ASSET_TYPE.FOREX && finalDirection === 'SELL') {
