@@ -191,6 +191,15 @@ export async function resolveProbeObservations(env, fetchPrice = fetchExpiryPric
           if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
           if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
         }
+        // entry-hit shadow (truth-keeping): did price reach entry?
+        if (record.entryPrice != null && fetchResult) {
+          const wl = fetchResult.windowLow, wh = fetchResult.windowHigh;
+          if (wl != null && wh != null) {
+            if (record.direction === 'BUY') record.entryHit = wl <= record.entryPrice + 1e-12;
+            else if (record.direction === 'SELL') record.entryHit = wh >= record.entryPrice - 1e-12;
+            record.entryHitWindowLow = wl; record.entryHitWindowHigh = wh;
+          }
+        }
         // flipped counterfactual: the opposite direction on the same entry/exit
         let flipped = 'UNKNOWN';
         if (winLoss === 'WIN') flipped = 'LOSS';

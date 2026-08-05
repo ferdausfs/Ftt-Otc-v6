@@ -220,6 +220,30 @@ export async function scheduledTracker(env) {
           if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
           if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
         }
+
+        // ── Entry-hit shadow (2026-08-05): did price actually reach the
+        // signal's entry during the expiry window? Uses the candle low/high
+        // already fetched. Stored as shadow field only — the decided result
+        // stays as-is for now, so production WR is untouched until evidence
+        // (7-14 days) proves the semantics need changing.
+        if (record.entryPrice != null && fetchResult) {
+          const wl = fetchResult.windowLow;
+          const wh = fetchResult.windowHigh;
+          if (wl != null && wh != null) {
+            if (record.direction === 'BUY') {
+              record.entryHit = wl <= record.entryPrice + 1e-12;
+            } else if (record.direction === 'SELL') {
+              record.entryHit = wh >= record.entryPrice - 1e-12;
+            } else {
+              record.entryHit = null;
+            }
+            record.entryHitWindowLow = wl;
+            record.entryHitWindowHigh = wh;
+          } else {
+            record.entryHit = null;
+          }
+        }
+
         await updateSignalResult(record, winLoss, exitPrice, env);
         await env.SIGNAL_CACHE.delete(kvEntry.name);
         // §3.3: shadow rows are outcome-tracked but never pollute WR / CB state
@@ -322,7 +346,24 @@ export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
       }
       if (closest && minDiff <= 120000) {
         const px = parseFloat(closest.close);
-        if (Number.isFinite(px)) return { price: px };
+        if (Number.isFinite(px)) {
+          // Also surface the intra-window candle low/high so the caller can
+          // verify whether the signal's ENTRY was actually hit (not just the
+          // expiry close). Shadow-only field — production result unchanged.
+          let lo = Infinity, hi = -Infinity;
+          for (const c of data.values) {
+            if (!c) continue;
+            const l = parseFloat(c.low); const h = parseFloat(c.high);
+            if (Number.isFinite(l) && l < lo) lo = l;
+            if (Number.isFinite(h) && h > hi) hi = h;
+          }
+          return {
+            price: px,
+            windowLow: Number.isFinite(lo) ? lo : null,
+            windowHigh: Number.isFinite(hi) ? hi : null,
+            windowStart: startDate, windowEnd: endDate,
+          };
+        }
         lastErr = { error: 'BAD_CLOSE_VALUE', body: String(closest.close).slice(0, 200) };
         continue;
       }
@@ -345,7 +386,12 @@ async function updateSignalResult(record, winLoss, exitPrice, env) {
     for (const sig of existing) {
       if (sig.id === record.id) {
         sig.result = winLoss; sig.exitPrice = exitPrice;
-        sig.checkedAt = new Date().toISOString(); break;
+        sig.checkedAt = new Date().toISOString();
+        // entry-hit shadow (truth-keeping; not used in WR yet)
+        if (record.entryHit !== undefined) sig.entryHit = record.entryHit;
+        if (record.entryHitWindowLow !== undefined) sig.entryHitWindowLow = record.entryHitWindowLow;
+        if (record.entryHitWindowHigh !== undefined) sig.entryHitWindowHigh = record.entryHitWindowHigh;
+        break;
       }
     }
     await env.SIGNAL_CACHE.put(histKey, JSON.stringify(existing), { expirationTtl: 60*60*24*30 });

@@ -377,3 +377,26 @@ Regression: d2/probe/fx_mode have a few fixture fails that are SESSION-
 DEPENDENT (verified identical at HEAD — LONDON/NY session changes fixture
 directions; ASIAN/SYDNEY hours pass 34/34 & 20/20). Not introduced here.
 NOT deployed.
+
+## 2026-08-05 — Entry-hit shadow (truth-keeping, NOT deployed)
+
+User-reported: signals resolve LOSS even when the live price never reached the
+signal's entry (their limit-style entry never filled). Analysis of 1,012
+decided forward signals: 23.7% of LOSSes had |exit-entry| < 5 pips — consistent
+with "entry never hit" but a pending/failed fill counted as LOSS.
+
+Fix (shadow only — production result UNCHANGED until evidence):
+- fetchExpiryPrice now also returns windowLow/windowHigh from the same
+  1-min candle fetch (no extra API call).
+- scheduledTracker (stats.js) computes record.entryHit: BUY hit if windowLow
+  <= entry; SELL hit if windowHigh >= entry. Stored on the history record as
+  entryHit / entryHitWindowLow / entryHitWindowHigh.
+- probeStore + d2store resolvers also record entryHit (same rule).
+
+Result semantics (WIN/LOSS) are NOT changed yet — the shadow just measures
+truth. After 7-14 days: decide whether to treat entry-missed signals as
+PENDING/NOT_EXECUTED (fixes fake-loss WR inflation) or keep them with a
+separate label.
+
+Verify: entry_hit_tests 7/7; d2 39/39; probe 34/34; fx 20/20; phase7 68;
+phase10 61. NOT deployed.

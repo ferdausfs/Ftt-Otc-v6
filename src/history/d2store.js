@@ -213,6 +213,15 @@ export async function resolveD2ShadowObservations(env, fetchPrice = fetchExpiryP
           if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
           if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
         }
+        // entry-hit shadow (truth-keeping)
+        if (record.entryPrice != null && fetchResult) {
+          const wl = fetchResult.windowLow, wh = fetchResult.windowHigh;
+          if (wl != null && wh != null) {
+            if (record.direction === 'BUY') record.entryHit = wl <= record.entryPrice + 1e-12;
+            else if (record.direction === 'SELL') record.entryHit = wh >= record.entryPrice - 1e-12;
+            record.entryHitWindowLow = wl; record.entryHitWindowHigh = wh;
+          }
+        }
         record.result = winLoss;
         record.exitPrice = exitPrice;
         record.resolvedAt = new Date().toISOString();
