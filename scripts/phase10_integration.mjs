@@ -39,6 +39,24 @@ function series(n, base, step) {
   return out.reverse();
 }
 
+// 15min fixture: fast oscillation (ADX ~10) so the regime is RANGING.
+// Bugfix round 1 note: a steady uptrend now trips the D2_TRENDING_BLOCK
+// (FIX-2) and correctly yields NO_TRADE — this test verifies PUSH WIRING,
+// so it needs a tradeable RANGING setup instead.
+function seriesFastSin(n, base, amp) {
+  const out = []; let c = base;
+  for (let i = 0; i < n; i++) {
+    const o = c;
+    c = base + Math.sin(i / 1.3) * amp;
+    out.push({
+      datetime: new Date(Date.now() - (n - i) * 60000).toISOString().slice(0, 19).replace('T', ' '),
+      open: o.toFixed(5), high: (Math.max(o, c) + amp).toFixed(5),
+      low: (Math.min(o, c) - amp).toFixed(5), close: c.toFixed(5), volume: '1000',
+    });
+  }
+  return out.reverse();
+}
+
 let tg = [];
 let expiryPrice = null;
 function installNet() {
@@ -64,7 +82,15 @@ function installNet() {
           datetime: mid, open: '1', high: '1', low: '1', close: String(expiryPrice),
         }] }), text: async () => '' };
       }
-      return { ok: true, status: 200, json: async () => ({ values: series(120, 100, 0.2) }), text: async () => '' };
+      // per-interval candle data; 15min oscillates so the regime stays RANGING
+      // (see seriesFastSin note above). 100 candles per TF (matches the
+      // outputsize=100 the handler requests; verified BUY/RANGING).
+      const interval = p.get('interval');
+      let values;
+      if (interval === '15min') values = seriesFastSin(100, 100, 0.4);
+      else if (interval === '5min') values = series(100, 100, 0.1);
+      else values = series(100, 100, 0.02);
+      return { ok: true, status: 200, json: async () => ({ values }), text: async () => '' };
     }
     // AI providers
     return { ok: true, status: 200, text: async () => '{}',

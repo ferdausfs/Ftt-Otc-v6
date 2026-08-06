@@ -51,7 +51,7 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
     return {
       direction: 'NO_TRADE', score: { up: 0, down: 0, diff: 0 },
       confluence: 0, reason: 'Insufficient data', timeframe, assetType,
-      categoryScores: {}, confluenceDetail: { bullish: 0, bearish: 0, total: 11 }, volatilityMultiplier: 0,
+      categoryScores: {}, confluenceDetail: { bullish: 0, bearish: 0, total: 12 }, volatilityMultiplier: 0,
     };
   }
 
@@ -66,7 +66,7 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
         direction: 'NO_TRADE', score: { up: 0, down: 0, diff: 0 },
         confluence: 0, reason: 'Dead market — ATR too low',
         timeframe, assetType, deadMarket: true,
-        categoryScores: {}, confluenceDetail: { bullish: 0, bearish: 0, total: 11 }, volatilityMultiplier: 0,
+        categoryScores: {}, confluenceDetail: { bullish: 0, bearish: 0, total: 12 }, volatilityMultiplier: 0,
       };
     }
   }
@@ -490,7 +490,10 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   let __r71HardBlockReason = null;
   if (direction !== 'NO_TRADE' && structure) {
     const sDir = structure.multiplier ? structure.multiplier.direction : null;
-    const hasStrongStructure = structure.choch || (structure.bos && structure.multiplier.value >= 1.20);
+    // HARDEN-1 (bugfix round 2): defensive optional chaining — analyzeStructure
+    // always sets multiplier, but every other accessor guards; this one should
+    // too so a malformed structure object can never crash the signal path.
+    const hasStrongStructure = structure.choch || (structure.bos && structure.multiplier?.value >= 1.20);
 
     if (hasStrongStructure && sDir !== null && sDir !== direction) {
       // Signal is COUNTER to confirmed BOS/CHoCH → hard block

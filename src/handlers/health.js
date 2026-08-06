@@ -134,22 +134,39 @@ export async function handleReport(url, env) {
     const allKeys = await env.SIGNAL_CACHE.list({ prefix: HISTORY_CONFIG.KV_SIGNAL_PREFIX });
     if (!allKeys || !allKeys.keys || allKeys.keys.length === 0)
       return jsonResponse({ error: true, message: 'Signal ID not found: ' + signalId }, 404);
-    let found = false; let foundRecord = null;
+    let found = false; let foundRecord = null; let shouldUpdateStats = false;
     for (const kvEntry of allKeys.keys) {
       const histKey = kvEntry.name;
       const history = await env.SIGNAL_CACHE.get(histKey, 'json');
       if (!Array.isArray(history)) continue;
       for (const sig of history) {
         if (sig.id === signalId) {
-          foundRecord = sig; sig.result = result; sig.checkedAt = new Date().toISOString(); sig.reportedManually = true;
-          await env.SIGNAL_CACHE.put(histKey, JSON.stringify(history), { expirationTtl: 60*60*24*30 });
+          foundRecord = sig;
+          // Bugfix round 1 (BUG-005): idempotency guard. A second report (or a
+          // report AFTER the cron resolved the signal) must NOT re-count stats.
+          // Only WIN/LOSS are counted by updatePairStats; UNKNOWN/ties remain
+          // re-reportable.
+          const alreadyDecided = sig.result === 'WIN' || sig.result === 'LOSS';
+          if (!alreadyDecided) {
+            sig.result = result; sig.checkedAt = new Date().toISOString(); sig.reportedManually = true;
+            await env.SIGNAL_CACHE.put(histKey, JSON.stringify(history), { expirationTtl: 60*60*24*30 });
+            shouldUpdateStats = true;
+          }
+          // Drop the pending result-check record so the */2 cron resolver cannot
+          // later overwrite this verdict and double-count the outcome.
+          await env.SIGNAL_CACHE.delete(HISTORY_CONFIG.KV_PENDING_PREFIX + signalId).catch(() => {});
           found = true; break;
         }
       }
       if (found) break;
     }
     if (!found) return jsonResponse({ error: true, message: 'Signal ID not found: ' + signalId }, 404);
-    if (foundRecord) await updatePairStats(foundRecord.pair, result, foundRecord, env);
-    return jsonResponse({ success: true, signalId, pair: foundRecord?.pair || 'N/A', result, message: 'Result recorded. Stats updated.', timestamp: new Date().toISOString() });
+    if (shouldUpdateStats && foundRecord) await updatePairStats(foundRecord.pair, result, foundRecord, env);
+    return jsonResponse({
+      success: true, signalId, pair: foundRecord?.pair || 'N/A', result,
+      alreadyRecorded: !shouldUpdateStats,
+      message: shouldUpdateStats ? 'Result recorded. Stats updated.' : 'Result already recorded — stats not double-counted.',
+      timestamp: new Date().toISOString(),
+    });
   } catch (e) { return jsonResponse({ error: true, message: 'Report error: ' + e.message }, 500); }
 }

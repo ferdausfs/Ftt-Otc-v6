@@ -83,7 +83,7 @@ function classifyEntrySource(cacheHits) {
  * Chaining the push behind the save result means subscribers are notified
  * exactly when a new row lands in history.
  */
-async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response) {
+async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response, noPush) {
   let saveResult = null;
   try {
     saveResult = await saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource);
@@ -93,6 +93,9 @@ async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, resp
   }
   if (saveResult && saveResult.deduped) return;   // re-poll — already announced
   try {
+    // Bugfix round 1 (BUG-001): `noPush` must come from the request options —
+    // previously referenced an out-of-scope variable -> ReferenceError on every
+    // signal, which killed ALL Telegram pushes silently.
     if (!noPush) await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
   } catch (e) {
     console.warn('saveAndPush: push failed for ' + pair + ': ' + e.message);
@@ -120,7 +123,12 @@ export async function handleSignal(pair, env, ctx, opts = {}) {
     }
   }
 
-  const result = await handleSignalRaw(pair, env, ctx, { fxMode: !!opts?.fxMode });
+  // Bugfix round 1 (BUG-001): forward `nopush` to the raw handler — it was
+  // dropped here, so `?nopush=1` could never suppress a push.
+  const result = await handleSignalRaw(pair, env, ctx, {
+    fxMode: !!opts?.fxMode,
+    noPush: !!opts?.noPush,
+  });
 
   if (preferCache && result && !result.error && result.signal
       && result.source !== 'DUMMY_FALLBACK') {
@@ -138,7 +146,7 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
   const assetType = getAssetType(pair);
   const reqFxMode = !!opts.fxMode;
   const noPush = !!opts.noPush;
-  if (assetType === ASSET_TYPE_OTC) return await handleSignalRawOTC(pair, env, ctx);
+  if (assetType === ASSET_TYPE_OTC) return await handleSignalRawOTC(pair, env, ctx, opts);
 
   const session = detectTradingSession();
   const exotic  = assetType === ASSET_TYPE.FOREX ? isExoticPair(pair) : false;
@@ -247,14 +255,15 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
   };
 
   if (signalId)
-    ctx.waitUntil(saveAndPush(signal, pair, false, env, signalId, entrySource, result));
+    ctx.waitUntil(saveAndPush(signal, pair, false, env, signalId, entrySource, result, noPush));
 
   return result;
 }
 
-async function handleSignalRawOTC(pair, env, ctx) {
+async function handleSignalRawOTC(pair, env, ctx, opts = {}) {
   const basePair = getOTCBasePair(pair);
   const exotic   = isExoticPair(basePair);
+  const noPush   = !!opts.noPush;
   const session  = detectTradingSession();
   const timeframes = ['1min', '5min', '15min'];
   const candleData = {}; const errors = {};
@@ -328,7 +337,7 @@ async function handleSignalRawOTC(pair, env, ctx) {
   };
 
   if (signalId)
-    ctx.waitUntil(saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult));
+    ctx.waitUntil(saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult, noPush));
 
   return otcResult;
 }

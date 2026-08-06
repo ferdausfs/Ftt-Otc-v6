@@ -22,7 +22,7 @@
  */
 
 import { CONFIG } from '../config.js';
-import { fetchExpiryPrice } from './stats.js';
+import { fetchExpiryPrice, classifyOutcome } from './stats.js';
 
 // ── KV schema (all under the `shadow:` prefix) ─────────────────────────
 const OBS_PREFIX     = 'shadow:obs:';       // shadow:obs:<id>      -> resolved/pending observation
@@ -208,11 +208,8 @@ export async function resolveShadowObservations(env) {
 
         // success: compute win/loss, update the observation, delete pending
         const exitPrice = fetchResult ? fetchResult.price : null;
-        let winLoss = 'UNKNOWN';
-        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
-          if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
-          if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
-        }
+        // Bugfix round 1 (BUG-008): shared classifier — exit == entry is TIE.
+        const winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
         record.result = winLoss;
         record.exitPrice = exitPrice;
         record.resolvedAt = new Date().toISOString();

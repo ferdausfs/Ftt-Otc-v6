@@ -145,13 +145,13 @@ console.log('\n── [#5-7] Resolver — WIN/LOSS/tie + FLIPPED counterfactual 
   ok('[#6a] SELL with lower exit = WIN (actual)', rec2.result === 'WIN', rec2.result);
   ok('[#6b] flipped BUY = LOSS', rec2.flippedResult === 'LOSS', rec2.flippedResult);
 
-  // tie (exit == entry) -> LOSS (worker convention) both ways
+  // tie (exit == entry) -> TIE (bugfix round 1: was LOSS for both directions)
   env._px = 1.10;
   await admitProbeObservation({ id: 'probe_r3', pair: 'EUR/USD', direction: 'SELL', entryPrice: 1.10, expiryTime: pastExpiry }, env);
   await resolveProbeObservations(env, fetchPrice);
   const rec3 = JSON.parse(kv._m.get('probe:obs:probe_r3').value);
-  ok('[#6c] tie -> actual LOSS', rec3.result === 'LOSS', rec3.result);
-  ok('[#6d] tie -> flipped WIN', rec3.flippedResult === 'WIN', rec3.flippedResult);
+  ok('[#6c] tie -> TIE (not LOSS)', rec3.result === 'TIE', rec3.result);
+  ok('[#6d] tie -> flipped stays UNKNOWN (no flip on a tie)', rec3.flippedResult === 'UNKNOWN', rec3.flippedResult);
 
   // cap per run
   resetProbeAccounting();

@@ -25,7 +25,7 @@
  * admitted; later ones are dropped (admission-time bias toward earlier events).
  */
 
-import { fetchExpiryPrice } from './stats.js';
+import { fetchExpiryPrice, classifyOutcome } from './stats.js';
 
 // ── KV schema (all under the `d2obs:`/`d2pending:`/`d2idx:` prefixes) ─────
 const OBS_PREFIX     = 'd2obs:';
@@ -208,11 +208,8 @@ export async function resolveD2ShadowObservations(env, fetchPrice = fetchExpiryP
 
         // success: compute win/loss, update the observation, delete pending
         const exitPrice = fetchResult ? fetchResult.price : null;
-        let winLoss = 'UNKNOWN';
-        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
-          if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
-          if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
-        }
+        // Bugfix round 1 (BUG-008): shared classifier — exit == entry is TIE.
+        const winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
         // entry-hit shadow (truth-keeping)
         if (record.entryPrice != null && fetchResult) {
           const wl = fetchResult.windowLow, wh = fetchResult.windowHigh;

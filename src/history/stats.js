@@ -12,6 +12,25 @@ function pairKey(pair) {
   return pair.replace(/\//g, '_').replace(/-/g, '_');
 }
 
+// ── OUTCOME CLASSIFIER (Bugfix round 1 / BUG-008) ─────────────────────────
+// Single source of truth for WIN/LOSS/TIE. An expiry close exactly at the entry
+// is a TIE, NOT a LOSS for both directions (the previous convention silently
+// deflated WR on low-volatility pairs). TIE rows are stored in history but are
+// excluded from win/loss stats and from result pushes. All resolvers
+// (scheduledTracker + d2/probe/r71 stores) share this one implementation.
+const TIE_REL_EPS = 1e-9;   // relative epsilon: a 1e-13 float wiggle is still a tie
+
+export function classifyOutcome(direction, entryPrice, exitPrice) {
+  if (entryPrice === null || entryPrice === undefined ||
+      exitPrice === null || exitPrice === undefined) return 'UNKNOWN';
+  const diff = exitPrice - entryPrice;
+  const scale = Math.max(Math.abs(entryPrice), Math.abs(exitPrice), 1);
+  if (Math.abs(diff) <= TIE_REL_EPS * scale) return 'TIE';
+  if (direction === 'BUY')  return diff > 0 ? 'WIN' : 'LOSS';
+  if (direction === 'SELL') return diff < 0 ? 'WIN' : 'LOSS';
+  return 'UNKNOWN';
+}
+
 // ── DEDUP GUARD CONFIG ────────────────────────────────────────
 // Same pair+direction+nearby-entry within this window is treated
 // as a re-poll of the same setup and not written as a new record.
@@ -215,11 +234,8 @@ export async function scheduledTracker(env) {
         }
 
         const exitPrice = fetchResult ? fetchResult.price : null;
-        let winLoss = 'UNKNOWN';
-        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
-          if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
-          if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
-        }
+        // Bugfix round 1 (BUG-008): exit == entry is a TIE, not a LOSS.
+        const winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
 
         // ── Entry-hit shadow (2026-08-05): did price actually reach the
         // signal's entry during the expiry window? Uses the candle low/high
@@ -413,7 +429,9 @@ export async function getDynamicConfidenceAdjustment(pair, env) {
 }
 
 export async function updatePairStats(pair, winLoss, record, env) {
-  if (!env || !env.SIGNAL_CACHE || winLoss === 'UNKNOWN') return;
+  // Bugfix round 1 (BUG-008): TIE is stored in history but never counted as
+  // a win or a loss (same exclusion as UNKNOWN).
+  if (!env || !env.SIGNAL_CACHE || (winLoss !== 'WIN' && winLoss !== 'LOSS')) return;
   try {
     const statsKey = HISTORY_CONFIG.KV_STATS_PREFIX + pairKey(pair);
     let stats = await env.SIGNAL_CACHE.get(statsKey, 'json');

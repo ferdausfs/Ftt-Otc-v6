@@ -21,7 +21,7 @@
  * This is INSTRUMENTATION ONLY — zero behavior change to production.
  */
 
-import { fetchExpiryPrice } from './stats.js';
+import { fetchExpiryPrice, classifyOutcome } from './stats.js';
 
 const OBS_PREFIX     = 'probe:obs:';
 const PENDING_PREFIX = 'probe:pending:';
@@ -186,11 +186,8 @@ export async function resolveProbeObservations(env, fetchPrice = fetchExpiryPric
         }
 
         const exitPrice = fetchResult ? fetchResult.price : null;
-        let winLoss = 'UNKNOWN';
-        if (record.entryPrice !== null && exitPrice !== null && exitPrice !== undefined) {
-          if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
-          if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
-        }
+        // Bugfix round 1 (BUG-008): shared classifier — exit == entry is TIE.
+        const winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
         // entry-hit shadow (truth-keeping): did price reach entry?
         if (record.entryPrice != null && fetchResult) {
           const wl = fetchResult.windowLow, wh = fetchResult.windowHigh;

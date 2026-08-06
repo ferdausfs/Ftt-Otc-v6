@@ -28,8 +28,15 @@ function analyzeTimeframeOTC(indicators, candles, timeframe) {
     const rW  = rangingW[cat] || 1.0;
     const otW = otcW[cat] !== undefined ? otcW[cat] : 0;
     if (rW > 0) {
-      const rawUp   = (cd.up   || 0) / rW;
-      const rawDown = (cd.down || 0) / rW;
+      // Bugfix round 2 (FIX-B): camarilla is stored RAW in timeframe.js
+      // (catScores.camarilla = r2(camScore.up) BEFORE the camW multiplier),
+      // unlike every other category which is stored already-weighted
+      // (tU *= weights.trend THEN catScores.trend = r2(tU)). Dividing the raw
+      // camarilla by rangingW (0.84) inflated the OTC contribution to
+      // 1/0.84 × 1.5 = 1.786× instead of the intended 1.5× (~19% over-weight).
+      // Nothing to "undo" for camarilla — skip the ÷rW step for it only.
+      const rawUp   = cat === 'camarilla' ? (cd.up   || 0) : (cd.up   || 0) / rW;
+      const rawDown = cat === 'camarilla' ? (cd.down || 0) : (cd.down || 0) / rW;
       newUp   += rawUp   * otW;
       newDown += rawDown * otW;
       result.categoryScores[cat] = { ...cd, up: r2(rawUp * otW), down: r2(rawDown * otW), otcWeight: otW };
@@ -54,7 +61,7 @@ function analyzeTimeframeOTC(indicators, candles, timeframe) {
   result.direction = direction;
   result.score     = { up: r2(newUp), down: r2(newDown), diff: r2(scoreDiff) };
   result.confluence = confluence;
-  result.confluenceDetail = { bullish: upCat, bearish: downCat, total: 11 };
+  result.confluenceDetail = { bullish: upCat, bearish: downCat, total: 12 };
   result.otcWeighted = true;
   return result;
 }
@@ -195,7 +202,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   const best = findBestTimeframe(tfResults, finalDirection);
   const recommendations = {};
   for (const [rtf, rec] of Object.entries(tfResults)) {
-    recommendations[rtf] = { direction: rec.direction, score: rec.score, confluence: rec.confluence + '/11', expiry: rec.expiry, entry: rec.entry, patterns: rec.categoryScores?.patterns?.detected || [] };
+    recommendations[rtf] = { direction: rec.direction, score: rec.score, confluence: rec.confluence + '/12', expiry: rec.expiry, entry: rec.entry, patterns: rec.categoryScores?.patterns?.detected || [] };
   }
 
   const avgConf = votes.reduce((s, v) => s + (v.confluence || 0), 0) / Math.max(votes.length, 1);
@@ -222,7 +229,13 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     }
   }
 
-  const finalGrade = getSignalGrade(confidence, avgConf, alignment);
+  // Bugfix round 2 (FIX-A): compute the structure verdict BEFORE grading so the
+  // grade can be capped when market structure contradicts the signal — mirrors
+  // engine.js (getSignalGrade(..., structureOverall)). Previously the OTC path
+  // called getSignalGrade WITHOUT the 4th arg, so an 80%/ALL_BULLISH OTC signal
+  // with structure AGAINST still graded A+ instead of being capped at C.
+  const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
+  const finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
   return {
     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
     coreConfidence: rawConfidence,   // B5 — see anchor above
@@ -237,6 +250,6 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     recommendations, bestTimeframe: best,
     votes: { BUY: votes.filter(v => v.direction === 'BUY').length, SELL: votes.filter(v => v.direction === 'SELL').length, NO_TRADE: votes.filter(v => v.direction === 'NO_TRADE').length, total: votes.length, weightedBuy: r2(weightedBuy), weightedSell: r2(weightedSell), weightedNoTrade: r2(weightedNoTrade) },
     averageConfluence: Math.round(avgConf * 10) / 10,
-    timeframeAnalysis: tfResults, structureVerdict: buildStructureVerdict(tfResults, finalDirection), method: 'OTC_HYBRID_v6.9.1', generatedAt: now.toISOString(),
+    timeframeAnalysis: tfResults, structureVerdict, method: 'OTC_HYBRID_v6.9.1', generatedAt: now.toISOString(),
   };
 }

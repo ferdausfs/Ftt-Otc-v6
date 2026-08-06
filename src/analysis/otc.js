@@ -100,9 +100,23 @@ export function analyzeOTCPatterns(candles, atr, lastClose) {
   const round = detectRoundNumberProximity(lastClose, atr);
   result.roundNumber = round;
   if (round) {
-    result.otcBonusUp   += round.proximity * 0.4;
-    result.otcBonusDown += round.proximity * 0.4;
-    result.otcSignals.push('ROUND_LEVEL_' + round.stepType);
+    // Bugfix round 2 (FIX-C): the round bonus was dead — the same
+    // `proximity * 0.4` was added to BOTH otcBonusUp and otcBonusDown, so the
+    // differential in otcEngine (bonusUp - bonusDown) cancelled to zero while
+    // ROUND_LEVEL_* was still shown to users (an illusion). Make it
+    // directional, mean-reversion consistent: a round level is resistance when
+    // price approaches it from below (rejection bias DOWN) and support when
+    // price sits above it (rejection bias UP). Exactly on the level is
+    // ambiguous → no score bonus (still surfaced in otcSignals).
+    if (lastClose < round.level) {
+      result.otcBonusDown += round.proximity * 0.4;
+      result.otcSignals.push('ROUND_LEVEL_' + round.stepType + '_RESISTANCE');
+    } else if (lastClose > round.level) {
+      result.otcBonusUp += round.proximity * 0.4;
+      result.otcSignals.push('ROUND_LEVEL_' + round.stepType + '_SUPPORT');
+    } else {
+      result.otcSignals.push('ROUND_LEVEL_' + round.stepType + '_ON_LEVEL');
+    }
   }
 
   const anomaly = detectCandleSizeAnomaly(candles);

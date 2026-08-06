@@ -71,8 +71,17 @@ export function passConf(sig, min) {
 
 export function passAI(sig, aiOnly) {
   if (!aiOnly) return true;
-  return !!(sig && sig.aiValidation
-    && sig.aiValidation.status === 'OK' && sig.aiValidation.agrees === true);
+  if (!sig || !sig.aiValidation) return false;
+  const v = sig.aiValidation;
+  // Bugfix round 1 (CHECK-A / BUG-006): the standard engine REPLACES
+  // aiValidation with the dual-combiner object `{cerebras, groq, combined,
+  // combinedAgreed}` (combine.js) — there is no top-level `status` field, so
+  // the old check `v.status === 'OK'` was always false and aiOnly subscribers
+  // could never match. Accept both shapes: OTC leaves `{status, agrees}`,
+  // standard leaves `{combined.status, combinedAgreed/agrees}`.
+  const status = v.status || (v.combined && v.combined.status);
+  const agreed = v.agrees !== undefined ? v.agrees : v.combinedAgreed;
+  return status === 'OK' && agreed === true;
 }
 
 /**

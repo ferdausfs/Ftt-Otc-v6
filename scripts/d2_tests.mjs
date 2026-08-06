@@ -156,11 +156,11 @@ console.log('\n── [#5-7] Resolver — WIN / LOSS / tie / cap ──');
   const recS = JSON.parse(kv._m.get('d2obs:d2_rs').value);
   ok('[#6a] SELL with lower exit resolves WIN', recS.result === 'WIN', recS.result);
 
-  env._kind = 'TIE';       // exact tie => LOSS (worker convention)
+  env._kind = 'TIE';       // exact tie => TIE (bugfix round 1: was LOSS)
   await admitD2ShadowObservation({ id: 'd2_rt', pair: 'XRP/USD', direction: 'BUY', entryPrice: 78000, expiryTime: pastExpiry }, env);
   await resolveD2ShadowObservations(env, fetchPrice);
   const recT = JSON.parse(kv._m.get('d2obs:d2_rt').value);
-  ok('[#6b] exact tie resolves LOSS (worker convention)', recT.result === 'LOSS', recT.result);
+  ok('[#6b] exact tie resolves TIE (not LOSS)', recT.result === 'TIE', recT.result);
 
   // cap: 12 pending, only RESOLVER_CAP=10 resolved in one run
   resetD2Accounting();
