@@ -51,6 +51,25 @@ function candleSeries(n, base, step) {
   return out.reverse();
 }
 
+// 15min fixture: fast oscillation (ADX ~10) so the regime is RANGING.
+// Bugfix round 1 note: a steady uptrend now trips the D2_TRENDING_BLOCK
+// (FIX-2) and correctly yields NO_TRADE — this test verifies the SCAN/CACHE
+// wiring, so it needs tradeable RANGING setups instead.
+function candleFastSin(n, base, amp) {
+  const out = [];
+  let c = base;
+  for (let i = 0; i < n; i++) {
+    const o = c;
+    c = base + Math.sin(i / 1.3) * amp;
+    out.push({
+      datetime: new Date(Date.now() - (n - i) * 60000).toISOString().slice(0, 19).replace('T', ' '),
+      open: o.toFixed(5), high: (Math.max(o, c) + amp).toFixed(5),
+      low: (Math.min(o, c) - amp).toFixed(5), close: c.toFixed(5), volume: '1000',
+    });
+  }
+  return out.reverse();
+}
+
 function installFetchStub() {
   httpCalls = { candles: 0, cerebras: 0, groq: 0 };
   globalThis.fetch = async (url) => {
@@ -61,7 +80,14 @@ function installFetchStub() {
       if ([...failPairs].some(p => symbol.includes(p))) {
         return new Response('upstream boom', { status: 500 });
       }
-      return new Response(JSON.stringify({ values: candleSeries(120, 100, 0.2) }),
+      // per-interval data; 15min oscillates (RANGING) so the D2 TRENDING block
+      // (FIX-2) does not suppress the signals under test. 100 candles per TF.
+      const interval = new URL(u).searchParams.get('interval');
+      let values;
+      if (interval === '15min') values = candleFastSin(100, 100, 0.4);
+      else if (interval === '5min') values = candleSeries(100, 100, 0.1);
+      else values = candleSeries(100, 100, 0.02);
+      return new Response(JSON.stringify({ values }),
         { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (u.includes('cerebras')) {

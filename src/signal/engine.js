@@ -229,8 +229,14 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
 
       // ── FIX: Separate rescue path vs normal path (no double-boost) ──
       if (finalDirection === 'NO_TRADE' && aiTargetDir !== 'NO_TRADE') {
-        // RESCUE PATH — signal was blocked by soft filter
-        if (aiAgreed && (combinedAI.confidence || 0) >= 70 && !combinedAI.concerns) {
+        // Bugfix round 1 (BUG-002): D2 negative filters (TRENDING / BAD_PAIR /
+        // HIGHEST_SESSION) are HARD, data-backed blocks (6-30% WR slices). The
+        // AI rescue path is only meant for SOFT filters (confidence floor,
+        // dead-market, etc). If a D2 branch fired, never let the AI revive the
+        // trade — the would-be signal is captured by the D2 shadow instead.
+        if (d2Audit) {
+          filtersApplied.push('AI_RESCUE_SKIPPED (D2 hard block: ' + d2Audit.attribution + ')');
+        } else if (aiAgreed && (combinedAI.confidence || 0) >= 70 && !combinedAI.concerns) {
           finalDirection = aiTargetDir;
           confidence = Math.min(92, Math.round((rawConfidence + (combinedAI.confidence || 0)) / 2));
           belowFloor = false;
@@ -260,6 +266,16 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
         }
       }
     }
+  }
+
+  // ── POST-AI CONFIDENCE FLOOR (Bugfix round 1 / BUG-007) ──
+  // The pre-AI floor (voteFilters.js) only runs BEFORE the AI layer. AI boost /
+  // agree-with-concerns / rescue can then land the final confidence BELOW the
+  // advertised MIN_CONFIDENCE_FLOOR (e.g. 74 - 5 = 69 on agree-with-concerns).
+  // Re-apply the floor on the FINAL output so no signal leaves at < 72%.
+  if (finalDirection !== 'NO_TRADE' && confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
+    finalDirection = 'NO_TRADE'; confidence = 0;
+    filtersApplied.push('BELOW_FLOOR_AFTER_AI (' + CONFIG.MIN_CONFIDENCE_FLOOR + '%)');
   }
 
   // ── BUILD OUTPUTS ──
@@ -385,9 +401,14 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
       const best = findBestTimeframe(tfResults, finalDirection);
       const bestTFA = (best && best.timeframe && best.timeframe !== 'N/A') ? tfResults[best.timeframe] : null;
       const entryPx = bestTFA && bestTFA.entry ? bestTFA.entry.price : null;
-      // current price = last close of the best TF's candles
-      const tfCandles = candleData[best ? best.timeframe : '5min'];
-      const lastClose = tfCandles && tfCandles.length ? tfCandles[tfCandles.length - 1].close : null;
+      // Bugfix round 1 (BUG-003): "current price" must be INDEPENDENT of the
+      // entry reference. The entry is the best TF's last close; the current
+      // price is the freshest candle we have — the lowest timeframe's last
+      // close (1min < 5min < 15min). Previously both values came from the SAME
+      // array element, so fillStatus was always 'INSTANT' and distance always 0.
+      const currentCandles = candleData['1min'] || candleData['5min'] || candleData['15min'];
+      const lastClose = currentCandles && currentCandles.length
+        ? currentCandles[currentCandles.length - 1].close : null;
       if (entryPx != null && lastClose != null) {
         const dist = Math.abs(lastClose - entryPx);
         const rel = entryPx !== 0 ? dist / entryPx : 0;

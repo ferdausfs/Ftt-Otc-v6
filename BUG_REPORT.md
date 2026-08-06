@@ -7,6 +7,28 @@
 
 ---
 
+## Fix round 1 — status (reviewer-approved 6 fixes + CHECK-A fix)
+
+| Finding | Verdict | Status |
+|---------|---------|--------|
+| BUG-001 (push ReferenceError) | FIX-1 ✅ approved | **Fixed** — `noPush` threaded through `saveAndPush` + `handleSignal`→`handleSignalRaw` (+ OTC path). `phase10_integration` now passes 19/19. |
+| BUG-002 (AI rescue overrides D2) | FIX-2 ✅ approved | **Fixed** — rescue path skips when `d2Audit` is set (`AI_RESCUE_SKIPPED (D2 hard block…)`). Proven by `fix_tests.mjs` T5: TRENDING + dual-AI-agree → NO_TRADE. |
+| BUG-003 (fillStatus degenerate) | FIX-3 ✅ approved | **Fixed** — current price now = lowest-TF (1min) last close, independent of the best-TF entry. Proven by `fix_tests.mjs` T3: `PENDING_ENTRY` / 1.91% distance / `INSTANT` when prices equal. |
+| BUG-005 (/api/report double-count) | FIX-4 ✅ approved | **Fixed** — idempotent: already-decided rows don't re-count stats; `pending:<id>` deleted so the cron can't overwrite. Proven by `fix_tests.mjs` T2. |
+| BUG-007 (floor not enforced post-AI) | FIX-5 ✅ approved | **Fixed** — `BELOW_FLOOR_AFTER_AI` re-check on the final output (no BUY/SELL < 72%). |
+| BUG-008 (tie → LOSS) | FIX-6 ✅ approved | **Fixed** — shared `classifyOutcome()` (stats.js) returns `TIE`; used by all 4 resolvers; TIE excluded from stats/pushes. Unit + resolver tests updated. |
+| BUG-006 (passAI never true) | CHECK-A 🔍 | **Confirmed broken + fixed** per the reviewer's conditional ("না হলে — logic ঠিক করো"): `passAI` now reads `combined.status`/`combinedAgreed` (standard engine shape) and `status`/`agrees` (OTC shape). Proven by `fix_tests.mjs` T7. |
+| BUG-004 (entryHit wrong window) | CHECK-B 🔍 | **Analysis only — no code change** (reviewer decides). See section below. |
+| BUG-009 / BUG-010 | ⏭️ skip | Not changed (as instructed). |
+
+**Test matrix after fix round 1 (all green):** `fix_tests` 42/42 · `phase10_integration` 19/19 (was failing) · `phase7_integration` 36/36 · `d2_tests` 39/39 · `probe_tests` 34/34 · `entry_hit_tests` 7/7 · `fx_mode_tests` 20/20 · `phase10_smoke` 61/61 · `phase7_smoke` 68/68 · `r71_smoke` exit 0. Note: `d2_tests`/`probe_tests` tie assertions and the phase10/phase7 integration fixtures were updated for the approved convention/fix (their fixtures previously encoded the old tie→LOSS behavior and used a steady-uptrend candle stub that the D2 block now correctly suppresses).
+
+### CHECK-B analysis — entryHit window (no change made)
+
+The `entryHit` shadow (stats.js) still measures over **expiry ± 5 min** (`fetchExpiryPrice` bracket), which is the *tail* of the trade, not the full signal→expiry holding window — and since `entry == last close` at signal time, the metric as computed is almost a mirror of `result==LOSS`. Recommendation if the metric is to mean anything: fetch candles from `timestamp → expiryTime` (window start = signal time), compare direction-correctly (BUY: window low ≤ entry; SELL: window high ≥ entry), and decide explicitly whether the trivial t0 touch (entry == current price) counts as a hit. This is a data-semantics decision the reviewer should approve before any code change.
+
+---
+
 ## Findings summary
 
 | ID | Severity | Title |
