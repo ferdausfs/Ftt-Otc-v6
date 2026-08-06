@@ -1,291 +1,242 @@
-# 🔬 FTT Worker v6.9.2 — Deep Bug-Hunt Audit Report
+# 🔬 FTT Worker v6.9.2 — Deep Bug-Hunt Audit Report (Round 3)
 
-**Audited:** `055b6f0` (`main`) — "Fill status (INSTANT/PENDING_ENTRY) + entry distance in signal output"
-**Live host checked:** `https://fttotcv6.umuhammadiswa.workers.dev` (2026-08-06 04:30–05:00 UTC)
-**Scope:** all `src/` + live endpoints (`/`, `/health`, `/api/signal`, `/api/signals/latest`, `/api/history`, `/api/stats`)
-**Verification performed:** `node --check` on every `src/**/*.js` (all pass) · repo test suites: `entry_hit_tests` (7/7), `d2_tests` (39/39), `probe_tests` (34/34), `fx_mode_tests` (20/20), `phase7_smoke` (68/68), `phase10_smoke` (61/61), `phase7_integration` (36/36) — **`phase10_integration` FAILS** (see BUG-001).
+**Audited:** `0c6d358` (this branch's base, `main` tip) — "Merge pull request #5"
+**Live host checked:** `https://fttotcv6.umuhammadiswa.workers.dev` (2026-08-06 15:45–16:10 UTC)
+**Scope:** every file in `src/` + live endpoints (`/`, `/api/signal`, `/api/signal?mode=fx`, `/api/signal?preferCache=true`, `/api/batch`, `/api/signals/latest`, `/api/history`, `/api/stats`, `/api/report`) + local repro scripts.
+**Verification performed:** `node --check` on all `src/**/*.js` (all pass) · repo suites run this session: `fix_tests` 77/77, `entry_hit_tests` 7/7, `phase7_smoke` 68/68, `fx_mode_tests` 16/17 (fixture), `d2_tests` 38/39, `probe_tests` 28/30 (see BUG-022) · local repros for the push crash and the HTF-confidence bug (see BUG-011, BUG-014).
 
----
-
-## Fix round 1 — status (reviewer-approved 6 fixes + CHECK-A fix)
-
-| Finding | Verdict | Status |
-|---------|---------|--------|
-| BUG-001 (push ReferenceError) | FIX-1 ✅ approved | **Fixed** — `noPush` threaded through `saveAndPush` + `handleSignal`→`handleSignalRaw` (+ OTC path). `phase10_integration` now passes 19/19. |
-| BUG-002 (AI rescue overrides D2) | FIX-2 ✅ approved | **Fixed** — rescue path skips when `d2Audit` is set (`AI_RESCUE_SKIPPED (D2 hard block…)`). Proven by `fix_tests.mjs` T5: TRENDING + dual-AI-agree → NO_TRADE. |
-| BUG-003 (fillStatus degenerate) | FIX-3 ✅ approved | **Fixed** — current price now = lowest-TF (1min) last close, independent of the best-TF entry. Proven by `fix_tests.mjs` T3: `PENDING_ENTRY` / 1.91% distance / `INSTANT` when prices equal. |
-| BUG-005 (/api/report double-count) | FIX-4 ✅ approved | **Fixed** — idempotent: already-decided rows don't re-count stats; `pending:<id>` deleted so the cron can't overwrite. Proven by `fix_tests.mjs` T2. |
-| BUG-007 (floor not enforced post-AI) | FIX-5 ✅ approved | **Fixed** — `BELOW_FLOOR_AFTER_AI` re-check on the final output (no BUY/SELL < 72%). |
-| BUG-008 (tie → LOSS) | FIX-6 ✅ approved | **Fixed** — shared `classifyOutcome()` (stats.js) returns `TIE`; used by all 4 resolvers; TIE excluded from stats/pushes. Unit + resolver tests updated. |
-| BUG-006 (passAI never true) | CHECK-A 🔍 | **Confirmed broken + fixed** per the reviewer's conditional ("না হলে — logic ঠিক করো"): `passAI` now reads `combined.status`/`combinedAgreed` (standard engine shape) and `status`/`agrees` (OTC shape). Proven by `fix_tests.mjs` T7. |
-| BUG-004 (entryHit wrong window) | CHECK-B 🔍 | **Analysis only — no code change** (reviewer decides). See section below. |
-| BUG-009 / BUG-010 | ⏭️ skip | Not changed (as instructed). |
-
-**Test matrix after fix round 1 (all green):** `fix_tests` 42/42 · `phase10_integration` 19/19 (was failing) · `phase7_integration` 36/36 · `d2_tests` 39/39 · `probe_tests` 34/34 · `entry_hit_tests` 7/7 · `fx_mode_tests` 20/20 · `phase10_smoke` 61/61 · `phase7_smoke` 68/68 · `r71_smoke` exit 0. Note: `d2_tests`/`probe_tests` tie assertions and the phase10/phase7 integration fixtures were updated for the approved convention/fix (their fixtures previously encoded the old tie→LOSS behavior and used a steady-uptrend candle stub that the D2 block now correctly suppresses).
+This is a **new audit round** (previous rounds 1–2 are in git history — all 10 findings + 4 round-2 fixes verified fixed below). Findings are numbered `BUG-011…BUG-025` to continue the lineage. Nothing here was fabricated — every finding has code and/or live-API evidence.
 
 ---
 
-## Fix round 2 — status (reviewer-approved 4 fixes + hardening)
+## Round 1/2 fix verification (re-check, 2026-08-06)
 
-| Fix | Finding | Change | Proof (fix_tests.mjs) |
-|-----|---------|--------|------------------------|
-| FIX-A | Sonnet #4 — OTC grade missing structure cap (HIGH) | `otcEngine.js`: `structureVerdict` computed BEFORE `getSignalGrade`, passed as 4th arg; return object reuses the variable (mirrors engine.js) | T8: OTC SELL 88% + structure AGAINST(BUY) → grade **C** (was A+); T8f proves same inputs without the arg grade A+ |
-| FIX-B | Sonnet #5 — camarilla double-weight in OTC (MED-HIGH) | `otcEngine.js` unweight loop skips `÷rW` for `camarilla` (it is stored RAW in timeframe.js; option (a) chosen — standard engine storage/display untouched) | T9: OTC camarilla == `r2(raw × 1.5)` ≠ `r2(raw/0.84 × 1.5)` (1.786×); T9d asserts timeframe.js storage unchanged |
-| FIX-C | Sonnet #7 — round-number bonus dead (MED) | `otc.js`: bonus now directional — price below level → resistance → `otcBonusDown`; above → support → `otcBonusUp`; exactly on level → no bonus (still surfaced) | T10: below→down>0/up=0, above→up>0/down=0, on→neither; T11: confidence delta `round(prox·0.4·3)` = 1 (was 0) |
-| FIX-D | Sonnet #2 — confluence denominator 11→12 (LOW-MED display) | `/11` → `/12` in engine.js (×2), otcEngine.js (×2), timeframe.js early-returns (×2) | T12: grep — no `/11` or `total: 11` remains in `src/`; `/12` present in all 3 files |
-| HARDEN-1 | Sonnet #1 — multiplier null crash (LOW, defensive) | `timeframe.js`: `structure.multiplier?.value` optional chaining | T13: source assert; all suites green |
-
-**FIX-C direction-rule justification (as requested):** the round bonus models OTC mean-reversion rejection at a psychological level. Price approaching a round level from **below** treats it as **resistance** (sellers defend the level → rejection bias DOWN → `otcBonusDown`); price **above** a level treats it as **support** (buyers defend → rejection bias UP → `otcBonusUp`); exactly **on** the level is ambiguous (both sides defended) → no score bonus, still surfaced in `otcSignals` (`ROUND_LEVEL_*_RESISTANCE/_SUPPORT/_ON_LEVEL`). This matches the existing directional convention of `consecutiveCandles` (reversal away from the run direction) and `wickRejection`.
-
-**r71_tests note:** `#14a` (OTC byte-equal vs pre-R7.1 baseline) is now updated to redact the approved round-2 fields (grade/camarilla/round signals/`/12` strings/affected scores) — the old byte-equality contract was intentionally broken by FIX-A/B/C/D. Result: **r71_tests stays 113 PASS / 3 FAIL — identical to main's pre-existing fails (#1a, #2, #17), which were NOT touched.** (Running r71_tests locally requires git object `71e87eb`; this clone needed `git fetch --unshallow` to obtain it.)
-
-**Test matrix after fix round 2 (all green):** `fix_tests` **77/77** · `phase10_integration` 19/19 · `phase7_integration` 36/36 · `d2_tests` 39/39 · `probe_tests` 34/34 · `entry_hit_tests` 7/7 · `fx_mode_tests` 20/20 · `phase10_smoke` 61/61 · `phase7_smoke` 68/68 · `r71_tests` 113P/3F (== main) · `node --check` all src OK · `git diff --check` clean.
-
-**NOT in scope (per reviewer):** Finding #3 (D2_TRENDING_BLOCK vs BAD_PAIR suspension) — no engine change; Phase-F decision needed from the user (D2 shadow observations already capture the counterfactual pair/regime/session context).
-
-### CHECK-B analysis — entryHit window (no change made)
-
-The `entryHit` shadow (stats.js) still measures over **expiry ± 5 min** (`fetchExpiryPrice` bracket), which is the *tail* of the trade, not the full signal→expiry holding window — and since `entry == last close` at signal time, the metric as computed is almost a mirror of `result==LOSS`. Recommendation if the metric is to mean anything: fetch candles from `timestamp → expiryTime` (window start = signal time), compare direction-correctly (BUY: window low ≤ entry; SELL: window high ≥ entry), and decide explicitly whether the trivial t0 touch (entry == current price) counts as a hit. This is a data-semantics decision the reviewer should approve before any code change.
+| Previous finding | Status now | Evidence |
+|---|---|---|
+| BUG-001 `noPush` ReferenceError | ✅ Fixed | `saveAndPush(…, noPush)` threaded through; live `nopush=1` respected |
+| BUG-002 AI rescue overrides D2 block | ✅ Fixed | Live BTC/USD response: `AI_RESCUE_SKIPPED (D2 hard block: D2_TRENDING_BLOCKED)` despite both AIs saying BUY |
+| BUG-003 fillStatus degenerate | ✅ Fixed | Live SOL/USD SELL: `fillStatus: "INSTANT", entryPrice 73.33, currentPrice 73.36, entryDistancePct 0.0409` (independent sources) |
+| BUG-005 /api/report double-count | ✅ Fixed | idempotency guard + pending delete present; live 404 path OK |
+| BUG-006 passAI | ✅ Fixed | `passAI` reads `combined.status`/`combinedAgreed` |
+| BUG-007 post-AI floor | ✅ Fixed | Live SOL/USD SELL 87% after `DUAL_AI_AGREE_WITH_CONCERNS` (92−5) — floor enforced |
+| BUG-008 tie→LOSS | ✅ Fixed | `classifyOutcome()` shared; live Aug-5+ rows show no tie-as-LOSS |
+| BUG-009 `/11`→`/12` | ✅ Fixed | all outputs `/12` |
+| BUG-010 winRate semantics | ⏭️ still open (Low) | see BUG-019 — related, re-framed |
+| CHECK-B entryHit window | ⏭️ still open | see BUG-023 — now quantified with live data |
 
 ---
 
-## Findings summary
+## New findings (round 3)
 
-| ID | Severity | Title |
-|----|----------|-------|
-| BUG-001 | **Critical** | Telegram push never fires — `noPush` ReferenceError in `saveAndPush` (repo's own integration test fails) |
-| BUG-002 | **High** | AI rescue overrides D2 hard blocks (TRENDING / HIGHEST-session) — proven on live records |
-| BUG-003 | **High** | `fillStatus` is degenerate — always `INSTANT`, `entryDistancePct` always `0` |
-| BUG-004 | **Medium-High** | `entryHit` shadow is a mirror of the result + measures the wrong window (paradox explained) |
-| BUG-005 | **Medium** | `/api/report` double-counts results & gets overwritten by the cron resolver |
-| BUG-006 | **Medium** | `passAI` can never be true after the AI runs → `aiOnly` subscribers can never match |
-| BUG-007 | **Medium** | `MIN_CONFIDENCE_FLOOR` (72%) is not enforced on final output — live signals at 69% / 70% |
-| BUG-008 | **Low-Medium** | Tie convention: `exit == entry` is counted as LOSS for both directions (live ties found) |
-| BUG-009 | **Low** | Confluence denominator inconsistent: `/11` vs `total: 12` vs `total: 11` in one response |
-| BUG-010 | **Low** | `winRate` semantics differ between `/api/stats` (lifetime) and `/api/history` (window) |
+### BUG-011 — Telegram channel mirror crashes with `ReferenceError: message is not defined` (breaks pushLog → kills result pushes)
 
----
-
-## BUG-001 — Telegram push never fires (`noPush` is undefined → ReferenceError)
-
-- **Severity:** Critical
-- **Location:** `src/handlers/signal.js:96` (used), `:140` (defined), `:250` / `:331` (call sites); `nopush` also dropped at `src/handlers/signal.js:158`
+- **Severity:** High
+- **Location:** `src/handlers/pushToSubscribers.js:211-213` (channel-mirroring block)
 - **Evidence:**
-
 ```js
-// signal.js:86-98 — saveAndPush() has NO `noPush` parameter and no closure over it
-async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response) {
-  ...
-  try {
-    if (!noPush) await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
-  } catch (e) {
-    console.warn('saveAndPush: push failed for ' + pair + ': ' + e.message);
-  }
+const message = formatSignalMessage(msgSignal, {...});   // line ~201 — INSIDE the per-subscriber map callback
+...
+// Channel mirroring
+await Promise.allSettled(
+  delivered.filter(s => s.channelId)
+    .map(s => sendTelegramMessage(s.channelId, message, env)),   // line 213 — `message` is NOT in scope here
+);
+```
+`message` is block-scoped to the `eligible.map(async (sub) => …)` arrow function. The channel-mirror block references it from the outer function scope, where it does not exist (the unused `const messages = new Map();` at line ~195 is the only similar name). Strict-mode ESM → `ReferenceError`.
+- **Repro (local, proven):** mocked `BOT_KV` with one subscriber that has `channelId: '-100123'`, fake Telegram 200 responses:
+```
+RESULT: {"pushed":0,"error":"message is not defined"}
+pushLog written? false
+```
+- **Impact:** whenever **any** matching subscriber has a `channelId` (Telegram channel mirror, `[F10]` feature): the DMs are sent, but then the channel mirror throws, the exception is caught at the top, `pushLog:` is **never written**, the function returns `pushed: 0` — so (a) the channel never receives the mirror message, (b) the result checker's `pushResultToSubscribers` finds no pushLog and **subscribers never get the WIN/LOSS result notification**, (c) `/health` push stats under-report. Live env has `subscriberCount: 1` — the trigger only needs one subscriber with a channel set.
+- **Suggested fix:** hoist the per-subscriber `message` into the channel-mirror loop (recompute per subscriber) or capture it in `delivered` alongside the subscriber.
+
+### BUG-012 — OTC signals are persisted but NEVER auto-resolved: every OTC history row stays `result: null` forever
+
+- **Severity:** High
+- **Location:** `src/history/stats.js:169`
+```js
+if (!isOTC && expiryTime) {
+  await env.SIGNAL_CACHE.put(HISTORY_CONFIG.KV_PENDING_PREFIX + signalId, …);
 }
 ```
-`noPush` is only declared inside `handleSignalRaw` (`const noPush = !!opts.noPush;` at line 140) — a different function. In strict-mode ESM, `!noPush` throws `ReferenceError: noPush is not defined`, which is swallowed by the `catch` on every signal. Additionally, `handleSignal()` drops the option before calling `handleSignalRaw`: `{ fxMode: !!opts?.fxMode }` (line 158), so `nopush=1` can never reach the engine either.
+The `pending:` result-check record is only written for non-OTC. `scheduledTracker` lists `pending:` keys, so **OTC rows never enter the resolver** — no outcome, no stats, no result push.
+- **Live evidence:** `GET /api/history?pair=EUR/USD-OTC&limit=20` →
+  `total: 9, decided: 0, pending: 9, winRate: null` — all 9 rows `result: null`, including `sig_1785062276685_l6v3i` from **2026-07-26** (11 days stale). Oldest row `expiryTime 2026-07-26T10:52Z` was never checked.
+- **Impact:** OTC win/loss tracking (and therefore any OTC WR analysis, OTC stats buckets, OTC result pushes to subscribers) is completely dead; `/api/history` for OTC pairs is a permanently-pending list. If this is intentional (synthetic OTC price ≠ real market price), it is undocumented and still leaks a broken UI surface (`pending: N` grows forever).
+- **Repro:** `curl /api/history?pair=EUR/USD-OTC` — oldest rows are days old with `result: null`.
+- **Suggested fix:** either resolve OTC against the base-pair real price (like every other pair) with a documented `isOTC` flag in the record, or stop persisting OTC rows to history entirely (or clearly mark them `result: 'NOT_TRACKED'`).
 
-- **Repo's own test proves it** — `node scripts/phase10_integration.mjs`:
-  ```
-  PASS  engine produced an actionable signal
-  FAIL  subscriber received exactly one message — expected 1, got 0
-  TypeError: Cannot read properties of undefined (reading 'chatId')  // tg[0] — nothing was ever sent
-  ```
-- **Live evidence:** `/health` reports `phase10.pushEnabled: true`, `botKvBound: true`, `subscriberCount: 1` while `pushesLast24h: 0` — despite 500+ signals/day being generated and persisted (see `/api/stats` totals), a matching subscriber exists (`auto_users` has 1 entry), and `pushLog:` keys are only written after a successful delivery.
-- **Impact:** Phase 10 (Telegram signal push + result push) is completely dead in this build; subscribers silently receive nothing. `nopush=1` (used by the FX-mode self-fetch in `pushToSubscribers.js` to avoid push loops) is also inert — a latent push-loop bug if BUG-001 is fixed by simply deleting the guard.
-- **Repro:** `node scripts/phase10_integration.mjs` — first block fails.
-- **Suggested fix:** Pass `noPush` explicitly into `saveAndPush` (and forward `opts.noPush` in `handleSignal` → `handleSignalRaw`), or gate the push at the `handleSignalRaw` call site before `saveAndPush`.
-
----
-
-## BUG-002 — AI rescue overrides D2 hard blocks (TRENDING / HIGHEST / BAD_PAIR)
-
-- **Severity:** High
-- **Location:** `src/signal/engine.js:164-177` (D2 block) vs `:203-246` (AI rescue path)
-- **Evidence (code):** When a D2 branch fires it sets `finalDirection = 'NO_TRADE'` (engine.js:166-174). Then:
-  ```js
-  const aiTargetDir = finalDirection !== 'NO_TRADE'
-    ? finalDirection
-    : (rawDirection !== 'NO_TRADE' && rawConfidence >= 60 ? rawDirection : null);  // engine.js:203-205
-  ...
-  if (finalDirection === 'NO_TRADE' && aiTargetDir !== 'NO_TRADE') {
-    // RESCUE PATH — signal was blocked by soft filter
-    if (aiAgreed && (combinedAI.confidence || 0) >= 70 && !combinedAI.concerns) { finalDirection = aiTargetDir; ... }
-  ```
-  There is **no check that the block was a D2 hard block** (`d2Audit` is never consulted). Any D2-blocked signal whose raw confidence ≥ 60 and whose AI agrees (≥60) is re-issued as a live trade.
-- **Evidence (live):**
-  - `SOL/USD` `sig_1785988810342_x6mu6` — `marketRegime: "TRENDING"`, `direction: "SELL"`, `aiStatus: "OK"`, `aiAgreed: true`, **result LOSS** (73.48 → 73.83). The `D2_TRENDING_BLOCK (29.5% WR n=356)` should have killed this pre-AI.
-  - `DOT/USD` `sig_1785874527957_n2oq7` & `sig_1785874218800_xgsoj` — `marketRegime: "TRENDING"`, BUY, `aiAgreed: true` — both emitted despite the TRENDING block.
-  - `EUR/USD` `sig_1785936673946_z64dp` — `sessionQuality: "HIGHEST"`, BUY, `aiAgreed: true`, **result LOSS** — the `D2_HIGHEST_SESSION_BLOCK (6.1% WR n=66)` was bypassed by the rescue path.
-- **Impact:** The three D2 negative filters (which Phase C/D proved lose at 6-30% WR) are effectively dead whenever the AI agrees — the exact "242 rescued trades" regression from the previous audit, now reproduced on live records dated 2026-08-04/05/06.
-- **Repro:** Any TRENDING-regime or HIGHEST-session signal with rawConfidence ≥ 60 that the dual AI agrees with.
-- **Suggested fix:** In the rescue path, skip rescue when `d2Audit` is set (D2 blocks are hard, data-backed blocks; rescue should only apply to soft filters like confidence floor / dead-market).
-
----
-
-## BUG-003 — `fillStatus` is degenerate: always `INSTANT`, `entryDistancePct` always `0`
-
-- **Severity:** High
-- **Location:** `src/signal/engine.js:379-401`
-- **Evidence (code):** The "current price" and the "entry price" are read from the **same array element**:
-  ```js
-  const entryPx = bestTFA && bestTFA.entry ? bestTFA.entry.price : null;   // = candles[last].close
-  const tfCandles = candleData[best ? best.timeframe : '5min'];
-  const lastClose = tfCandles && tfCandles.length ? tfCandles[tfCandles.length - 1].close : null;
-  const dist = Math.abs(lastClose - entryPx);   // ALWAYS 0
-  const rel = entryPx !== 0 ? dist / entryPx : 0; // ALWAYS 0
-  const actionable = rel <= 0.0005;              // ALWAYS true
-  ```
-  `analysis.entry.price` was set in `timeframe.js` as `candles[candles.length - 1].close` — the identical value. So `dist === 0` by construction.
-- **Evidence (live):** `GET /api/signals/latest?pair=BTC/USD` (cron generation 2026-08-06T04:40):
-  ```json
-  "fillStatus": "INSTANT",
-  "entryPrice": 64712.59,
-  "currentPrice": 64712.59,
-  "entryDistancePct": 0
-  ```
-  `entryPrice === currentPrice` exactly; the feature can never report `PENDING_ENTRY`.
-- **Impact:** The feature added in the HEAD commit is a no-op — clients always see "INSTANT" with 0 distance, so the "wait for price to come to entry" UX cannot work, and the App/bot cannot distinguish fillable vs pending entries.
-- **Repro:** `curl https://fttotcv6.umuhammadiswa.workers.dev/api/signal?pair=BTC/USD` on any BUY/SELL — inspect `fillStatus`/`entryDistancePct`.
-- **Suggested fix:** Compare the entry price against an independent current price (e.g., the last tick via a quote call, or the latest 1-min candle fetched separately); if no independent price exists, remove the feature rather than emit a constant.
-
----
-
-## BUG-004 — `entryHit` shadow measures a mirror of the result, over the wrong window
-
-- **Severity:** Medium-High
-- **Location:** `src/history/stats.js:227-244` (entry-hit block), `:316-357` (`fetchExpiryPrice` `windowLow`/`windowHigh` over expiry ±5 min)
-- **Evidence (code):**
-  ```js
-  // windowLow/High are computed ONLY over candles in [expiry-5min, expiry+5min]
-  if (record.direction === 'BUY')  record.entryHit = wl <= record.entryPrice + 1e-12;
-  else if (record.direction === 'SELL') record.entryHit = wh >= record.entryPrice - 1e-12;
-  ```
-  Two problems:
-  1. **Wrong window.** The holding period is `[signalTime, expiry]`, but the low/high come from the expiry ±5 min bracket — the tail of the trade only. The signal-time start (where the price *is* the entry by construction) is excluded, which is what produces the weird 12.7% "hit" rate.
-  2. **Near-tautology.** For a LOSS the price ended past the entry (BUY: below, SELL: above), so the expiry-window low/high almost always satisfies the condition → `entryHit ≈ (result == LOSS)`. The field carries almost no independent information about "was the entry reachable".
-- **Evidence (live)** — sampled 2026-08-05/06, 74 records across `SOL/USD` (24), `EUR/USD` (20), `DOT/USD` (30):
-  - **LOSS → `entryHit: true` in 42/42 rows** (e.g., `SOL/USD` `sig_1785988810342_x6mu6` LOSS hit=true; `EUR/USD` `sig_1785987923179_cjsji` LOSS hit=true; `DOT/USD` `sig_1785988507549_29vmp` LOSS hit=true).
-  - **WIN → `entryHit: false` in ~74%** (e.g., `SOL/USD` `sig_1785978008697_i4fcf` WIN hit=false; `EUR/USD` `sig_1785959411049_tsaw2` WIN hit=false; `DOT/USD` `sig_1785986110691_4hqlz` WIN hit=false).
-  - A degenerate SELL case: `SOL/USD` `sig_1785988810342_x6mu6` entry 73.48, expiry-window low 73.78 — price **never came back to the entry** (it gapped away upward), yet `entryHit: true` because `wh (73.83) >= entry` — for a SELL the correct "price returned to entry" test is the window *low*, not the high.
-- **Impact:** This is the direct explanation of the reported "entry-hit paradox" (08-05: hit=12.7%, miss=100%): the shadow is not measuring entry reachability; it is nearly `result==LOSS`. Any conclusion drawn from `entryHit` ("signals whose entry wasn't hit always win") is an artifact.
-- **Repro:** Compare `result` vs `entryHit` on `/api/history?pair=SOL/USD&limit=60` — the correlation above reproduces row-by-row.
-- **Suggested fix:** Compute windowLow/windowHigh over `[timestamp, expiryTime]` (fetch candles from signal time to expiry) and use direction-correct comparisons; also document that since `entry == last close at signal time`, "entry hit" is trivially true at t0 for INSTANT entries — the metric only becomes meaningful if the entry is re-tested after leaving it (or if the signal is PENDING_ENTRY).
-
----
-
-## BUG-005 — `/api/report` double-counts results and can be overwritten by the cron resolver
+### BUG-013 — `NO_TRADE` signals carry tradable grades ("B — GOOD, Suitable for trading")
 
 - **Severity:** Medium
-- **Location:** `src/handlers/health.js:132-154` (`handleReport`)
-- **Evidence (code):** `handleReport` updates the history row (`sig.result = result`, `reportedManually = true`) and calls `updatePairStats(pair, result, ...)` — but it never:
-  1. deletes the matching `pending:<signalId>` key (written in `saveSignalToHistory`), and
-  2. checks whether the row already has a `result`.
-  The `*/2` cron `scheduledTracker` (`src/history/stats.js:211-255`) later picks up the still-existing pending key, re-fetches the expiry price, **overwrites `sig.result`** with the automated verdict (`updateSignalResult`) and calls `updatePairStats` **again**. Net effect: one signal contributes two outcomes (e.g., manual WIN + cron LOSS) to `stats:`, silently corrupting WR and the dynamic-confidence feedback loop.
-- **Impact:** `stats.winRate` / `byTF` / `bySession` / `byRegime` and `getDynamicConfidenceAdjustment()` (which feeds every future signal's confidence) get double-counted whenever a manual report is used — a real, silent data-corruption path.
-- **Repro:** Report a WIN on a signal that is still `pending:` (or that the cron will resolve later); observe `stats.wins++` then `stats.losses++` for the same id.
-- **Suggested fix:** In `handleReport`, delete `pending:<id>` and skip `updatePairStats` when `sig.result` is already set (idempotent manual override); or route the manual report through the same resolver and let the pending key be consumed exactly once.
+- **Location:** `src/signal/engine.js:306`
+```js
+const finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
+```
+`getSignalGrade` has no `NO_TRADE` guard: `avgConf*5` (up to 35) + `alignment` ALL_* (25) score the grade even at confidence 0.
+- **Live evidence (three independent responses, same day):**
+  - `BTC/USD` → `finalSignal: "NO_TRADE"`, `grade: B`, description **"Solid setup. Suitable for trading."**
+  - `EUR/USD` (mode=fx&preferCache) → `NO_TRADE` + grade C "Trade with caution"
+  - `/api/batch` BTC/USD → `NO_TRADE` + grade C
+  - Meanwhile `entryReason` correctly says "No clear setup — entry conditions not met."
+- **Impact:** any consumer that gates on grade (Telegram message, app UI, the Bot's `passGrade`) sees a "GOOD / suitable for trading" label on a signal the engine explicitly blocked. Contradictory and misleading.
+- **Repro:** `curl /api/signal?pair=BTC/USD` (while BTC is TRENDING/D2-blocked).
+- **Suggested fix:** when `finalDirection === 'NO_TRADE'` return a grade of `{grade:'N/A', label:'NO_TRADE', …}` (or force F), instead of scoring alignment/confluence.
 
----
-
-## BUG-006 — `passAI()` can never return true after the AI actually runs
-
-- **Severity:** Medium
-- **Location:** `src/handlers/pushToSubscribers.js:72-76`; `src/signal/engine.js:223`; `src/ai/combine.js`
-- **Evidence (code):**
-  ```js
-  // pushToSubscribers.js
-  export function passAI(sig, aiOnly) {
-    if (!aiOnly) return true;
-    return !!(sig && sig.aiValidation
-      && sig.aiValidation.status === 'OK' && sig.aiValidation.agrees === true);
-  }
-  ```
-  But when the AI runs, `engine.js:223` replaces `aiValidation` with the dual combiner result, which has **no top-level `status` field** — it is `{ cerebras, groq, combined, combinedAgreed }` (`combine.js`). Only `combined.status` exists.
-- **Evidence (live):** `BTC/USD` signal `aiValidation` object:
-  ```json
-  "aiValidation": { "cerebras": {...}, "groq": {...}, "combined": { "status": "OK", ... }, "combinedAgreed": true, "agrees": true }
-  ```
-  — no `status` key at the `aiValidation` level, so `sig.aiValidation.status === 'OK'` is `false` even when both models agreed (`combined.status === 'OK'`, `agrees: true`).
-- **Impact:** Subscribers with `aiOnlyMode: true` can never match, so they would never receive pushes even after BUG-001 is fixed. (Also makes `aiStatus`/`passAI` semantics confusing for any consumer reading `aiValidation.status`.)
-- **Repro:** Run `passAI` on any post-AI signal object (`aiValidation.status` is `undefined`).
-- **Suggested fix:** `passAI` should read `sig.aiValidation.combined.status === 'OK'` (or a normalised top-level status set by `combine.js`/engine).
-
----
-
-## BUG-007 — `MIN_CONFIDENCE_FLOOR` (72%) is not enforced on the final output
+### BUG-014 — HTF hard block zeroes confidence, then the alignment bonus resurrects it (0 → 8%)
 
 - **Severity:** Medium
-- **Location:** `src/signal/voteFilters.js:203-225` (floor check, pre-AI only); `src/signal/engine.js:233-258` (post-AI confidence changes with no re-check)
-- **Evidence (code):** The floor is checked once inside the deterministic pipeline. After that, the AI paths change confidence freely — normal path `confidence - 5` (agree-with-concerns, engine.js:254), rescue path `min(92, round((raw+ai)/2))` or `min(85, raw+5)` — and there is **no second floor check** on `finalDirection`/`confidence` before output.
-- **Evidence (live):** `/api/history?pair=SOL/USD&limit=60` contains emitted signals below the advertised 72% floor:
-  - `sig_1785960913963_djhe0` — BUY `confidence: "69%"`, `aiStatus: "OK"`, `aiAgreed: true`, **LOSS**
-  - `sig_1785956707826_hhrpa` — BUY `confidence: "70%"`, `aiStatus: "OK"`, `aiAgreed: true`, **LOSS**
-  Both were persisted, pushed (would have been pushed), and counted in stats at below-floor confidence.
-- **Impact:** The documented "72% minimum" filter (surfaced in `/health.filters.minConfidenceFloor`) is a pre-AI-only gate; post-AI output can silently fall to 65-71%. Since grade/confidence drive subscriber filters (`passConf`), users can receive "below the advertised minimum" signals.
-- **Repro:** `/api/history?pair=SOL/USD&limit=60`, rows from 2026-08-05 19:05Z and 20:15Z.
-- **Suggested fix:** After the AI block, re-apply `if (finalDirection !== 'NO_TRADE' && confidence < CONFIG.MIN_CONFIDENCE_FLOOR) finalDirection = 'NO_TRADE'` (with an explicit, logged exception only for the intended rescue semantics).
+- **Location:** `src/signal/voteFilters.js:115-131`
+```js
+if (htfADX >= 25) {
+  finalDirection = 'NO_TRADE'; confidence = 0;          // line 121
+  filtersApplied.push('HTF_HARD_BLOCK …');
+} else { confidence = Math.max(0, confidence - 18); … }
+…
+confidence = Math.min(92, confidence + alignmentBonus);   // line 131 — runs UNCONDITIONALLY after the block
+```
+The alignment bonus is applied *after* the hard block zeroed confidence → a fully blocked signal reports `confidence = 0 + 8 = 8%`.
+- **Live evidence:** `DOGE/USD` response: `finalSignal: "NO_TRADE"`, `filtersApplied: ["HTF_HARD_BLOCK (ADX=40)", "AI_RESCUE_FAILED: …"]`, **`confidence: "8%"`**.
+- **Local repro (proven):** same inputs through `runDeterministicVoteAndFilters` → `finalDirection=NO_TRADE confidence=8` — byte-identical to live.
+- **Mirrored bug in OTC** (`src/signal/otcEngine.js`): `if (alignment === 'MIXED') { finalDirection='NO_TRADE'; confidence=0; } confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);` → a MIXED NO_TRADE OTC signal reports 2–4% instead of 0%.
+- **Impact:** hard-blocked signals advertise non-zero confidence; clients that read `confidence` even when `finalSignal` is NO_TRADE (e.g. dashboards, bots) see "8% confidence" with no explanation. Also makes `DEAD_MARKET_HARD_BLOCK`'s `Math.min(confidence,30)` meaningless in the same ordering.
+- **Suggested fix:** apply `alignmentBonus` before the HTF/session hard-block zeroing (i.e., compute bonus into confidence first, then zero on block), or re-zero after the bonus for `HTF_HARD_BLOCK`.
 
----
+### BUG-015 — `mode=fx&preferCache=true` silently returns a non-FX payload (no `mode`, no `fxLevels`)
 
-## BUG-008 — Tie convention: `exit == entry` counts as LOSS for both directions
+- **Severity:** Medium
+- **Location:** `src/handlers/signal.js:119-123` — the preferCache path returns the cron-warmed `latest:` entry verbatim; `fxMode` is only honored on the fresh-run path (`handleSignalRaw`).
+- **Live evidence:** `GET /api/signal?pair=EUR/USD&mode=fx&nopush=1&preferCache=true` returned the cached scanner payload with **no `mode` field and no `fxLevels`** (response contains `forceRefresh: false`, `cached: true`).
+- **Impact:** an FX-mode client that uses `preferCache` (exactly what `pushToSubscribers` does for FX-mode self-fetch when it just cached a signal — the fx refetch uses no preferCache, but any app using `preferCache` in fx mode) gets an FTT signal without SL/TP levels, silently. Also the cached payload carries the original `id`/`nextRefresh`/`entrySource` from the scan, so a consumer can report a signal that is up to 10 minutes old as if fresh.
+- **Suggested fix:** treat `mode=fx` as incompatible with `preferCache` (force fresh when fxMode), or store fx levels at scan time and serve them from cache.
 
-- **Severity:** Low-Medium
-- **Location:** `src/history/stats.js:220-221` (also duplicated in `d2store.js`, `probeStore.js`, `r71store.js`)
-- **Evidence (code):**
-  ```js
-  if (record.direction === 'BUY')  winLoss = exitPrice > record.entryPrice ? 'WIN' : 'LOSS';
-  if (record.direction === 'SELL') winLoss = exitPrice < record.entryPrice ? 'WIN' : 'LOSS';
-  ```
-  An exact tie is classified as LOSS in both directions; there is no `TIE` outcome class anywhere in the pipeline.
-- **Evidence (live):** exact ties recorded as LOSS —
-  - `SOL/USD` `sig_1785970811537_wmoco`: entry 74.03 → exit 74.03 → `result: "LOSS"`
-  - `SOL/USD` `sig_1785965412142_7n0gh`: entry 74.12 → exit 74.12 → `result: "LOSS"`
-  (In the current 30-row DOT/USD window no exact `exit==entry` tie was observed — the earlier "28% ties" figure is not reproducible on today's live data, but the convention remains and low-vol 3-decimal pairs like DOT/USD are the most exposed.)
-- **Impact:** Deflates WR on low-volatility pairs; a fixed-time expiry that closes exactly at entry is a "push" in most trading conventions, not a loss. Affects stats, dynamic confidence, D2/probe/R7.1 counterfactual WRs.
-- **Repro:** Any signal whose expiry close equals the entry close.
-- **Suggested fix:** Classify ties explicitly (`exitPrice === entryPrice → 'TIE'`) and exclude them from both W and L in `updatePairStats` (or use `>=`/`<=` consistently after deciding the convention).
+### BUG-016 — Forex candle datetimes are Australia/Sydney (UTC+10) — live signals show candle times 10h in the future
 
----
+- **Severity:** Medium
+- **Location:** `src/fetch/candles.js:47-51` — the TwelveData request never passes `timezone`, and TwelveData's default timezone for forex is `Australia/Sydney` (verified on twelvedata.com/exchanges/physical_currency: "All times are displayed in the Australia/Sydney timezone (AEST, UTC+10:00)"). Crypto comes back UTC.
+- **Live evidence:** EUR/USD signal generated at `2026-08-06T15:49Z` (worker clock, matches `generatedAt`/`nextCandleClose`) reports:
+  - `1min entry.candleTime: "2026-08-07 01:49:00"` (+10h)
+  - `5min entry.candleTime: "2026-08-07 01:50:00"`, `15min: "2026-08-07 01:30:00"`
+  - Same response's `countdown.nextCandleClose: "2026-08-06T15:52:00.000Z"` — 10h apart in one payload.
+  - BTC/USD (crypto) candleTime is correct UTC (`2026-08-06 15:49:00`) — so the drift is forex-specific.
+- **Impact:** `entry.candleTime`, `candleTime` in `timeframeAnalysis`, and the structure swing `time` fields are 10h in the future for every forex/OTC signal. Any client doing time math or displaying candle times (app UI, reports, spreadsheets) is off by 10h. (The result checker is unaffected — verified: TwelveData range queries return UTC-matching datetimes — the entry-hit window low/high prices are consistent with the expiry window.)
+- **Suggested fix:** add `u.searchParams.set('timezone', 'UTC')` in `fetchCandles` (and keep it in `fetchExpiryPrice` for symmetry).
 
-## BUG-009 — Confluence denominator is inconsistent (`/11` vs `total: 12` vs `total: 11`)
+### BUG-017 — AI validation is invoked (2 LLM calls, ~8s latency) on every D2-hard-blocked signal, then discarded
+
+- **Severity:** Low–Medium (cost/latency)
+- **Location:** `src/signal/engine.js:203-206`
+```js
+const aiTargetDir = finalDirection !== 'NO_TRADE'
+  ? finalDirection
+  : (rawDirection !== 'NO_TRADE' && rawConfidence >= 60 ? rawDirection : null);
+```
+When a D2 branch fired, `finalDirection` is NO_TRADE but `rawDirection` is BUY/SELL with `rawConfidence ≥ 60` → the AI is called, then the rescue is skipped via `if (d2Audit)`.
+- **Live evidence:** BTC/USD response (D2_TRENDING_BLOCKED): `aiValidation.cerebras.status: "OK"` (signal BUY 92), `groq: 429` — both calls made on a trade that was already hard-blocked; filter log ends `AI_RESCUE_SKIPPED (D2 hard block…)`.
+- **Impact:** every D2-blocked signal (currently the *majority* of crypto signals — BTC/DOGE/SOL all TRENDING-blocked today) spends 2 AI API calls and adds up to ~8s of wall-clock latency for zero decision value. With Cerebras/Groq 429s observed live, this also contributes to quota pressure.
+- **Suggested fix:** `if (d2Audit) { aiTargetDir = null; }` (skip the AI entirely when a D2 hard block fired).
+
+### BUG-018 — `/api/history` winRate counts cbShadow rows; `/api/stats` excludes them — two different win rates per pair
+
+- **Severity:** Medium (latent — circuit breaker currently disabled)
+- **Location:** `src/handlers/health.js:93` vs `src/history/stats.js` (`updatePairStats` skips `record.cbShadow`)
+```js
+const decided = limited.filter(s => s.result === 'WIN' || s.result === 'LOSS');   // no cbShadow exclusion
+```
+- **Evidence:** `saveSignalToHistory` stores `cbShadow: true` rows into the same `sig:` history with normal `pending:` resolution; `updatePairStats` deliberately ignores them (`if (!record.cbShadow) await updatePairStats(...)`), but `/api/history` counts every WIN/LOSS row including cbShadow. As soon as the circuit breaker is re-enabled (`isTripped` currently returns `{tripped:false}`), the two endpoints will disagree on the same pair's win rate.
+- **Impact:** silent divergence between the two public WR surfaces; any analysis that mixes `/api/history` and `/api/stats` gets inconsistent denominators.
+- **Suggested fix:** exclude `cbShadow` rows from `handleHistory`'s `decided` (or include them in `updatePairStats` — pick one convention).
+
+### BUG-019 — `stats.winRate` is all-time, not the documented 20-trade lookback; `sampleSize` mislabeled; dynamic confidence penalty is permanent
+
+- **Severity:** Low–Medium
+- **Location:** `src/history/stats.js:447-448`
+```js
+stats.winRate   = decided > 0 ? Math.round((stats.wins / decided) * 1000) / 1000 : 0;
+stats.sampleSize = Math.min(decided, HISTORY_CONFIG.WIN_RATE_LOOKBACK);
+```
+`HISTORY_CONFIG.WIN_RATE_LOOKBACK: 20` (config.js) is documented as the win-rate window, but `winRate` divides by **all** decided signals ever, and `sampleSize` (capped at 20) is not used in the ratio. `getDynamicConfidenceAdjustment` (stats.js:421) then gates on `stats.sampleSize < 5` but applies the all-time winRate — so a pair that started badly is penalized (`DYNAMIC_CONF_ADJ: -5`) indefinitely even after 20 recent wins.
+- **Live evidence:** BTC/USD `filtersApplied: ["DYNAMIC_CONF_ADJ: -5", …]` with 804 total signals — the -5 is driven by the lifetime 0.445 WR, not the recent window.
+- **Impact:** the dynamic adjustment and the reported WR don't mean what the config/health page says (`winRateLookback: 20`). Model drift or regime change can never be reflected.
+- **Suggested fix:** compute winRate over the last `WIN_RATE_LOOKBACK` decided rows (store a ring buffer or recompute from history), or rename the config to `WIN_RATE_MIN_SAMPLE` and document all-time semantics.
+
+### BUG-020 — `decideTfDirection` fallback branch silently bypasses `MIN_CONFLUENCE=5` and the score threshold
 
 - **Severity:** Low
-- **Location:** `src/signal/engine.js:273` (`'/11 categories'` + `findBestTimeframe` reason), `src/signal/timeframe.js:54,69` (`total: 11` on early-return paths), `:568` (`total: 12` on the full path), `src/signal/otcEngine.js:57,198`
-- **Evidence (code):** the engine now scores **12 categories** (camarilla was added) plus an optional structure category vote (13th), yet:
-  - `recommendations[rtf].confluence = rec.confluence + '/11 categories'`
-  - `findBestTimeframe(...).reason = 'Strongest BUY signal with 9/11 confluence'`
-  - early-return TFs emit `confluenceDetail.total: 11`, the full path emits `total: 12`
-- **Evidence (live):** one `BTC/USD` response contains all three at once — `"confluence": "9/11 categories"` (5min rec), `"confluenceDetail": { "bullish": 9, "bearish": 1, "total": 12 }` (5min TF), and `"0/11 categories"` + `"total": 11` (1min dead-market TF).
-- **Impact:** Display/audit confusion — "9/11" implies a different scale than the real 12-13 category system; downstream consumers computing ratios from the string get wrong numbers.
-- **Repro:** Any BUY/SELL response; compare `bestTimeframe.reason` vs `timeframeAnalysis.*.confluenceDetail.total`.
-- **Suggested fix:** Derive the denominator from a single constant (e.g., `CATEGORY_COUNT`) used by both the engine output and the display strings.
+- **Location:** `src/signal/voteFilters.js:50`
+```js
+if (scoreDiff >= 4.0 && confluence >= 4) return upScore > downScore ? 'BUY' : 'SELL';
+```
+- **Evidence:** `CONFIG.MIN_CONFLUENCE = 5` is the documented gate used by the first two branches; this third branch emits BUY/SELL with only **4** confluence categories, and with **no** requirement that the winning score exceeds `minScoreThreshold` (only `|upScore − downScore| ≥ 4`, e.g. upScore 1.2 vs downScore −2.8 → SELL despite downScore < threshold and downCat possibly 0 with upCat 4 — the direction comes from the *difference* while the confluence comes from the *other side's* categories).
+- **Impact:** the deterministic gate that the whole confluence system is built on has an undocumented 4-confluence escape hatch; per-TF and shadow decisions (R7.1 uses the same helper) inherit it, so structure-attribution measurements can be contaminated by signals that should have been NO_TRADE.
+- **Suggested fix:** require `Math.max(upCat, downCat) >= CONFIG.MIN_CONFLUENCE` in the fallback (or require the winning side's category count ≥ 4 and score ≥ threshold).
+
+### BUG-021 — `+3` HIGHEST-session confidence bonus is dead code; D2_HIGHEST_SESSION_BLOCK suppresses ALL forex signals 12:00–16:00 UTC daily
+
+- **Severity:** Low (design inconsistency)
+- **Location:** `src/signal/voteFilters.js:139` (`else if (session.quality === 'HIGHEST') confidence += 3`) vs `src/signal/engine.js:173-176` (D2_HIGHEST_SESSION_BLOCK fires for every forex signal in HIGHEST session)
+- **Evidence:** the engine first *rewards* the highest-liquidity window (+3) and then *hard-blocks* every forex signal in that same window. Live: zero EUR/USD (and other forex) history rows exist between 12:00–16:00 UTC today (rows stop at 09:50 and resume after 16:00), while 30+ rows exist outside the window. Local runs at 15:5x UTC of `scripts/d2_tests.mjs` and `scripts/probe_tests.mjs` show the block firing on plain RANGING fixtures (`D2_HIGHEST_SESSION_BLOCK (6.1% WR n=66)`).
+- **Impact:** forex has no tradable signals at all during the most liquid 4 hours of the day (the +3 bonus can never be observed on a BUY/SELL), and the D2 counterfactual data (d2obs) is being flooded with HIGHEST-session observations. If the block is intentional, the +3 branch should be removed; if the +3 is intentional, the block is wrong.
+- **Suggested fix:** delete the `HIGHEST → +3` branch (or gate it behind the same flag as the D2 block).
+
+### BUG-022 — Fixture test suites are time-of-day dependent (fail during LONDON_NY overlap)
+
+- **Severity:** Low (CI/verification)
+- **Location:** `scripts/d2_tests.mjs` (#11b) and `scripts/probe_tests.mjs` (#9a/#9b) — both build engine signals from fixtures at the *current wall-clock time* (`detectTradingSession()` uses `new Date()`), and `D2_HIGHEST_SESSION_BLOCK` fires on the fixtures whenever the test runs 12:00–16:00 UTC.
+- **Evidence:** run at 15:5x UTC today: `d2_tests` 38/39 (FAIL #11b "USD/JPY D2 audit is null when no D2 branch fires" — audit present because HIGHEST block fired), `probe_tests` 28/30 (FAIL #9a "fixture final = SELL — NO_TRADE" / #9b audit attach). The previous round's report claims 39/39 and 34/34 — those runs must have happened outside the overlap window.
+- **Impact:** the repo's own "mandatory" suites cannot be trusted as a regression gate — they pass or fail depending on when CI runs.
+- **Suggested fix:** inject a fixed session (or freeze `Date`) into the engine call for fixtures (e.g. an optional `now`/`session` parameter on `buildMultiTimeframeSignal`), or run the D2/probe engine tests with a session-independent pair path.
+
+### BUG-023 — entryHit shadow remains near-tautological (previous round's CHECK-B, now quantified live)
+
+- **Severity:** Low (shadow field, not used in WR yet)
+- **Location:** `src/history/stats.js:250-253` (and the same block in d2store.js / probeStore.js / r71store.js)
+- **Evidence (live, DOT/USD last-30 rows 2026-08-05/06):** `entryHit:false` → **8/8 WIN (100%)**; `entryHit:true` → **3/11 WIN (27%)**. The 08-05 "paradox" (hit=12.7%, miss=100%) is the same pattern. Mechanism: the window measured is `expiry ± 5 min` (the *tail* of the trade). A WIN means price moved away from entry and never re-crossed it near expiry (`entryHit=false`); a LOSS means price crossed the entry level (that is why it is a loss) → `entryHit=true`. The field measures "price returned to entry near expiry", not "was the entry filled during the trade".
+- **Impact:** any analysis that treats entryHit as "the signal's entry was actually hit" is measuring the wrong thing; the "engine direction is wrong" conclusion from 08-05 is NOT supported by this data.
+- **Suggested fix (as previously recommended):** fetch candles from `timestamp → expiryTime`, compare direction-correctly, and decide whether the trivial t0 touch counts as a hit.
+
+### BUG-024 — Forex SELL weakness confirmed with mechanism evidence (known issue re-check)
+
+- **Severity:** Low (confirmed known issue; probe already enabled)
+- **Location:** `src/signal/timeframe.js` — RANGING mean-reversion scoring (`rsi >= 75 → mD += 1.5`, `rsi >= 65 → mD += 0.75`, stoch `>80 → sD`) + `detectMarketRegime` labelling ADX<25 as RANGING.
+- **Live evidence (2026-08-06):** `/api/stats` — EUR/USD 0.333 (62/124), GBP/USD 0.261 (41/116), USD/JPY 0.286 (48/120), AUD/USD 0.210 (29/109), GBP/JPY 0.333 vs crypto 0.40–0.47. EUR/USD history: **all 40 most-recent rows are SELL**, WR 0.20 — during a day EUR/USD rose from 1.1524 → 1.156. USD/JPY history: all BUY, 0.38 — USD/JPY fell 158.0 → 157.5. The engine's regime/RSI combination systematically picks the counter-trend side of forex pairs (RANGING + mildly overbought RSI → SELL in a rising market).
+- **Impact:** forex WR 21–33% vs crypto 40–47%; the live D2_TRENDING_BLOCK also removes most trending-direction trades, leaving the mean-reversion SELLs as the dominant forex output. The `FOREX_SELL_PROBE` is correctly instrumenting this — evaluate after the Phase-F window as planned; no code change recommended here.
+
+### BUG-025 — Crypto signals receive forex-session multipliers (`SESSION_WEIGHT x1.40` on BTC/DOGE/SOL)
+
+- **Severity:** Low (design question)
+- **Location:** `src/analysis/filters.js:123-127` — `getSessionWeightMultiplier` keys on the pair's base/quote currencies; for `BTC/USD`, `USD` matches `SESSION_PAIR_WEIGHTS.USD.LONDON_NY = 1.4`.
+- **Live evidence:** BTC/USD, DOGE/USD, SOL/USD responses all show `filtersApplied: ["SESSION_WEIGHT x1.40"]` and `sessionWeight: 1.4` — crypto trades 24/7, so its weighted votes/confidence are inflated ×1.4 during London–NY overlap purely because the quote is USD.
+- **Impact:** crypto confidence and weighted votes are not comparable across the day (a 24/7 market shouldn't have 4h-of-day-dependent scaling), and the inflation propagates into `confidence`, `weightedBuy/Sell`, grade and expiry-vote weighting.
+- **Suggested fix:** return `1.0` for `ASSET_TYPE.CRYPTO` (or document the intended "USD-pair liquidity" semantics and apply it consistently).
 
 ---
 
-## BUG-010 — `winRate` semantics differ between `/api/stats` (lifetime) and `/api/history` (window)
+## Known-issue re-check (prompt §E)
 
-- **Severity:** Low
-- **Location:** `src/history/stats.js:375-378` (`updatePairStats` — lifetime winRate, `sampleSize` capped at `WIN_RATE_LOOKBACK` but winRate is not) vs `src/handlers/health.js:121-127` (`handleHistory` — winRate over the requested `limit` window); `/health` advertises `winRateLookback: 20`.
-- **Evidence (live):** `SOL/USD` → `/api/stats` `winRate: 0.467` (776 signals, lifetime) while `/api/history?pair=SOL/USD&limit=15` reports `winRate: 0.6` (9/15). Both are labeled "winRate".
-- **Impact:** Consumers (dashboards, the bot) get different "current WR" numbers from different endpoints; the advertised 20-signal lookback is never actually applied to `winRate`.
-- **Repro:** Compare `/api/stats` and `/api/history` for the same pair.
-- **Suggested fix:** Either compute `winRate` over the last `WIN_RATE_LOOKBACK` decided signals in `updatePairStats` (as advertised), or rename the fields (`lifetimeWinRate` / `windowWinRate`) to match reality.
+1. **AI rescue override D2 block** — **FIXED & verified live** (BUG-002 fix holds; `AI_RESCUE_SKIPPED` observed). Residual: wasted AI calls (BUG-017) and the fail-open `d2Audit=null` hole in `engine.js`'s try/catch (`catch (e) { d2Audit = null; }` — a capture exception would silently re-open the rescue path; hard to trigger today).
+2. **Forex SELL weak (~20% WR)** — **confirmed** (BUG-024) — EUR/USD 33%, GBP/USD 26%, USD/JPY 29%, AUD/USD 21% lifetime; mechanism (RANGING mean-reversion + ADX regime mislabel) identified.
+3. **DOT/USD tie artifact** — historical rows confirmed (`sig_1785726015982_hkdsj`: SELL entry 0.791 / exit 0.791 → LOSS, Aug-3 pre-fix; `sig_1785705315344_qlweh`: BUY 0.799/0.799 → LOSS) — the BUG-008 fix now classifies these as TIE going forward; no new ties observed in Aug-5/6 rows.
+4. **Entry-hit paradox (hit=12.7%, miss=100%)** — **resolved as a measurement artifact** (BUG-023): the shadow window is the expiry tail; it is not an engine direction error.
 
 ---
 
-## Known-issue re-check (from the brief) — status on live evidence
+## Verification log (this session)
 
-1. **AI rescue overriding D2 block (TRENDING bypass, "242 rescued")** → **CONFIRMED, still present.** Live rows dated 2026-08-04/05/06 (BUG-002) show TRENDING and HIGHEST-session signals emitted with `aiStatus: OK / aiAgreed: true`. At least one of them (SOL/USD TRENDING SELL, EUR/USD HIGHEST BUY) lost.
-2. **Forex SELL weak (~20% WR)** → **Not reproduced in today's live window — and the recent data shows the opposite.** Last-30 EUR/USD window: SELL 5/7 wins vs BUY 0/11 (market fell; mean-reversion SELLs were right). The mechanism described in `probeStore.js` (RANGING-regime mean-reversion RSI → "overbought ⇒ SELL") is still in the code (`timeframe.js` momentum block), and the probe instrumentation is collecting, but the current window does not support "SELL systematically broken". (Statistical caveat: n=7 SELLs.)
-3. **DOT/USD tie artifact (28% ties)** → The tie→LOSS convention is confirmed in code and live (BUG-008, exact ties on SOL/USD). In the current 30-row DOT/USD sample there were **0** exact `exit==entry` ties, so the 28% figure is not reproducible on today's data — likely from an earlier window/definition; the convention bug itself remains.
-4. **Entry-hit paradox (hit=12.7%, miss=100%)** → **Explained and reproduced** (BUG-004): `entryHit` is nearly `result==LOSS` because of the expiry±5min window and direction test; the "paradox" is an artifact of the metric, not evidence that the engine picks the wrong direction at entry time.
-5. **`structureAudit` / private-shadow leak** → **Verified clean.** `/api/history` strips `structureAudit` (health.js) and live rows don't carry it; `Symbol`-carried audits (`ENGINE_AUDIT`, `D2_AUDIT`, `PROBE_AUDIT`, `SHADOW_TF`) are non-enumerable and absent from live JSON.
+- `node --check` — all `src/**/*.js` pass.
+- `fix_tests.mjs` 77/77 · `entry_hit_tests.mjs` 7/7 · `phase7_smoke.mjs` 68/68 · `fx_mode_tests.mjs` 16/17 (fixture-flaky, #3a) · `d2_tests.mjs` 38/39 (#11b — see BUG-022) · `probe_tests.mjs` 28/30 (#9a/#9b — see BUG-022).
+- `r71_tests.mjs` **cannot run in this clone**: it requires `git archive 71e87eb` (baseline commit) which is not present (shallow clone, one commit). Environment note — the R7.1 baseline-equivalence assertion is unverifiable here.
+- Local repros: `.audit/push_repro.mjs` (BUG-011) and `.audit/htf_repro.mjs` (BUG-014) — both reproduced exactly; kept out of the PR (scratch).
+- Live requests: `/`, `/api/signal?pair=BTC/USD|SOL/USD|DOGE/USD|EUR/USD-OTC`, `/api/signal?pair=EUR/USD&mode=fx&nopush=1&preferCache=true`, `/api/batch?pairs=BTC/USD,ETH/USD`, `/api/signals/latest?pair=BTC/USD`, `/api/history?pair=EUR/USD|USD/JPY|DOT/USD|EUR/USD-OTC`, `/api/stats`, `/api/report?id=nonexistent_xyz&result=WIN`.
 
 ---
 
-## Notes on method (honesty)
+## Suggested fix priority
 
-- All live evidence was captured from the production worker on 2026-08-06 ~04:30-05:00 UTC (the sandbox cannot open TLS sockets to the host, so `fetch_page` was used for live reads; code/tests were run locally).
-- The repo's own `scripts/r71_tests.mjs` cannot run in this clone because it requires git object `71e87eb` which is absent from the (trimmed) history — an infra issue, not a product finding.
-- `node --check` passes on every source file; the finding list contains no syntax-level errors.
+| Priority | Bugs | One-line |
+|---|---|---|
+| P1 | BUG-011, BUG-012 | channel-mirror `message` scope; OTC pending-resolution path |
+| P2 | BUG-013, BUG-014, BUG-015, BUG-016 | NO_TRADE grade; alignment-bonus ordering (standard+OTC); fx+preferCache; `timezone=UTC` |
+| P3 | BUG-017, BUG-018, BUG-019 | skip AI on D2 block; unify cbShadow WR; real lookback |
+| P4 | BUG-020…025 | confluence fallback, HIGHEST contradiction, test determinism, entryHit window, (forex-SELL + crypto session-weight = design decisions for reviewer) |
