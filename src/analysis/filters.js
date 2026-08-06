@@ -116,8 +116,11 @@ export function getCandleQualityMultiplier(candles) {
   return 0.92;
 }
 
-export function getSessionWeightMultiplier(pair, session) {
+export function getSessionWeightMultiplier(pair, session, assetType) {
   if (!pair || !session) return 1.0;
+  // F3-13 (BUG-025): crypto trades 24/7 — forex session liquidity weights
+  // (e.g. USD quote ×1.4 during London/NY) must not scale crypto confidence.
+  if (assetType && assetType !== ASSET_TYPE.FOREX) return 1.0;
   const parts = pair.replace('-OTC', '').split('/');
   const base  = parts[0] || ''; const quote = parts[1] || '';
   const activeSession = session.overlap !== 'NONE' ? session.overlap : (session.sessions[0] || 'UNKNOWN');

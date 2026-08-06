@@ -23,11 +23,18 @@ import { attachProbeAudit } from './probeShadow.js';
 
 export async function buildMultiTimeframeSignal(pair, candleData, assetType, env, opts = {}) {
   const fxMode = !!opts.fxMode;
-  const now     = new Date();
-  const session = detectTradingSession();
+  // F3-16 (BUG-022/CLOCK-001): optional injection so tests (and any caller)
+  // can pin the wall clock / trading session instead of inheriting the
+  // current time — the D2 HIGHEST-session block made fixture tests
+  // time-of-day dependent. Production callers omit both and keep live values.
+  const now     = opts && opts.now ? new Date(opts.now) : new Date();
+  const session = (opts && opts.session) || detectTradingSession();
   const exotic  = isExoticPair(pair);
 
-  const newsBlock   = checkNewsBlackout(assetType);
+  // newsBlock is also injectable (null = no blackout) so fixture tests are
+  // invariant to the weekly news windows too (e.g. Thu 17:30-19:45 UTC).
+  const newsBlock   = (opts && Object.prototype.hasOwnProperty.call(opts, 'newsBlock'))
+    ? opts.newsBlock : checkNewsBlackout(assetType);
   const newsBlocked = !!(newsBlock && newsBlock.blocked);
 
   // ── FIX: Calculate indicators ONCE per TF, cache results ──
@@ -117,7 +124,9 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   }
 
   // ── SESSION + CANDLE QUALITY MULTIPLIERS ──
-  const sessionMult = getSessionWeightMultiplier(pair, session);
+  // F3-13 (BUG-025): crypto pairs skip forex session weights (24/7 market —
+  // confidence must not be inflated x1.4 by the USD quote's London/NY map).
+  const sessionMult = getSessionWeightMultiplier(pair, session, assetType);
   let qualityCandles = [];
   if (candleData['1min']  && tfResults['1min']  && !tfResults['1min'].deadMarket)  qualityCandles = candleData['1min'];
   else if (candleData['5min']  && tfResults['5min']  && !tfResults['5min'].deadMarket)  qualityCandles = candleData['5min'];
@@ -200,11 +209,25 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
 
   // ── AI VALIDATION ──
   // Runs on valid signal OR raw direction (when borderline filters blocked it)
-  const aiTargetDir = finalDirection !== 'NO_TRADE'
-    ? finalDirection
-    : (rawDirection !== 'NO_TRADE' && rawConfidence >= 60 ? rawDirection : null);
+  // F3-15 (BUG-017): a D2 hard block is a data-backed verdict (6-30% WR
+  // slices) — the AI can never override it, so don't spend 2 LLM calls (and
+  // ~8s of latency) validating a trade that is already decided NO_TRADE.
+  const aiTargetDir = d2Audit
+    ? null
+    : (finalDirection !== 'NO_TRADE'
+      ? finalDirection
+      : (rawDirection !== 'NO_TRADE' && rawConfidence >= 60 ? rawDirection : null));
 
   let aiValidation = { status: 'SKIPPED' }; let aiAgreed = null;
+
+  if (d2Audit && aiTargetDir === null) {
+    // F3-15: replaces the old 'AI_RESCUE_SKIPPED' note (which implied the AI
+    // had run) — now the AI never runs on D2-blocked signals at all. The
+    // specific D2_* filter name is already public in filtersApplied, so the
+    // private audit attribution token must NOT be echoed here (JSON-leak
+    // surface — asserted by d2_tests #9h).
+    filtersApplied.push('AI_SKIPPED (D2 hard block)');
+  }
 
   if (aiTargetDir) {
     const aiUseConf  = finalDirection !== 'NO_TRADE' ? confidence : rawConfidence;
@@ -234,9 +257,9 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
         // AI rescue path is only meant for SOFT filters (confidence floor,
         // dead-market, etc). If a D2 branch fired, never let the AI revive the
         // trade — the would-be signal is captured by the D2 shadow instead.
-        if (d2Audit) {
-          filtersApplied.push('AI_RESCUE_SKIPPED (D2 hard block: ' + d2Audit.attribution + ')');
-        } else if (aiAgreed && (combinedAI.confidence || 0) >= 70 && !combinedAI.concerns) {
+        // (F3-15: with d2Audit set, aiTargetDir is null so the AI never even
+        // runs — this branch is soft-filter rescue only now.)
+        if (aiAgreed && (combinedAI.confidence || 0) >= 70 && !combinedAI.concerns) {
           finalDirection = aiTargetDir;
           confidence = Math.min(92, Math.round((rawConfidence + (combinedAI.confidence || 0)) / 2));
           belowFloor = false;
@@ -303,7 +326,12 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (isDeadMarket && finalDirection !== 'NO_TRADE') filtersApplied.push('DEAD_MARKET_WARN (AI rescued)');
 
   const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
-  const finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
+  // F3-05 (BUG-013): a blocked signal must never carry a tradable grade
+  // (previously a NO_TRADE could still score "B — GOOD, suitable for trading"
+  // from alignment + confluence at confidence 0).
+  const finalGrade = finalDirection === 'NO_TRADE'
+    ? { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' }
+    : getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
 
   const __signal = {
     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,

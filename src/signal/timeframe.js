@@ -139,9 +139,13 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
       else if (rsi > 40 && rsi < 50) mD += 0.5; else if (rsi > 20 && rsi <= 40) mD += 1.0;
       else if (rsi >= 80) mU += 0.3; else if (rsi <= 20) mD += 0.3;
     } else if (trending === false) {
+      // F3-11 (BUG-030): the middle-zone trend-following scores are removed.
+      // In a RANGING regime RSI 55-64 added BUY (+0.25) while RSI 65+ added
+      // SELL (+0.75) — an abrupt BUY→SELL flip at 65 with rising RSI, i.e. a
+      // trend-following bias inside a mean-reversion regime. Ranging markets
+      // now only reward the mean-reversion extremes (<=35 / >=65).
       if (rsi >= 75) mD += 1.5; else if (rsi >= 65) mD += 0.75;
       else if (rsi <= 25) mU += 1.5; else if (rsi <= 35) mU += 0.75;
-      else if (rsi >= 55) mU += 0.25; else if (rsi <= 45) mD += 0.25;
     } else {
       if (rsi >= 75) mD += 1.0; else if (rsi >= 60) mU += 0.5;
       else if (rsi <= 25) mU += 1.0; else if (rsi <= 40) mD += 0.5;

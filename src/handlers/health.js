@@ -90,9 +90,15 @@ export async function handleHistory(url, env) {
     for (const s of limited) {
       if (s && Object.prototype.hasOwnProperty.call(s, 'structureAudit')) delete s.structureAudit;
     }
-    const decided = limited.filter(s => s.result === 'WIN' || s.result === 'LOSS');
+    // F3-17 (BUG-018): cbShadow rows are counterfactual (the trade was
+    // suppressed by the circuit breaker) — updatePairStats deliberately never
+    // counts them, so /api/history must exclude them from decided/pending too
+    // or the two public win-rate surfaces diverge. Rows stay visible in
+    // `signals` with cbShadow:true for transparency.
+    const nonShadow = limited.filter(s => !(s && s.cbShadow === true));
+    const decided = nonShadow.filter(s => s.result === 'WIN' || s.result === 'LOSS');
     const wins    = decided.filter(s => s.result === 'WIN').length;
-    return jsonResponse({ pair, total: history.length, showing: limited.length, decided: decided.length, pending: limited.filter(s => s.result === null).length, winRate: decided.length > 0 ? Math.round((wins / decided.length) * 1000) / 1000 : null, signals: limited, timestamp: new Date().toISOString() });
+    return jsonResponse({ pair, total: history.length, showing: limited.length, decided: decided.length, pending: nonShadow.filter(s => s.result === null).length, winRate: decided.length > 0 ? Math.round((wins / decided.length) * 1000) / 1000 : null, signals: limited, timestamp: new Date().toISOString() });
   } catch (e) { return jsonResponse({ error: true, message: 'History fetch error: ' + e.message }, 500); }
 }
 

@@ -47,7 +47,12 @@ export function decideTfDirection(upScore, downScore, upCat, downCat, minScoreTh
   const confluence = Math.max(upCat, downCat);
   if (upScore >= minScoreThreshold && upScore > downScore && upCat >= CONFIG.MIN_CONFLUENCE) return 'BUY';
   if (downScore >= minScoreThreshold && downScore > upScore && downCat >= CONFIG.MIN_CONFLUENCE) return 'SELL';
-  if (scoreDiff >= 4.0 && confluence >= 4) return upScore > downScore ? 'BUY' : 'SELL';
+  // F3-19 (BUG-020): the fallback branch must not silently bypass the
+  // MIN_CONFLUENCE gate — the WINNING side needs the full 5-category
+  // confluence, not a max() of both sides at 4 (previously a 4-cat winner
+  // could trade on the other side's categories).
+  if (scoreDiff >= 4.0 && (upScore > downScore ? upCat : downCat) >= CONFIG.MIN_CONFLUENCE)
+    return upScore > downScore ? 'BUY' : 'SELL';
   return 'NO_TRADE';
 }
 
@@ -113,6 +118,13 @@ export async function runDeterministicVoteAndFilters(ctx) {
   const rawDirection  = finalDirection;
   const rawConfidence = confidence;
 
+  // ── ALIGNMENT BONUS ──
+  // F3-06 (BUG-014): applied BEFORE the hard-block zeroing. Previously the
+  // HTF_HARD_BLOCK set confidence = 0 and the bonus then resurrected it
+  // (0 + 8 = 8% on a fully blocked signal). Now a hard block leaves 0.
+  confidence = Math.min(92, confidence + alignmentBonus);
+  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; filtersApplied.push('MIXED_ALIGNMENT'); }
+
   // ── HTF HARD BLOCK ──
   if (higherTFTrend !== null && finalDirection !== 'NO_TRADE' && finalDirection !== higherTFTrend) {
     const htf15  = tfResults['15min'];
@@ -128,16 +140,16 @@ export async function runDeterministicVoteAndFilters(ctx) {
     confidence = Math.min(92, confidence + 5);
   }
 
-  confidence = Math.min(92, confidence + alignmentBonus);
-  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; filtersApplied.push('MIXED_ALIGNMENT'); }
-
   // ── SESSION BLOCK (Forex only) ──
+  // F3-12 (BUG-021): the HIGHEST-session +3 bonus is removed — it was dead
+  // code: engine.js hard-blocks every forex signal in the HIGHEST session
+  // (D2_HIGHEST_SESSION_BLOCK, 6.1% WR n=66), so the bonus could never be
+  // observed on a trade. If the D2 block is ever lifted, the bonus should be
+  // reintroduced as a deliberate, evidence-backed design decision.
   if (assetType === ASSET_TYPE.FOREX) {
     if (session.quality === 'LOW') {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('SESSION_LOW_QUALITY_BLOCK');
-    } else if (session.quality === 'HIGHEST') {
-      confidence = Math.min(92, confidence + 3);
     }
   }
 
@@ -163,7 +175,10 @@ export async function runDeterministicVoteAndFilters(ctx) {
 
   // ── FVG FILTER ──
   let fvgBlocked = false;
-  const fvgCheckTF = tfResults['1min'] || tfResults['5min'] || tfResults['15min'];
+  // F3-09 (BUG-031): check the HIGHER timeframe first (mirrors the
+  // marketCondition ordering below) — 1min FVGs are noisy order-flow noise
+  // and were penalizing otherwise-valid 5min/15min signals with -20.
+  const fvgCheckTF = tfResults['15min'] || tfResults['5min'] || tfResults['1min'];
   if (finalDirection !== 'NO_TRADE' && fvgCheckTF && fvgCheckTF.categoryScores && fvgCheckTF.categoryScores.fvg) {
     const activeFVGType = fvgCheckTF.categoryScores.fvg.active;
     if (activeFVGType && activeFVGType !== 'NONE') {

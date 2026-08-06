@@ -20,6 +20,10 @@ const { computeFxLevels } = await import('../src/analysis/filters.js');
 const { buildMultiTimeframeSignal } = await import('../src/signal/engine.js');
 const { makeCandleData } = await import('./r71_fixtures.mjs');
 const ENV = {};
+// F3-16 (CLOCK-001/BUG-022): pin the session so the EUR/USD fixture keeps
+// producing a tradable signal outside the 12-16 UTC HIGHEST overlap (the
+// D2_HIGHEST_SESSION_BLOCK otherwise suppresses it).
+const FIXED_SESSION = { sessions: ['NEW_YORK'], overlap: 'NONE', quality: 'HIGH', hour: 16 };
 
 console.log('\n── [#1] computeFxLevels correctness ──');
 {
@@ -53,7 +57,7 @@ console.log('\n── [#2] invalid inputs -> null ──');
 
 console.log('\n── [#3] engine fxMode ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { fxMode: true });
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { fxMode: true, session: FIXED_SESSION, newsBlock: null });
   if (sig.finalSignal === 'SELL' || sig.finalSignal === 'BUY') {
     ok('[#3a] mode=fx set', sig.mode === 'fx');
     ok('[#3b] fxLevels present', !!sig.fxLevels);
@@ -72,7 +76,7 @@ console.log('\n── [#3] engine fxMode ──');
 
 console.log('\n── [#4] FTT mode default unchanged ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV);
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
   ok('[#4a] no mode tag', sig.mode === undefined);
   ok('[#4b] no fxLevels', sig.fxLevels === undefined);
   ok('[#4c] finalSignal + confidence intact', typeof sig.finalSignal === 'string' && (typeof sig.confidence === 'number' || typeof sig.confidence === 'string'));
