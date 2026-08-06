@@ -61,7 +61,10 @@ export function passGrade(sig, f) {
   if (!f || f === 'ALL') return true;
   const g = (sig && sig.grade && sig.grade.grade) || '';
   if (!g) return false;
-  return f === 'A' ? g === 'A' : f === 'AB' ? ['A', 'B'].includes(g) : true;
+  // F3-03 (BUG-026): an 'A+' signal must satisfy 'A' and 'AB' filters — the
+  // top-tier grade is a strict superset of A. Exact equality previously
+  // dropped every A+ signal for A/AB-filtered subscribers.
+  return f === 'A' ? ['A+', 'A'].includes(g) : f === 'AB' ? ['A+', 'A', 'B'].includes(g) : true;
 }
 
 export function passConf(sig, min) {
@@ -182,7 +185,6 @@ export async function pushSignalToSubscribers(signal, env) {
 
     // Per-subscriber message: FX-mode users get SL/TP levels (fetched with
     // mode=fx&nopush=1 to avoid a push loop), others get FTT.
-    const messages = new Map();
     const results = await Promise.allSettled(
       eligible.map(async (sub) => {
         let msgSignal = signal;
@@ -198,26 +200,33 @@ export async function pushSignalToSubscribers(signal, env) {
         }
         const fxOnly = sub.fxMode === 'fx';
         const message = formatSignalMessage(msgSignal, { fx: sub.fxMode === 'fx' || sub.fxMode === 'both', fxOnly });
-        return sendTelegramMessage(sub.chatId, message, env);
+        await sendTelegramMessage(sub.chatId, message, env);
+        // F3-01 (BUG-011): carry the per-subscriber formatted message with the
+        // delivery record so the channel-mirror block below uses THIS
+        // subscriber's message instead of a block-scoped variable that no
+        // longer exists outside the map callback (ReferenceError before).
+        return { sub, message };
       }),
     );
 
     const delivered = [];
-    results.forEach((r, i) => {
-      if (r.status === 'fulfilled') delivered.push(eligible[i]);
+    results.forEach((r) => {
+      if (r.status === 'fulfilled' && r.value) delivered.push(r.value);
     });
 
     // Channel mirroring ([F10] parity) — best effort, never gates the DM.
+    // Each delivery record carries its own message, so a mirror failure can
+    // never throw out of this block and lose the pushLog write.
     await Promise.allSettled(
-      delivered.filter(s => s.channelId)
-        .map(s => sendTelegramMessage(s.channelId, message, env)),
+      delivered.filter(d => d.sub.channelId)
+        .map(d => sendTelegramMessage(d.sub.channelId, d.message, env)),
     );
 
     if (delivered.length > 0 && env.SIGNAL_CACHE) {
       const now = new Date().toISOString();
       await env.SIGNAL_CACHE.put(
         PUSH_LOG_PREFIX + signal.id,
-        JSON.stringify(delivered.map(s => ({ chatId: s.chatId, sentAt: now }))),
+        JSON.stringify(delivered.map(d => ({ chatId: d.sub.chatId, sentAt: now }))),
         { expirationTtl: PUSH_LOG_TTL_S },
       );
     }

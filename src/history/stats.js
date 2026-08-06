@@ -166,7 +166,11 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
 
     await env.SIGNAL_CACHE.put(histKey, JSON.stringify(history), { expirationTtl: 60*60*24*30 });
 
-    if (!isOTC && expiryTime) {
+    // F3-02 (BUG-012): OTC rows now register a pending result-check too.
+    // The resolver's fetchExpiryPrice strips the -OTC suffix and resolves
+    // against the base pair's REAL market price — the same data the OTC
+    // signal itself was computed from (dataNote: "Candle data from <base>").
+    if (expiryTime) {
       await env.SIGNAL_CACHE.put(
         HISTORY_CONFIG.KV_PENDING_PREFIX + signalId,
         JSON.stringify(record),
@@ -296,7 +300,10 @@ export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
   const apiKeys = getApiKeys(env);
   if (apiKeys.length === 0) return { error: 'NO_API_KEYS' };
 
-  const symbol   = pair.includes('/') ? pair : pair.slice(0, 3) + '/' + pair.slice(3);
+  // F3-02: OTC pairs ("EUR/USD-OTC") must resolve against the base pair's
+  // real market symbol — TwelveData has no "-OTC" instrument.
+  const basePair  = String(pair).replace(/-OTC$/i, '');
+  const symbol    = basePair.includes('/') ? basePair : basePair.slice(0, 3) + '/' + basePair.slice(3);
   const expiryMs = new Date(expiryTimeISO).getTime();
   if (!Number.isFinite(expiryMs)) return { error: 'BAD_EXPIRY_TIME' };
 
@@ -319,6 +326,9 @@ export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
       u.searchParams.set('end_date', endDate);
       u.searchParams.set('apikey', apiKey);
       u.searchParams.set('format', 'JSON');
+      // F3-07 (BUG-016): pin UTC — TwelveData's default forex timezone is
+      // Australia/Sydney (UTC+10), which would shift the bracket by 10h.
+      u.searchParams.set('timezone', 'UTC');
 
       await incrementQuota(env);   // B0-4: +1 per HTTP attempt
 
@@ -438,14 +448,24 @@ export async function updatePairStats(pair, winLoss, record, env) {
     if (!stats) stats = {
       pair, totalSignals:0, wins:0, losses:0, winRate:0,
       sampleSize:0, bySession:{}, byTF:{}, byRegime:{}, lastUpdated:null,
+      recentResults: [],
     };
 
     stats.totalSignals++;
     if (winLoss === 'WIN')  stats.wins++;
     if (winLoss === 'LOSS') stats.losses++;
-    const decided   = stats.wins + stats.losses;
-    stats.winRate   = decided > 0 ? Math.round((stats.wins / decided) * 1000) / 1000 : 0;
-    stats.sampleSize = Math.min(decided, HISTORY_CONFIG.WIN_RATE_LOOKBACK);
+    // F3-18 (BUG-019): winRate is now the WIN_RATE_LOOKBACK-trade WINDOW
+    // (rolling ring of the last 20 decided results), not the lifetime ratio —
+    // so /api/stats winRate and the dynamic confidence adjustment track recent
+    // form. Lifetime totals stay available in wins/losses/totalSignals.
+    if (!Array.isArray(stats.recentResults)) stats.recentResults = [];
+    stats.recentResults.push(winLoss);
+    if (stats.recentResults.length > HISTORY_CONFIG.WIN_RATE_LOOKBACK)
+      stats.recentResults = stats.recentResults.slice(-HISTORY_CONFIG.WIN_RATE_LOOKBACK);
+    const windowedWins = stats.recentResults.filter(r => r === 'WIN').length;
+    stats.winRate      = stats.recentResults.length > 0
+      ? Math.round((windowedWins / stats.recentResults.length) * 1000) / 1000 : 0;
+    stats.sampleSize   = stats.recentResults.length;
     stats.lastUpdated = new Date().toISOString();
 
     for (const sess of (record.session || [])) {

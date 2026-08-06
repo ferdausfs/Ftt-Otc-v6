@@ -312,9 +312,15 @@ export function analyzeStructure(candles, atr, timeframe) {
   }
 
   // Recent events
-  for (const ev of recentEvents) {
-    if (ev.type === 'RECENT_BULLISH_BOS') sUp   += 0.5;
-    if (ev.type === 'RECENT_BEARISH_BOS') sDown += 0.5;
+  // F3-10 (BUG-029): a BOS confirmed on the CURRENT bar appears both in `bos`
+  // (+2.0) and in recentEvents (barsAgo 0 → +0.5), double-counting the same
+  // break (2.5 instead of 2.0). The recent-event contribution only applies
+  // when there is no fresh BOS — older breaks still get their +0.5 momentum.
+  if (!bos) {
+    for (const ev of recentEvents) {
+      if (ev.type === 'RECENT_BULLISH_BOS') sUp   += 0.5;
+      if (ev.type === 'RECENT_BEARISH_BOS') sDown += 0.5;
+    }
   }
 
   // ── MULTIPLIER for engine confidence ──

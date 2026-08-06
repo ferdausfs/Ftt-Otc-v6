@@ -110,7 +110,9 @@ async function scanOnePair(pair, generationId, env, ctx) {
   try {
     // Same entry point /api/signal uses — including circuit-breaker checks and
     // the existing history write via ctx.waitUntil.
-    const result = await handleSignalRaw(pair, env, ctx);
+    // F3-14 (BUG-028): the cron scanner must never push to Telegram — its job
+    // is warming the latest: cache. User-triggered calls still push.
+    const result = await handleSignalRaw(pair, env, ctx, { noPush: true });
 
     if (!result || result.error) {
       console.warn('scanOnePair ' + pair + ' error: '

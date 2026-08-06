@@ -116,7 +116,10 @@ async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, resp
 export async function handleSignal(pair, env, ctx, opts = {}) {
   const preferCache = !!(opts && opts.preferCache);
 
-  if (preferCache) {
+  // F3-08 (BUG-015): mode=fx is incompatible with preferCache — the cron-warmed
+  // `latest:` entry has no fxLevels, so serving it to an FX-mode client would
+  // silently return an FTT payload. FX requests always force a fresh run.
+  if (preferCache && !opts?.fxMode) {
     const cached = await readLatest(pair, env);
     if (cached && !isStale(cached)) {
       return jsonResponse({ ...enrichAge(cached), cached: true, forceRefresh: false });

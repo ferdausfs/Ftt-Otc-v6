@@ -586,6 +586,9 @@ console.log('\n── [#14] OTC regression ────────────�
       'entryReason', 'filtersApplied', // FIX-C: ROUND_LEVEL_* strings
       'confluence', 'confluenceDetail', 'reason', // FIX-D: /12 denominators
       'score', 'weightedBuy', 'weightedSell', 'weightedNoTrade', // FIX-B/C: numeric effects
+      // F3-04 (BUG-027): OTC fill-status fields added (engine.js parity) —
+      // new fields, absent from the 71e87eb baseline by design.
+      'fillStatus', 'entryPrice', 'currentPrice', 'entryDistancePct',
     ]);
     (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (drop.has(k)) delete o[k]; else w(o[k]); } } })(c);
     return c;

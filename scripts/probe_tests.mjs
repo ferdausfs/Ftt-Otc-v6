@@ -43,6 +43,10 @@ const {
 const { makeCandleData } = await import('./r71_fixtures.mjs');
 
 const ENV = {};
+// F3-16 (CLOCK-001/BUG-022): pin the trading session (NEW_YORK/HIGH) so the
+// engine fixtures are time-of-day invariant — during 12-16 UTC the
+// D2_HIGHEST_SESSION_BLOCK suppressed this forex SELL fixture.
+const FIXED_SESSION = { sessions: ['NEW_YORK'], overlap: 'NONE', quality: 'HIGH', hour: 16 };
 const FX_SELL = { basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 };   // -> EUR/USD SELL
 
 const pastExpiry = new Date(Date.now() - 10 * 60 * 1000).toISOString();
@@ -181,7 +185,7 @@ console.log('\n── [#8] Resolver — transient error retry then terminal UNKN
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#9-10] Engine — FOREX SELL audit attach + no leak; others carry none ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData(FX_SELL), 'FOREX', ENV);
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData(FX_SELL), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
   ok('[#9a] fixture final = SELL', sig.finalSignal === 'SELL', sig.finalSignal);
   const audit = getProbeAudit(sig);
   ok('[#9b] probe audit attached on FOREX SELL', !!audit);
@@ -195,11 +199,11 @@ console.log('\n── [#9-10] Engine — FOREX SELL audit attach + no leak; othe
   ok('[#9g] NO leak in public JSON', !JSON.stringify(sig).includes('FOREX_SELL_PROBE') && !JSON.stringify(sig).includes('probe.audit'));
 
   // CRYPTO SELL -> no audit
-  const crSig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 }), 'CRYPTO', ENV);
+  const crSig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 }), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null });
   ok('[#10a] CRYPTO signal carries no probe audit', getProbeAudit(crSig) === null);
 
   // FOREX non-SELL (BUY or NO_TRADE) -> no audit
-  const fxBuy = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.002, trend: 0.0004, seed: 44 }), 'FOREX', ENV);
+  const fxBuy = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.002, trend: 0.0004, seed: 44 }), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
   ok('[#10b] non-SELL forex carries no probe audit', getProbeAudit(fxBuy) === null, 'final=' + fxBuy.finalSignal);
 }
 

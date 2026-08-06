@@ -49,6 +49,10 @@ export async function fetchCandles(pair, tf, limit, env, assetType) {
       u.searchParams.set('outputsize', String(limit));
       u.searchParams.set('apikey',     apiKey);
       u.searchParams.set('format',     'JSON');
+      // F3-07 (BUG-016): pin UTC — TwelveData's default forex timezone is
+      // Australia/Sydney (UTC+10), which made every forex candleTime land 10h
+      // in the future (crypto already returned UTC).
+      u.searchParams.set('timezone', 'UTC');
 
       await incrementQuota(env);   // B0-4: +1 per HTTP attempt
 

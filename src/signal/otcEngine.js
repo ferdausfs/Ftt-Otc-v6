@@ -141,8 +141,10 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   // penalties, exotic penalty, AI boost). Mirrors engine.js rawConfidence.
   const rawConfidence = confidence;
 
-  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
+  // F3-06 (BUG-014, OTC mirror): apply the alignment bonus BEFORE the MIXED
+  // zeroing — previously a MIXED no-trade reported 2-4% instead of 0%.
   confidence = Math.min(OTC_CONFIDENCE_CAP, confidence + alignmentBonus);
+  if (alignment === 'MIXED') { finalDirection = 'NO_TRADE'; confidence = 0; }
 
   const lastClose = primaryCandles.length > 0 ? primaryCandles[primaryCandles.length - 1].close : 0;
   const atrVal    = primaryCandles.length > 0 ? safeLastValue(calculateATR(primaryCandles, CONFIG.ATR_PERIOD)) : null;
@@ -235,8 +237,11 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   // called getSignalGrade WITHOUT the 4th arg, so an 80%/ALL_BULLISH OTC signal
   // with structure AGAINST still graded A+ instead of being capped at C.
   const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
-  const finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
-  return {
+  // F3-05 (BUG-013, OTC mirror): NO_TRADE must never carry a tradable grade.
+  const finalGrade = finalDirection === 'NO_TRADE'
+    ? { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' }
+    : getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
+  const __otcSignal = {
     finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
     coreConfidence: rawConfidence,   // B5 — see anchor above
     assetType: ASSET_TYPE_OTC, isOTC: true,
@@ -252,4 +257,31 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     averageConfluence: Math.round(avgConf * 10) / 10,
     timeframeAnalysis: tfResults, structureVerdict, method: 'OTC_HYBRID_v6.9.1', generatedAt: now.toISOString(),
   };
+
+  // ── F3-04 (BUG-027): OTC fill status — mirrors engine.js so OTC signals
+  // carry the same INSTANT/PENDING_ENTRY + entryPrice/currentPrice/entryDistance
+  // fields the standard engine emits. Entry = best TF's last close; current =
+  // lowest-TF (1min) last close (independent sources). ──
+  if (finalDirection === 'BUY' || finalDirection === 'SELL') {
+    try {
+      const bestTFA = (best && best.timeframe && best.timeframe !== 'N/A') ? tfResults[best.timeframe] : null;
+      const entryPx = bestTFA && bestTFA.entry ? bestTFA.entry.price : null;
+      const currentCandles = candleData['1min'] || candleData['5min'] || candleData['15min'];
+      const lastClose = currentCandles && currentCandles.length
+        ? currentCandles[currentCandles.length - 1].close : null;
+      if (entryPx != null && lastClose != null) {
+        const dist = Math.abs(lastClose - entryPx);
+        const rel = entryPx !== 0 ? dist / entryPx : 0;
+        const actionable = rel <= 0.0005;
+        __otcSignal.fillStatus = actionable ? 'INSTANT' : 'PENDING_ENTRY';
+        __otcSignal.entryPrice = entryPx;
+        __otcSignal.currentPrice = lastClose;
+        __otcSignal.entryDistancePct = Number((rel * 100).toFixed(4));
+      }
+    } catch (e) {
+      console.warn('OTC fill status failed (production unaffected): ' + e.message);
+    }
+  }
+
+  return __otcSignal;
 }
