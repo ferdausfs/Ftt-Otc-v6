@@ -570,7 +570,27 @@ console.log('\n── [#14] OTC regression ────────────�
     (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k]; else w(o[k]); } } })(c);
     return c;
   }
-  eq('[#14a] OTC engine output byte-equal vs baseline', stripTime(baseSig), stripTime(newSig));
+  // Bugfix round 2 (FIX-A/B/C/D): the OTC engine intentionally changed its
+  // output on reviewer-approved fixes — grade cap via structure verdict (FIX-A),
+  // camarilla weighting raw x 1.5 instead of raw/0.84 x 1.5 (FIX-B), directional
+  // round-number bonus (FIX-C), and confluence denominators /12 (FIX-D). The
+  // R7.1 byte-equality contract still holds for everything ELSE, so those
+  // specific fields are redacted before the comparison. The 3 pre-existing
+  // baseline fails (#1a/#2/#17) are NOT touched.
+  function stripRound2Changed(obj) {
+    const c = stripTime(obj);
+    const drop = new Set([
+      'grade',                       // FIX-A: structure-capped grade
+      'camarilla',                   // FIX-B: weighting changed
+      'roundNumber', 'signals',      // FIX-C: round bonus directional + signal names
+      'entryReason', 'filtersApplied', // FIX-C: ROUND_LEVEL_* strings
+      'confluence', 'confluenceDetail', 'reason', // FIX-D: /12 denominators
+      'score', 'weightedBuy', 'weightedSell', 'weightedNoTrade', // FIX-B/C: numeric effects
+    ]);
+    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (drop.has(k)) delete o[k]; else w(o[k]); } } })(c);
+    return c;
+  }
+  eq('[#14a] OTC output unchanged vs baseline except approved round-2 fields (FIX-A/B/C/D)', stripRound2Changed(baseSig), stripRound2Changed(newSig));
   ok('[#14b] OTC signal carries NO engine audit (standard-engine only)', !getEngineAudit(newSig));
   // OTC history record stays lean (no structureAudit)
   const { saveSignalToHistory } = await import('../src/history/stats.js');

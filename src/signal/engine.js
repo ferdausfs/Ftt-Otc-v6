@@ -286,7 +286,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   for (const [rtf, rec] of Object.entries(tfResults)) {
     recommendations[rtf] = {
       direction: rec.direction, score: rec.score,
-      confluence: rec.confluence + '/11 categories', alignedWithHTF: rec.alignedWithHTF,
+      confluence: rec.confluence + '/12 categories', alignedWithHTF: rec.alignedWithHTF,
       expiry: rec.expiry, entry: rec.entry,
       candleConfirmed: rec.candleConfirmed,
       patterns:   (rec.categoryScores?.patterns?.detected)    || [],
@@ -477,7 +477,7 @@ export function findBestTimeframe(tfResults, finalDirection) {
   return {
     timeframe: bestTF, direction: best.direction, score: bestScore,
     confluence: best.confluence, alignedWithHTF: best.alignedWithHTF, expiry: best.expiry,
-    reason: 'Strongest ' + best.direction + ' signal with ' + best.confluence + '/11 confluence',
+    reason: 'Strongest ' + best.direction + ' signal with ' + best.confluence + '/12 confluence',
   };
 }
 

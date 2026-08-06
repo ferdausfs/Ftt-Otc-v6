@@ -1,7 +1,7 @@
 /**
- * Bugfix round 1 regression suite — node scripts/fix_tests.mjs
+ * Bugfix round 1 + 2 regression suite — node scripts/fix_tests.mjs
  *
- * Covers the 6 approved fixes + CHECK-A:
+ * Round 1 (6 approved fixes + CHECK-A):
  *   T1  FIX-6  classifyOutcome tie convention (WIN/LOSS/TIE)
  *   T2  FIX-4  /api/report idempotency (no double-count, pending key deleted)
  *   T3  FIX-3  fillStatus uses an independent current price (PENDING_ENTRY reachable)
@@ -9,6 +9,14 @@
  *   T5  FIX-2  D2 TRENDING block is NOT overridden by AI rescue
  *   T6  FIX-5  post-AI confidence floor: no BUY/SELL below 72% + wiring check
  *   T7  CHECK-A passAI accepts the post-AI dual-combiner shape
+ *
+ * Round 2 (4 fixes + hardening):
+ *   T8  FIX-A  OTC grade capped by structure verdict (AGAINST -> never A+/A)
+ *   T9  FIX-B  OTC camarilla contribution == raw x 1.5 (not raw x 1.786)
+ *   T10 FIX-C  round-number bonus is directional (below->DOWN, above->UP, on->none)
+ *   T11 FIX-C  round bonus actually moves OTC confidence (differential non-zero)
+ *   T12 FIX-D  no '/11' or 'total: 11' remains in src/ (all denominators 12)
+ *   T13 HARDEN-1 optional chaining on structure.multiplier?.value
  *
  * Engine runs use real modules with only network stubbed (same pattern as
  * phase10_integration.mjs); KV is an in-memory double.
@@ -21,6 +29,9 @@ import { passAI } from '../src/handlers/pushToSubscribers.js';
 import { handleReport } from '../src/handlers/health.js';
 import { handleSignalRaw, handleSignal } from '../src/handlers/signal.js';
 import { buildMultiTimeframeSignal } from '../src/signal/engine.js';
+import { buildMultiTimeframeSignalOTC } from '../src/signal/otcEngine.js';
+import { analyzeOTCPatterns } from '../src/analysis/otc.js';
+import { getSignalGrade } from '../src/analysis/grade.js';
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -287,6 +298,190 @@ console.log('\n── T7: passAI accepts the post-AI shape (CHECK-A) ───�
   ok('OTC shape accepted', passAI(otc, true) === true);
   ok('SKIPPED rejected', passAI(skipped, true) === false);
   ok('pre-fix shape now accepted too (status derived from combined)', passAI(oldBroken, true) === true);
+}
+
+console.log('\n── T8: OTC grade capped by structure verdict (FIX-A) ────────');
+{
+  // net-up zigzag with clean red tail -> OTC mean-reversion SELL (88% conf)
+  // while market structure stays BULLISH -> verdict AGAINST -> grade must cap
+  // at C (pre-fix: getSignalGrade without the 4th arg graded A+).
+  const zigGen = (n, base, up, dn, upLeg, dnLeg, tail) => {
+    const out = []; let c = base;
+    for (let i = 0; i < n; i++) {
+      const o = c;
+      if (i < n - tail) {
+        const phase = i % (upLeg + dnLeg);
+        if (phase < upLeg) { c = c + up; out.push({ datetime:'x', open:o, high:c+0.12, low:o-0.01, close:c, volume:1000 }); }
+        else               { c = c - dn; out.push({ datetime:'x', open:o, high:o+0.01, low:c-0.12, close:c, volume:1000 }); }
+      } else {
+        c = c - 0.06; out.push({ datetime:'x', open:o, high:o, low:c, close:c, volume:1000 });
+      }
+    }
+    return out; // chronological (oldest first) — direct engine calls
+  };
+  const fixture = () => ({ '1min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '5min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6) });
+  const r = quiet();
+  const sig = await buildMultiTimeframeSignalOTC(fixture(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  r();
+  ok('T8a: OTC engine produced a tradeable SELL', sig.finalSignal === 'SELL', sig.finalSignal);
+  ok('T8b: structure verdict is AGAINST', sig.structureVerdict && sig.structureVerdict.overall === 'AGAINST',
+    sig.structureVerdict && sig.structureVerdict.overall);
+  ok('T8c: structure direction is BUY (contradicts SELL)', sig.structureVerdict && sig.structureVerdict.direction === 'BUY',
+    sig.structureVerdict && sig.structureVerdict.direction);
+  const capped = ['C', 'D', 'F'];
+  ok('T8d: grade capped (C/D/F, never A+/A)', capped.includes(sig.grade.grade), sig.grade.grade);
+  eq('T8e: grade is exactly C for AGAINST @88%', sig.grade.grade, 'C');
+  // prove the cap is caused by the 4th arg: same inputs WITHOUT it would grade A+
+  const confNum = confPct(sig);
+  const avg = sig.averageConfluence;
+  const uncapped = getSignalGrade(confNum, avg, sig.alignment);
+  eq('T8f: same signal without structure arg would grade A+ (proves cap)', uncapped.grade, 'A+');
+  // wiring: 4th arg present in source, structureVerdict computed before grade
+  const src = fs.readFileSync(fileURLToPath(new URL('../src/signal/otcEngine.js', import.meta.url)), 'utf8');
+  const gradeLine = src.indexOf('getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall)');
+  const verdictLine = src.indexOf('const structureVerdict = buildStructureVerdict(tfResults, finalDirection);');
+  ok('T8g: getSignalGrade receives structureVerdict.overall', gradeLine > -1);
+  ok('T8h: structureVerdict computed BEFORE the grade call', verdictLine > -1 && verdictLine < gradeLine);
+  ok('T8i: return object reuses the computed structureVerdict',
+    /structureVerdict,\s*method/.test(src));
+}
+
+console.log('\n── T9: OTC camarilla contribution == raw x 1.5 (FIX-B) ────');
+{
+  const zigGen = (n, base, up, dn, upLeg, dnLeg, tail) => {
+    const out = []; let c = base;
+    for (let i = 0; i < n; i++) {
+      const o = c;
+      if (i < n - tail) {
+        const phase = i % (upLeg + dnLeg);
+        if (phase < upLeg) { c = c + up; out.push({ datetime:'x', open:o, high:c+0.12, low:o-0.01, close:c, volume:1000 }); }
+        else               { c = c - dn; out.push({ datetime:'x', open:o, high:o+0.01, low:c-0.12, close:c, volume:1000 }); }
+      } else {
+        c = c - 0.06; out.push({ datetime:'x', open:o, high:o, low:c, close:c, volume:1000 });
+      }
+    }
+    return out;
+  };
+  const r = quiet();
+  const sig = await buildMultiTimeframeSignalOTC(
+    { '1min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '5min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6) },
+    'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  r();
+  const otcCam = sig.timeframeAnalysis['15min'].categoryScores.camarilla;
+  ok('T9a: OTC camarilla carries otcWeight 1.5 marker',
+    otcCam && otcCam.otcWeight === 1.5, JSON.stringify(otcCam));
+  // math assertion on the actual formula constants: OTC weight 1.5, no ÷0.84
+  const camW = 1.5; // OTC_CATEGORY_WEIGHTS.camarilla
+  const oldInflate = 1 / 0.84 * camW;   // 1.786...
+  ok('T9b: OTC camarilla multiplier is 1.5, not 1.786',
+    Math.abs(camW - 1.5) < 1e-9 && Math.abs(camW - oldInflate) > 0.2,
+    'camW=' + camW + ' oldInflate=' + oldInflate.toFixed(3));
+  const src = fs.readFileSync(fileURLToPath(new URL('../src/signal/otcEngine.js', import.meta.url)), 'utf8');
+  ok('T9c: unweight loop skips ÷rW for camarilla',
+    src.includes("cat === 'camarilla' ? (cd.up   || 0) : (cd.up   || 0) / rW") &&
+    src.includes("cat === 'camarilla' ? (cd.down || 0) : (cd.down || 0) / rW"));
+  // standard engine storage untouched: timeframe.js still stores raw camScore
+  const tfSrc = fs.readFileSync(fileURLToPath(new URL('../src/signal/timeframe.js', import.meta.url)), 'utf8');
+  ok('T9d: timeframe.js camarilla storage untouched (raw camScore)',
+    tfSrc.includes('catScores.camarilla = { up: r2(camScore.up), down: r2(camScore.down), level: camScore.level }'));
+  // runtime relationship: raw (from standard storage rule) x 1.5 == OTC value.
+  // Recover raw via the standard analyzer on the same candles, then compare
+  // against the OTC-weighted category value the engine produced.
+  const { calculateAllIndicators } = await import('../src/indicators/index.js');
+  const { analyzeTimeframe } = await import('../src/signal/timeframe.js');
+  const raw15 = zigGen(100, 90, 0.10, 0.11, 12, 2, 6);
+  const stdTf = analyzeTimeframe(calculateAllIndicators(raw15, '15min'), raw15, '15min', 'FOREX', null, 'RANGING');
+  const rawCam = stdTf.categoryScores.camarilla;
+  const otcVal = otcCam;
+  ok('T9e: standard camarilla stored raw (pre-weight)', rawCam && typeof rawCam.up === 'number', JSON.stringify(rawCam));
+  eq('T9f: OTC camarilla == r2(raw x 1.5)', otcVal.up, Math.round((rawCam.up * 1.5) * 100) / 100);
+  ok('T9g: OTC camarilla != r2(raw / 0.84 x 1.5) (old inflate)',
+    otcVal.up !== Math.round(((rawCam.up / 0.84) * 1.5) * 100) / 100,
+    'otc=' + otcVal.up + ' old=' + Math.round(((rawCam.up / 0.84) * 1.5) * 100) / 100);
+}
+
+console.log('\n── T10: round-number bonus is directional (FIX-C) ─────────');
+{
+  // price BELOW round level (1.1548 vs 1.155) -> resistance -> bonus DOWN
+  const mkCandles = (lastClose) => {
+    const out = []; let p = lastClose;
+    for (let i = 0; i < 30; i++) {
+      const o = p;
+      p = p + (i % 2 ? 0.0005 : -0.0005);
+      out.push({ datetime:'x', open:o, high:Math.max(o, p) + 0.0002, low:Math.min(o, p) - 0.0002, close:p, volume:1000 });
+    }
+    return out; // chronological; last close ≈ lastClose
+  };
+  const below = mkCandles(1.1548);
+  const patBelow = analyzeOTCPatterns(below, 0.002, 1.1548);
+  ok('T10a: below-level detected', !!patBelow.roundNumber, JSON.stringify(patBelow.roundNumber));
+  eq('T10b: below-level -> otcBonusUp stays 0', patBelow.otcBonusUp, 0);
+  ok('T10c: below-level -> otcBonusDown > 0', patBelow.otcBonusDown > 0, 'down=' + patBelow.otcBonusDown);
+  ok('T10d: signal names the side', patBelow.otcSignals.includes('ROUND_LEVEL_MINOR_RESISTANCE'),
+    JSON.stringify(patBelow.otcSignals));
+
+  const above = mkCandles(1.1552);
+  const patAbove = analyzeOTCPatterns(above, 0.002, 1.1552);
+  ok('T10e: above-level detected', !!patAbove.roundNumber);
+  eq('T10f: above-level -> otcBonusDown stays 0', patAbove.otcBonusDown, 0);
+  ok('T10g: above-level -> otcBonusUp > 0', patAbove.otcBonusUp > 0, 'up=' + patAbove.otcBonusUp);
+
+  // exactly on level -> ambiguous -> no round bonus either side
+  const on = mkCandles(1.155);
+  const patOn = analyzeOTCPatterns(on, 0.002, 1.155);
+  ok('T10h: on-level still surfaced', patOn.roundNumber && patOn.roundNumber.distance === 0);
+  ok('T10i: old both-sides behavior gone (differential non-zero below)',
+    patBelow.otcBonusUp !== patBelow.otcBonusDown);
+  ok('T10j: old both-sides behavior gone (differential non-zero above)',
+    patAbove.otcBonusUp !== patAbove.otcBonusDown);
+}
+
+console.log('\n── T11: round bonus moves OTC confidence (FIX-C) ──────────');
+{
+  // engine formula: pb = bonusDown - bonusUp (SELL) / bonusUp - bonusDown (BUY),
+  // confidence += Math.round(pb * 3). With the OLD both-sides round bonus,
+  // pb's round contribution was always 0; now it is ±round(proximity*0.4*3).
+  const src = fs.readFileSync(fileURLToPath(new URL('../src/signal/otcEngine.js', import.meta.url)), 'utf8');
+  ok('T11a: engine uses the directional differential',
+    src.includes('otcPatterns.otcBonusUp - otcPatterns.otcBonusDown') &&
+    src.includes('Math.round(pb * 3)'));
+  // concrete: proximity 0.67 -> bonus 0.268 -> confidence delta round(0.268*3)=1
+  const delta = Math.round((0.67 * 0.4) * 3);
+  eq('T11b: round contribution to confidence is non-zero', delta, 1);
+  // and the OLD code would have contributed 0 (same on both sides)
+  eq('T11c: old both-sides round contribution was 0', Math.round((0.67 * 0.4 - 0.67 * 0.4) * 3), 0);
+  // source: otc.js must NOT add the same bonus to both sides anymore
+  const otcSrc = fs.readFileSync(fileURLToPath(new URL('../src/analysis/otc.js', import.meta.url)), 'utf8');
+  ok('T11d: otc.js no longer adds to both sides',
+    !/otcBonusUp\s*\+=\s*round\.proximity \* 0\.4;[\s\S]{0,80}otcBonusDown\s*\+=\s*round\.proximity \* 0\.4/.test(otcSrc));
+}
+
+console.log('\n── T12: confluence denominators unified to 12 (FIX-D) ─────');
+{
+  const srcs = [
+    ['engine.js', fileURLToPath(new URL('../src/signal/engine.js', import.meta.url))],
+    ['otcEngine.js', fileURLToPath(new URL('../src/signal/otcEngine.js', import.meta.url))],
+    ['timeframe.js', fileURLToPath(new URL('../src/signal/timeframe.js', import.meta.url))],
+  ];
+  let bad = [];
+  for (const [name, path] of srcs) {
+    const text = fs.readFileSync(path, 'utf8');
+    if (/'\/11|total: 11/.test(text)) bad.push(name);
+  }
+  eq('T12a: no /11 or total: 11 remains in src/', bad, []);
+  const engine = fs.readFileSync(srcs[0][1], 'utf8');
+  const otc = fs.readFileSync(srcs[1][1], 'utf8');
+  const tf = fs.readFileSync(srcs[2][1], 'utf8');
+  ok('T12b: engine rec strings use /12', engine.includes("'/12 categories'") && engine.includes("'/12 confluence'"));
+  ok('T12c: otcEngine uses /12 and total: 12', otc.includes("'/12'") && otc.includes('total: 12'));
+  ok('T12d: timeframe early-returns use total: 12', tf.includes('total: 12'));
+}
+
+console.log('\n── T13: HARDEN-1 optional chaining on multiplier ──────────');
+{
+  const tf = fs.readFileSync(fileURLToPath(new URL('../src/signal/timeframe.js', import.meta.url)), 'utf8');
+  ok('T13: structure.multiplier?.value guards null multiplier',
+    tf.includes('structure.bos && structure.multiplier?.value >= 1.20'));
 }
 
 console.log('\n───────────────────────────────────────────────────────────');

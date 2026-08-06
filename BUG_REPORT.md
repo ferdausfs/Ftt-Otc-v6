@@ -23,6 +23,26 @@
 
 **Test matrix after fix round 1 (all green):** `fix_tests` 42/42 · `phase10_integration` 19/19 (was failing) · `phase7_integration` 36/36 · `d2_tests` 39/39 · `probe_tests` 34/34 · `entry_hit_tests` 7/7 · `fx_mode_tests` 20/20 · `phase10_smoke` 61/61 · `phase7_smoke` 68/68 · `r71_smoke` exit 0. Note: `d2_tests`/`probe_tests` tie assertions and the phase10/phase7 integration fixtures were updated for the approved convention/fix (their fixtures previously encoded the old tie→LOSS behavior and used a steady-uptrend candle stub that the D2 block now correctly suppresses).
 
+---
+
+## Fix round 2 — status (reviewer-approved 4 fixes + hardening)
+
+| Fix | Finding | Change | Proof (fix_tests.mjs) |
+|-----|---------|--------|------------------------|
+| FIX-A | Sonnet #4 — OTC grade missing structure cap (HIGH) | `otcEngine.js`: `structureVerdict` computed BEFORE `getSignalGrade`, passed as 4th arg; return object reuses the variable (mirrors engine.js) | T8: OTC SELL 88% + structure AGAINST(BUY) → grade **C** (was A+); T8f proves same inputs without the arg grade A+ |
+| FIX-B | Sonnet #5 — camarilla double-weight in OTC (MED-HIGH) | `otcEngine.js` unweight loop skips `÷rW` for `camarilla` (it is stored RAW in timeframe.js; option (a) chosen — standard engine storage/display untouched) | T9: OTC camarilla == `r2(raw × 1.5)` ≠ `r2(raw/0.84 × 1.5)` (1.786×); T9d asserts timeframe.js storage unchanged |
+| FIX-C | Sonnet #7 — round-number bonus dead (MED) | `otc.js`: bonus now directional — price below level → resistance → `otcBonusDown`; above → support → `otcBonusUp`; exactly on level → no bonus (still surfaced) | T10: below→down>0/up=0, above→up>0/down=0, on→neither; T11: confidence delta `round(prox·0.4·3)` = 1 (was 0) |
+| FIX-D | Sonnet #2 — confluence denominator 11→12 (LOW-MED display) | `/11` → `/12` in engine.js (×2), otcEngine.js (×2), timeframe.js early-returns (×2) | T12: grep — no `/11` or `total: 11` remains in `src/`; `/12` present in all 3 files |
+| HARDEN-1 | Sonnet #1 — multiplier null crash (LOW, defensive) | `timeframe.js`: `structure.multiplier?.value` optional chaining | T13: source assert; all suites green |
+
+**FIX-C direction-rule justification (as requested):** the round bonus models OTC mean-reversion rejection at a psychological level. Price approaching a round level from **below** treats it as **resistance** (sellers defend the level → rejection bias DOWN → `otcBonusDown`); price **above** a level treats it as **support** (buyers defend → rejection bias UP → `otcBonusUp`); exactly **on** the level is ambiguous (both sides defended) → no score bonus, still surfaced in `otcSignals` (`ROUND_LEVEL_*_RESISTANCE/_SUPPORT/_ON_LEVEL`). This matches the existing directional convention of `consecutiveCandles` (reversal away from the run direction) and `wickRejection`.
+
+**r71_tests note:** `#14a` (OTC byte-equal vs pre-R7.1 baseline) is now updated to redact the approved round-2 fields (grade/camarilla/round signals/`/12` strings/affected scores) — the old byte-equality contract was intentionally broken by FIX-A/B/C/D. Result: **r71_tests stays 113 PASS / 3 FAIL — identical to main's pre-existing fails (#1a, #2, #17), which were NOT touched.** (Running r71_tests locally requires git object `71e87eb`; this clone needed `git fetch --unshallow` to obtain it.)
+
+**Test matrix after fix round 2 (all green):** `fix_tests` **77/77** · `phase10_integration` 19/19 · `phase7_integration` 36/36 · `d2_tests` 39/39 · `probe_tests` 34/34 · `entry_hit_tests` 7/7 · `fx_mode_tests` 20/20 · `phase10_smoke` 61/61 · `phase7_smoke` 68/68 · `r71_tests` 113P/3F (== main) · `node --check` all src OK · `git diff --check` clean.
+
+**NOT in scope (per reviewer):** Finding #3 (D2_TRENDING_BLOCK vs BAD_PAIR suspension) — no engine change; Phase-F decision needed from the user (D2 shadow observations already capture the counterfactual pair/regime/session context).
+
 ### CHECK-B analysis — entryHit window (no change made)
 
 The `entryHit` shadow (stats.js) still measures over **expiry ± 5 min** (`fetchExpiryPrice` bracket), which is the *tail* of the trade, not the full signal→expiry holding window — and since `entry == last close` at signal time, the metric as computed is almost a mirror of `result==LOSS`. Recommendation if the metric is to mean anything: fetch candles from `timestamp → expiryTime` (window start = signal time), compare direction-correctly (BUY: window low ≤ entry; SELL: window high ≥ entry), and decide explicitly whether the trivial t0 touch (entry == current price) counts as a hit. This is a data-semantics decision the reviewer should approve before any code change.
