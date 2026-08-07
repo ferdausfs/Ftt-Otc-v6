@@ -948,7 +948,103 @@ console.log('\n── T32: fallback needs winning-side confluence (F3-19) ─');
   eq('T32e: equal-score tie -> NO_TRADE', decideTfDirection(5, 5, 6, 6, 3.0), 'NO_TRADE');
 }
 
-console.log('\n───────────────────────────────────────────────────────────');
-console.log(fail === 0 ? 'PASS: ' + pass + '   FAIL: 0' : 'PASS: ' + pass + '   FAIL: ' + fail);
-console.log(fail === 0 ? 'ALL FIX TESTS PASSED' : 'FAILURES: ' + failures.join(', '));
-process.exit(fail === 0 ? 0 : 1);
+
+
+console.log('\n── T33: FIX-EH corrected entryHit re-test semantics (shadow) ─');
+{
+  const mkCandle = (dt, o, h, l, c) => ({ datetime: dt, open: o, high: h, low: l, close: c });
+
+  function makeLocalKV() {
+    const m = new Map();
+    return {
+      _m: m,
+      async get(k, t) { if (!m.has(k)) return null; const v = m.get(k).value; return t === 'json' ? JSON.parse(v) : v; },
+      async put(k, v, o) { m.set(k, { value: String(v), opts: o }); },
+      async delete(k) { m.delete(k); },
+      async list({ prefix }) { return { keys: [...m.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name })) }; },
+    };
+  }
+
+  async function runEHTest({ id, direction, entryPrice, fillStatus, candles, expiryOffsetMin = 5 }) {
+    const kv = makeLocalKV();
+    const now = Date.now();
+    const ts = new Date(now - 6 * 60000).toISOString();
+    const exp = new Date(now + expiryOffsetMin * 60000).toISOString();
+    const pending = { id, pair: 'TEST/USD', direction, entryPrice, expiryTime: exp, timestamp: ts, fillStatus: fillStatus || null, result: null, exitPrice: null };
+    await kv.put('pending:' + id, JSON.stringify(pending), {});
+    await kv.put('sig:TEST_USD', [pending], {});
+
+    globalThis.fetch = async () => ({
+      ok: true, status: 200,
+      json: async () => ({ values: candles.map(c => ({ datetime: c.datetime, open:String(c.open), high:String(c.high), low:String(c.low), close:String(c.close) })) }),
+      text: async () => ''
+    });
+
+    const env = { SIGNAL_CACHE: kv, TWELVEDATA_API_KEYS: '["k1"]' };
+    await scheduledTracker(env);
+    const hist = await kv.get('sig:TEST_USD', 'json');
+    return hist && hist[0] ? hist[0] : null;
+  }
+
+  // T33a
+  (async () => {
+    const candles = [ mkCandle('2026-08-07 12:00:00',99.9,100.1,99.8,100), mkCandle('2026-08-07 12:01:00',100.0,100.6,100.0,100.5), mkCandle('2026-08-07 12:02:00',100.5,101.1,100.5,101.0), mkCandle('2026-08-07 12:03:00',101.0,101.6,101.0,101.5) ];
+    const r = await runEHTest({id:'eh_a',direction:'BUY',entryPrice:100,fillStatus:'INSTANT',candles});
+    ok('T33a: entryHit=false (no re-test)', r && r.entryHit === false);
+    ok('T33a: entryHitLegacy=false', r && r.entryHitLegacy === false);
+    eq('T33a: result WIN', r && r.result, 'WIN');
+  })();
+
+  // T33b
+  (async () => {
+    const candles = [ mkCandle('2026-08-07 12:00:00',100.1,100.2,99.9,100), mkCandle('2026-08-07 12:01:00',100.0,100.0,99.4,99.5), mkCandle('2026-08-07 12:02:00',99.5,99.6,98.9,99.0) ];
+    const r = await runEHTest({id:'eh_b',direction:'BUY',entryPrice:100,fillStatus:'INSTANT',candles});
+    ok('T33b: entryHit=false (NEW semantics)', r && r.entryHit === false);
+    ok('T33b: entryHitLegacy=true (old tautology)', r && r.entryHitLegacy === true);
+    eq('T33b: result LOSS', r && r.result, 'LOSS');
+  })();
+
+  // T33c
+  (async () => {
+    const candles = [ mkCandle('2026-08-07 12:00:00',99.8,100.1,99.7,100), mkCandle('2026-08-07 12:01:00',100.0,101.2,99.9,101.0), mkCandle('2026-08-07 12:02:00',101.0,101.1,99.95,100.0), mkCandle('2026-08-07 12:03:00',100.0,102.5,99.9,102.0) ];
+    const r = await runEHTest({id:'eh_c',direction:'BUY',entryPrice:100,fillStatus:'INSTANT',candles});
+    ok('T33c: entryHit=true (re-test after leaving)', r && r.entryHit === true);
+    eq('T33c: result WIN', r && r.result, 'WIN');
+  })();
+
+  // T33d
+  (async () => {
+    const candles = [ mkCandle('2026-08-07 12:00:00',100.0,100.1,99.9,100), mkCandle('2026-08-07 12:01:00',100.0,100.6,100.0,100.5), mkCandle('2026-08-07 12:02:00',100.5,101.0,100.4,100.9) ];
+    const r = await runEHTest({id:'eh_d',direction:'SELL',entryPrice:100,fillStatus:'INSTANT',candles});
+    ok('T33d: entryHit=false (NEW)', r && r.entryHit === false);
+    ok('T33d: entryHitLegacy=true', r && r.entryHitLegacy === true);
+    eq('T33d: result LOSS', r && r.result, 'LOSS');
+  })();
+
+  // T33e
+  (async () => {
+    const candles = [ mkCandle('2026-08-07 12:00:00',100.1,100.2,99.9,100), mkCandle('2026-08-07 12:01:00',100.0,100.05,98.9,99.0), mkCandle('2026-08-07 12:02:00',99.0,100.05,98.95,100.0), mkCandle('2026-08-07 12:03:00',100.0,100.1,97.5,97.8) ];
+    const r = await runEHTest({id:'eh_e',direction:'SELL',entryPrice:100,fillStatus:'INSTANT',candles});
+    ok('T33e: entryHit=true (re-test)', r && r.entryHit === true);
+    eq('T33e: result WIN', r && r.result, 'WIN');
+  })();
+
+  // T33f
+  (async () => {
+    const candles = [ mkCandle('2026-08-07 12:00:00',99.5,99.6,99.4,99.5), mkCandle('2026-08-07 12:01:00',99.6,99.95,99.5,99.7), mkCandle('2026-08-07 12:02:00',99.7,100.05,99.65,100.0) ];
+    const r = await runEHTest({id:'eh_f',direction:'BUY',entryPrice:100,fillStatus:'PENDING_ENTRY',candles});
+    ok('T33f: PENDING_ENTRY entryHit=true on touch', r && r.entryHit === true);
+  })();
+
+  // T33g
+  (async () => {
+    const expTime = '2026-08-07T12:05:00.000Z';
+    globalThis.fetch = async (u) => ({ ok:true, status:200, json:async()=>({values:[{datetime:'2026-08-07 12:02:00',open:'99.8',high:'100.3',low:'99.7',close:'100.1'},{datetime:'2026-08-07 12:03:00',open:'100.1',high:'100.8',low:'99.9',close:'100.5'},{datetime:'2026-08-07 12:04:00',open:'100.5',high:'101.2',low:'100.3',close:'100.9'},{datetime:'2026-08-07 12:05:00',open:'100.9',high:'101.0',low:'100.6',close:'100.7'},{datetime:'2026-08-07 12:06:00',open:'100.7',high:'100.8',low:'100.4',close:'100.6'}]}), text:async()=>'' });
+    const feLegacy = await fetchExpiryPrice('TEST/USD', expTime, { TWELVEDATA_API_KEYS: '["k1"]' });
+    ok('T33g: no startTimeISO still returns windowLow/High', feLegacy && feLegacy.windowLow != null && feLegacy.windowHigh != null);
+    ok('T33g: no postSignal when no startTimeISO', feLegacy && feLegacy.postSignal === null);
+    ok('T33g: candles array present', Array.isArray(feLegacy && feLegacy.candles) && feLegacy.candles.length > 0);
+  })();
+}
+
+

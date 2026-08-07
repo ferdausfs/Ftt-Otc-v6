@@ -114,6 +114,10 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
                           ? null : signal.coreConfidence,
       entrySource:      entrySource || null,
       timestamp: now, result: null, exitPrice: null, checkedAt: null,
+      // FIX-EH (shadow): carry fillStatus + price context from signal (F3-04 + FIX-3)
+      fillStatus:       signal.fillStatus || null,
+      currentPrice:     signal.currentPrice || null,
+      entryDistancePct: signal.entryDistancePct == null ? null : signal.entryDistancePct,
     };
     // B2/§3.3: only present on shadow rows — keeps normal records lean
     if (signal.cbShadow === true) record.cbShadow = true;
@@ -203,7 +207,7 @@ export async function scheduledTracker(env) {
         const checkAfterMs = new Date(record.expiryTime).getTime() + HISTORY_CONFIG.RESULT_CHECK_DELAY * 1000;
         if (now < checkAfterMs) continue;
 
-        const fetchResult = await fetchExpiryPrice(record.pair, record.expiryTime, env);
+        const fetchResult = await fetchExpiryPrice(record.pair, record.expiryTime, env, { startTimeISO: record.timestamp });
 
         // ── B0-3: transient fetch failure must NOT burn the record ──
         // Old behaviour deleted the pending key on the first miss, so one bad
@@ -241,27 +245,49 @@ export async function scheduledTracker(env) {
         // Bugfix round 1 (BUG-008): exit == entry is a TIE, not a LOSS.
         const winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
 
-        // ── Entry-hit shadow (2026-08-05): did price actually reach the
-        // signal's entry during the expiry window? Uses the candle low/high
-        // already fetched. Stored as shadow field only — the decided result
-        // stays as-is for now, so production WR is untouched until evidence
-        // (7-14 days) proves the semantics need changing.
-        if (record.entryPrice != null && fetchResult) {
-          const wl = fetchResult.windowLow;
-          const wh = fetchResult.windowHigh;
-          if (wl != null && wh != null) {
-            if (record.direction === 'BUY') {
-              record.entryHit = wl <= record.entryPrice + 1e-12;
-            } else if (record.direction === 'SELL') {
-              record.entryHit = wh >= record.entryPrice - 1e-12;
-            } else {
-              record.entryHit = null;
-            }
-            record.entryHitWindowLow = wl;
-            record.entryHitWindowHigh = wh;
-          } else {
-            record.entryHit = null;
+        // ── Entry-hit shadow (FIX-EH): corrected re-test semantics
+        // (shadow only; production WIN/LOSS/TIE + stats/push untouched).
+        // Pass startTimeISO so fetchResult.postSignal is populated.
+        if (record.entryPrice != null && fetchResult && fetchResult.postSignal && fetchResult.postSignal.length) {
+          const entry = record.entryPrice;
+          const eps = 1e-9 * Math.max(Math.abs(entry), 1);
+          const cs = fetchResult.postSignal; // candles strictly AFTER the signal candle (stamp > signalMs)
+          const dir = record.direction;
+
+          // LEGACY (kept for comparison) — old expiry±5min rule, from fetchResult.windowLow/High:
+          let legacy = null;
+          if (fetchResult.windowLow != null && fetchResult.windowHigh != null) {
+            legacy = dir === 'BUY' ? fetchResult.windowLow <= entry + 1e-12
+                  : dir === 'SELL' ? fetchResult.windowHigh >= entry - 1e-12 : null;
           }
+
+          // CORRECTED — re-test semantics:
+          // PENDING_ENTRY (entry away from price): plain touch — BUY: low<=entry, SELL: high>=entry.
+          // INSTANT (entry == price at t0): leave-then-return —
+          //   BUY : some candle high > entry, then a LATER candle low <= entry
+          //   SELL: some candle low  < entry, then a LATER candle high >= entry
+          let corrected = false;
+          if (record.fillStatus === 'PENDING_ENTRY') {
+            if (dir === 'BUY')  corrected = cs.some(c => c.low  <= entry + eps);
+            if (dir === 'SELL') corrected = cs.some(c => c.high >= entry - eps);
+          } else if (dir === 'BUY' || dir === 'SELL') {
+            let left = false;
+            for (const c of cs) {
+              if (dir === 'BUY'  && !left && c.high >  entry + eps) left = true;
+              if (dir === 'SELL' && !left && c.low  <  entry - eps) left = true;
+              if (left && dir === 'BUY'  && c.low  <= entry + eps) { corrected = true; break; }
+              if (left && dir === 'SELL' && c.high >= entry - eps) { corrected = true; break; }
+            }
+          }
+
+          record.entryHit = corrected;                        // NEW semantics
+          record.entryHitLegacy = legacy;                     // old rule, for comparison
+          record.entryHitWindowLow = fetchResult.postSignal.reduce((m,c)=>Math.min(m,c.low), Infinity);
+          record.entryHitWindowHigh = fetchResult.postSignal.reduce((m,c)=>Math.max(m,c.high), -Infinity);
+          record.entryHitWindowStart = record.timestamp;
+          record.entryHitWindowEnd = record.expiryTime;
+        } else {
+          record.entryHit = null; record.entryHitLegacy = null;
         }
 
         await updateSignalResult(record, winLoss, exitPrice, env);
@@ -296,7 +322,7 @@ export async function scheduledTracker(env) {
 // R7.1: exported so the shadow observation resolver can reuse the EXACT same
 // expiry-price fetcher (no duplicate implementation). Adding `export` does not
 // change any existing behaviour.
-export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
+export async function fetchExpiryPrice(pair, expiryTimeISO, env, opts = {}) {
   const apiKeys = getApiKeys(env);
   if (apiKeys.length === 0) return { error: 'NO_API_KEYS' };
 
@@ -307,9 +333,25 @@ export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
   const expiryMs = new Date(expiryTimeISO).getTime();
   if (!Number.isFinite(expiryMs)) return { error: 'BAD_EXPIRY_TIME' };
 
+  // FIX-EH: optional startTimeISO for corrected entryHit re-test window
+  // (signal creation time). When present, fetch [signal-1m .. expiry+1m]
+  // so we have post-signal candles. Legacy callers (d2/probe/r71) omit it
+  // and keep the exact old expiry±5min behavior (byte-identical).
+  let signalMs = null;
+  if (opts && opts.startTimeISO) {
+    const t = new Date(opts.startTimeISO).getTime();
+    if (Number.isFinite(t)) signalMs = t;
+  }
+
   // TwelveData accepts "YYYY-MM-DD HH:MM:SS" (UTC)
-  const startDate = new Date(expiryMs - 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
-  const endDate   = new Date(expiryMs + 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  let startDate, endDate;
+  if (signalMs != null) {
+    startDate = new Date(signalMs - 60_000).toISOString().slice(0, 19).replace('T', ' ');
+    endDate   = new Date(expiryMs + 60_000).toISOString().slice(0, 19).replace('T', ' ');
+  } else {
+    startDate = new Date(expiryMs - 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+    endDate   = new Date(expiryMs + 5 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
+  }
 
   const startIdx    = await getNextRotationIndex(env, apiKeys.length);
   const maxAttempts = apiKeys.length;     // B0-6: no MAX_RETRIES cap
@@ -363,32 +405,50 @@ export async function fetchExpiryPrice(pair, expiryTimeISO, env) {
       }
 
       let closest = null; let minDiff = Infinity;
+      // FIX-EH: collect ALL parsed candles for the requested bracket (ascending by stamp)
+      const candles = [];
       for (const c of data.values) {
         if (!c || !c.datetime) continue;
         const stamp = new Date(String(c.datetime).replace(' ', 'T') + 'Z').getTime();
         if (!Number.isFinite(stamp)) continue;
-        const diff = Math.abs(stamp - expiryMs);
+        const o = parseFloat(c.open), h = parseFloat(c.high), l = parseFloat(c.low), cl = parseFloat(c.close);
+        if (![o,h,l,cl].every(Number.isFinite)) continue;
+        candles.push({ datetime: c.datetime, stamp, open: o, high: h, low: l, close: cl });
+      }
+      // sort ascending for postSignal slicing
+      candles.sort((a,b) => a.stamp - b.stamp);
+
+      for (const c of candles) {  // reuse for closest (legacy)
+        const diff = Math.abs(c.stamp - expiryMs);
         if (diff < minDiff) { minDiff = diff; closest = c; }
       }
       if (closest && minDiff <= 120000) {
-        const px = parseFloat(closest.close);
+        const px = closest.close;
         if (Number.isFinite(px)) {
-          // Also surface the intra-window candle low/high so the caller can
-          // verify whether the signal's ENTRY was actually hit (not just the
-          // expiry close). Shadow-only field — production result unchanged.
+          // Legacy windowLow/High still computed over the *old* expiry±5min semantics
+          // (for d2/probe/r71 callers). When startTimeISO present we still compute
+          // legacy over the *requested* bracket for now (additive fields only).
           let lo = Infinity, hi = -Infinity;
-          for (const c of data.values) {
-            if (!c) continue;
-            const l = parseFloat(c.low); const h = parseFloat(c.high);
-            if (Number.isFinite(l) && l < lo) lo = l;
-            if (Number.isFinite(h) && h > hi) hi = h;
+          for (const c of candles) {
+            if (c.low < lo) lo = c.low;
+            if (c.high > hi) hi = c.high;
           }
-          return {
+
+          const baseReturn = {
             price: px,
             windowLow: Number.isFinite(lo) ? lo : null,
             windowHigh: Number.isFinite(hi) ? hi : null,
             windowStart: startDate, windowEnd: endDate,
+            candles,   // full ordered list (new, additive)
           };
+
+          if (signalMs != null) {
+            const postSignal = candles.filter(c => c.stamp > signalMs);
+            baseReturn.postSignal = postSignal;
+          } else {
+            baseReturn.postSignal = null;
+          }
+          return baseReturn;
         }
         lastErr = { error: 'BAD_CLOSE_VALUE', body: String(closest.close).slice(0, 200) };
         continue;
@@ -415,6 +475,9 @@ async function updateSignalResult(record, winLoss, exitPrice, env) {
         sig.checkedAt = new Date().toISOString();
         // entry-hit shadow (truth-keeping; not used in WR yet)
         if (record.entryHit !== undefined) sig.entryHit = record.entryHit;
+        if (record.entryHitLegacy !== undefined) sig.entryHitLegacy = record.entryHitLegacy;
+        if (record.entryHitWindowStart !== undefined) sig.entryHitWindowStart = record.entryHitWindowStart;
+        if (record.entryHitWindowEnd !== undefined) sig.entryHitWindowEnd = record.entryHitWindowEnd;
         if (record.entryHitWindowLow !== undefined) sig.entryHitWindowLow = record.entryHitWindowLow;
         if (record.entryHitWindowHigh !== undefined) sig.entryHitWindowHigh = record.entryHitWindowHigh;
         break;
