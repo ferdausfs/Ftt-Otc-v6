@@ -53,18 +53,47 @@ const { makeCandleData, makeCandles, neutralStructureCandles, bullishChochCandle
 const ENV = {}; // deterministic: no AI keys, no SIGNAL_CACHE
 
 // ════════════════════════════════════════════════════════════════════════
+// FROZEN-BASELINE REGRESSION GUARD (F3-20 refresh)
+// ════════════════════════════════════════════════════════════════════════
+// [#1a]/[#14a]/[#17] compare the live engine byte-for-byte against a snapshot
+// of the src tree at BASELINE_COMMIT. Until F3-20 that snapshot was 71e87eb —
+// the PRE-ROUND-1 engine — so every reviewer-approved change since (D2 hard
+// blocks + AI skip, fillStatus, /12 confluence, F3-05 grade cap, F3-11 RSI
+// score fix, F3-13 session weights, ...) intentionally broke the byte-equality
+// contract (#1a/#17 failed on main). F3-20 moves the baseline to the CURRENT
+// approved engine tip (e56cd33): the contract now guards the current engine,
+// and any FUTURE unapproved output change fails the suite.
+const BASELINE_COMMIT = 'e56cd33'; // F3-20: approved engine tip (was 71e87eb)
+function bootstrapBaseline() {
+  // The verify/baseline tree is gitignored and regenerated on demand. A marker
+  // file records which commit it was built from, so changing BASELINE_COMMIT
+  // (e.g. the next approved engine release) automatically rebuilds the tree
+  // instead of silently comparing against a stale snapshot.
+  const marker = 'verify/baseline/.commit';
+  const built = fs.existsSync(marker) && fs.readFileSync(marker, 'utf8').trim() === BASELINE_COMMIT
+    && fs.existsSync('verify/baseline/src/signal/engine.js');
+  if (built) return;
+  fs.rmSync('verify/baseline', { recursive: true, force: true });
+  fs.mkdirSync('verify/baseline', { recursive: true });
+  try {
+    execSync('git archive ' + BASELINE_COMMIT + ' src | tar -x -C verify/baseline', { stdio: 'pipe' });
+  } catch (e) {
+    console.error('FATAL: cannot archive baseline commit ' + BASELINE_COMMIT
+      + ' — is it present in the local clone? (try: git fetch --unshallow origin)');
+    throw e;
+  }
+  fs.writeFileSync(marker, BASELINE_COMMIT + '\n');
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // [#1] BASELINE PRODUCTION EQUIVALENCE
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#1] Baseline production equivalence ──────────────────');
 {
-  // Bootstrap the baseline src tree from the base commit (reproducible; the
-  // verify/baseline tree is gitignored and regenerated on demand). Only the
-  // baseline engine.js + timeframe.js differ from current; the rest are exact
-  // copies needed so the baseline ESM imports resolve.
-  if (!fs.existsSync('verify/baseline/src/signal/engine.js')) {
-    fs.mkdirSync('verify/baseline', { recursive: true });
-    execSync('git archive 71e87eb src | tar -x -C verify/baseline', { stdio: 'pipe' });
-  }
+  // Baseline tree = full copy of the approved engine at BASELINE_COMMIT
+  // (F3-20: e56cd33 — the stale pre-round-1 71e87eb snapshot was retired
+  // because every approved round-1/2/3 fix intentionally changed output).
+  bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
   // deep-strip time-dependent fields so two near-simultaneous runs compare equal
   function stripTime(obj) {
@@ -135,7 +164,17 @@ console.log('\n── [#2] Neutral structure ───────────�
   eq('[#2] attribution UNCHANGED', audit.attribution, 'UNCHANGED');
   eq('[#2] productionPreAi == shadow', audit.productionPreAiDirection, audit.shadowFinalDirection);
   eq('[#2] no hard-block observed', audit.diagnostic.tfHardBlockObserved, false);
-  eq('[#2] comparability COMPARABLE_PRE_AI', audit.comparability, 'COMPARABLE_PRE_AI');
+  // F3-20 baseline refresh: this expectation now pins the CURRENT engine
+  // contract. Post-71e87eb the engine gained the approved D2 hard-block layer
+  // (round-1 D2 blocks; F3-15 AI-skip): a TRENDING-regime fixture is blocked
+  // BUY/SELL -> NO_TRADE before the AI layer even runs (see filtersApplied:
+  // D2_TRENDING_BLOCK + AI_SKIPPED (D2 hard block)). The R7.1 audit compares
+  // the deterministic pre-AI direction (productionPreAi) against the ACTUAL
+  // final direction (productionPostAi), so ANY post-vs-pre divergence —
+  // including this D2 block — is classified AI_AFFECTED. That is the current,
+  // reviewer-approved classification contract; if the D2 layer ever changes,
+  // this line must be consciously updated (it must NOT silently drift back).
+  eq('[#2] comparability AI_AFFECTED (D2 block post-71e87eb)', audit.comparability, 'AI_AFFECTED');
 }
 
 // ── helpers for constructed audit scenarios ─────────────────────────────
@@ -570,30 +609,45 @@ console.log('\n── [#14] OTC regression ────────────�
     (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k]; else w(o[k]); } } })(c);
     return c;
   }
-  // Bugfix round 2 (FIX-A/B/C/D): the OTC engine intentionally changed its
-  // output on reviewer-approved fixes — grade cap via structure verdict (FIX-A),
-  // camarilla weighting raw x 1.5 instead of raw/0.84 x 1.5 (FIX-B), directional
-  // round-number bonus (FIX-C), and confluence denominators /12 (FIX-D). The
-  // R7.1 byte-equality contract still holds for everything ELSE, so those
-  // specific fields are redacted before the comparison. The 3 pre-existing
-  // baseline fails (#1a/#2/#17) are NOT touched.
+  // Reviewer-approved OTC output changes since the ORIGINAL baseline (71e87eb):
+  // FIX-A grade cap via structure verdict, FIX-B camarilla weighting raw x 1.5
+  // (was raw/0.84 x 1.5), FIX-C directional round-number bonus, FIX-D
+  // confluence denominators /12, and F3-04 (BUG-027) fill-status fields
+  // (engine.js parity). While the baseline was the stale 71e87eb tree these
+  // fields had to be redacted so "everything else" could still be compared.
+  // F3-20 refreshed the baseline to the current approved engine (e56cd33), so
+  // this comparison is now current-vs-current and every field — including the
+  // ones below — is byte-guarded on both sides. The list is RETAINED as the
+  // explicit approved-divergence inventory, and every entry is verified below
+  // to still be emitted by the engine, so the list cannot silently rot.
+  const OTC_APPROVED_DIVERGENT_FIELDS = new Set([
+    'grade',                       // FIX-A: structure-capped grade
+    'camarilla',                   // FIX-B: weighting changed
+    'roundNumber', 'signals',      // FIX-C: round bonus directional + signal names
+    'entryReason', 'filtersApplied', // FIX-C: ROUND_LEVEL_* strings
+    'confluence', 'confluenceDetail', 'reason', // FIX-D: /12 denominators
+    'score', 'weightedBuy', 'weightedSell', 'weightedNoTrade', // FIX-B/C: numeric effects
+    // F3-04 (BUG-027): OTC fill-status fields added (engine.js parity) —
+    // new fields, absent from the 71e87eb baseline by design.
+    'fillStatus', 'entryPrice', 'currentPrice', 'entryDistancePct',
+  ]);
   function stripRound2Changed(obj) {
     const c = stripTime(obj);
-    const drop = new Set([
-      'grade',                       // FIX-A: structure-capped grade
-      'camarilla',                   // FIX-B: weighting changed
-      'roundNumber', 'signals',      // FIX-C: round bonus directional + signal names
-      'entryReason', 'filtersApplied', // FIX-C: ROUND_LEVEL_* strings
-      'confluence', 'confluenceDetail', 'reason', // FIX-D: /12 denominators
-      'score', 'weightedBuy', 'weightedSell', 'weightedNoTrade', // FIX-B/C: numeric effects
-      // F3-04 (BUG-027): OTC fill-status fields added (engine.js parity) —
-      // new fields, absent from the 71e87eb baseline by design.
-      'fillStatus', 'entryPrice', 'currentPrice', 'entryDistancePct',
-    ]);
-    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (drop.has(k)) delete o[k]; else w(o[k]); } } })(c);
+    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (OTC_APPROVED_DIVERGENT_FIELDS.has(k)) delete o[k]; else w(o[k]); } } })(c);
     return c;
   }
-  eq('[#14a] OTC output unchanged vs baseline except approved round-2 fields (FIX-A/B/C/D)', stripRound2Changed(baseSig), stripRound2Changed(newSig));
+  eq('[#14a] OTC output unchanged vs baseline except approved fields (FIX-A/B/C/D, F3-04)', stripRound2Changed(baseSig), stripRound2Changed(newSig));
+  // F3-20: the redaction list must stay faithful to the engine — every
+  // redacted field must still be EMITTED by the current OTC engine. A field
+  // that vanishes from the output means the list is stale and must be cleaned
+  // up; this check fails then, so it cannot happen silently.
+  {
+    const toFind = new Set(OTC_APPROVED_DIVERGENT_FIELDS);
+    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (toFind.has(k)) toFind.delete(k); else w(o[k]); } } })(newSig);
+    const missing = [...toFind];
+    ok('[#14a] every redacted field still emitted by the current OTC engine (list not stale)', missing.length === 0,
+      missing.length ? 'no longer emitted: ' + missing.join(', ') : '');
+  }
   ok('[#14b] OTC signal carries NO engine audit (standard-engine only)', !getEngineAudit(newSig));
   // OTC history record stays lean (no structureAudit)
   const { saveSignalToHistory } = await import('../src/history/stats.js');
@@ -622,11 +676,14 @@ console.log('\n── [#15] Existing smoke + syntax + git diff --check ───
   }
   ok('[#15a] node --check passes on all changed/new source', syntaxOk);
 
-  // git diff --check (whitespace errors) on tracked SOURCE modifications vs base
-  // (scoped to src/ + scripts/ so captured log artifacts in verify/ don't make
-  //  the check self-referential).
+  // git diff --check (whitespace errors) on tracked SOURCE modifications vs the
+  // refreshed baseline commit (F3-20: e56cd33 — same constant as the archive;
+  // scoped to src/ + scripts/ so captured log artifacts in verify/ don't make
+  // the check self-referential). This now guards the changes introduced since
+  // the current approved engine tip (i.e. this PR's diff) rather than the
+  // whole post-71e87eb accumulation.
   let diffClean = true; let diffOut = '';
-  try { diffOut = execSync('git diff --check 71e87eb -- src/ scripts/', { stdio: 'pipe' }).toString(); }
+  try { diffOut = execSync('git diff --check ' + BASELINE_COMMIT + ' -- src/ scripts/', { stdio: 'pipe' }).toString(); }
   catch (e) { diffClean = false; diffOut = (e.stdout && e.stdout.toString()) + (e.stderr && e.stderr.toString()); }
   // also verify NEW (untracked) files carry no trailing whitespace
   const newFiles = ['src/signal/voteFilters.js', 'src/signal/r71shadow.js', 'src/history/r71store.js',
@@ -797,14 +854,15 @@ console.log('\n── [#16] Shadow confirmation-candle penalty ─────�
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// [#17] PRODUCTION-EQUIVALENCE FUZZ (>=100 deterministic fixtures vs base 71e87eb)
+// [#17] PRODUCTION-EQUIVALENCE FUZZ (>=100 deterministic fixtures vs the
+//       refreshed baseline e56cd33 — F3-20)
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#17] Production-equivalence fuzz (100 fixtures) ───────');
 {
-  if (!fs.existsSync('verify/baseline/src/signal/engine.js')) {
-    fs.mkdirSync('verify/baseline', { recursive: true });
-    execSync('git archive 71e87eb src | tar -x -C verify/baseline', { stdio: 'pipe' });
-  }
+  // F3-20: baseline refreshed from the stale pre-round-1 71e87eb snapshot to
+  // the current approved engine tip — byte-equality now guards the CURRENT
+  // contract on all 100 fixtures.
+  bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));

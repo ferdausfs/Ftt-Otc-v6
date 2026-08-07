@@ -2,8 +2,8 @@
 
 ── [#1] Baseline production equivalence ──────────────────
 PASS  [#1a] baseline vs instrumented engine byte-equal on 5 fixtures (direction/score/confluence/confidence/grade/recommendations/timeframeAnalysis)
-Signal saved: sig_test_1 BTC/USD BUY
-Signal saved: sig_test_2 BTC/USD BUY
+Signal saved: sig_test_1 BTC/USD NO_TRADE
+Signal saved: sig_test_2 BTC/USD NO_TRADE
 PASS  [#1b] core history record identical with/without audit (additive only)
 PASS  [#1b] audit persisted on the audited row
 
@@ -12,7 +12,7 @@ PASS  [#2] audit present
 PASS  [#2] attribution UNCHANGED
 PASS  [#2] productionPreAi == shadow
 PASS  [#2] no hard-block observed
-PASS  [#2] comparability COMPARABLE_PRE_AI
+PASS  [#2] comparability AI_AFFECTED (D2 block post-71e87eb)
 
 ── [#3] Multiplier-only score difference ──────────────────
 PASS  [#3] productionScore.up = preStruct * multiplier
@@ -72,11 +72,11 @@ PASS  [#9a] engine signal JSON has no Symbol-carried fields
 PASS  [#9b] response wrapper JSON clean
 PASS  [#9c] latest cache JSON clean
 PASS  [#9d] bot message has no audit
-Signal saved: sig_hist_1 BTC/USD BUY
+Signal saved: sig_hist_1 BTC/USD NO_TRADE
 PASS  [#9e] public /api/history stripped structureAudit
 
 ── [#10] Internal persistence ─────────────────────────────
-Signal saved: sig_persist_1 BTC/USD BUY
+Signal saved: sig_persist_1 BTC/USD NO_TRADE
 PASS  [#10a] audit persisted internally as structureAudit
 PASS  [#10a] bounded decisionScope
 PASS  [#10a] per-timeframe audit bounded (3 TFs)
@@ -109,9 +109,10 @@ PASS  [#13b] engine signal unaffected by shadow KV failure
 PASS  [#13b] audit still attached in-memory
 
 ── [#14] OTC regression ───────────────────────────────────
-PASS  [#14a] OTC engine output byte-equal vs baseline
+PASS  [#14a] OTC output unchanged vs baseline except approved fields (FIX-A/B/C/D, F3-04)
+PASS  [#14a] every redacted field still emitted by the current OTC engine (list not stale)
 PASS  [#14b] OTC signal carries NO engine audit (standard-engine only)
-Signal saved: sig_otc_1 EUR/USD-OTC NO_TRADE
+Signal saved: sig_otc_1 EUR/USD-OTC BUY
 PASS  [#14c] OTC record has no structureAudit
 
 ── [#15] Existing smoke + syntax + git diff --check ────────
@@ -159,21 +160,21 @@ PASS  [#17] compared 100 deterministic fixtures (Forex+Crypto)
 PASS  [#17] production output byte-equal on ALL 100 fuzz fixtures (mismatches=0)
 
 ───────────────────────────────────────────────────────────
-PASS: 116   FAIL: 0
+PASS: 117   FAIL: 0
 ALL R7.1 TESTS PASSED
 
 ########## node scripts/r71_smoke.mjs ##########
 --- bullish crypto ---
-  finalSignal : BUY  confidence: 92%
+  finalSignal : NO_TRADE  confidence: 0%
   audit?      : true
-  attribution : UNCHANGED | comparability: COMPARABLE_PRE_AI
+  attribution : UNCHANGED | comparability: AI_AFFECTED
   prodPreAi   : BUY | shadow: BUY
   diagnostic  : {"tfHardBlockObserved":false,"multiplierOrVoteDivergenceObserved":false,"hardBlockFlippedAny":false,"prodTradeTfs":2,"shadowTradeTfs":2}
   audit leaks in JSON? false
 --- bearish crypto ---
-  finalSignal : SELL  confidence: 92%
+  finalSignal : NO_TRADE  confidence: 0%
   audit?      : true
-  attribution : UNCHANGED | comparability: COMPARABLE_PRE_AI
+  attribution : UNCHANGED | comparability: AI_AFFECTED
   prodPreAi   : SELL | shadow: SELL
   diagnostic  : {"tfHardBlockObserved":false,"multiplierOrVoteDivergenceObserved":false,"hardBlockFlippedAny":false,"prodTradeTfs":2,"shadowTradeTfs":2}
   audit leaks in JSON? false
