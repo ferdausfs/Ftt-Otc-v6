@@ -71,15 +71,14 @@ function installNet() {
     if (u.includes('twelvedata')) {
       const p = new URL(u).searchParams;
       if (p.get('start_date') && expiryPrice != null) {
-        // The bracket is expiry +/-5min, so the candle must sit at the MIDDLE
-        // of [start,end] to be within fetchExpiryPrice's 120s match window.
-        // Returning the start timestamp makes it legitimately reject as
-        // NO_MATCH_WITHIN_120S — that was a bug in this harness, not the code.
-        const st = new Date(p.get('start_date').replace(' ', 'T') + 'Z').getTime();
+        // FIX-EH requests signalTime-1min through expiry+1min. Put the mocked
+        // close at expiry (one minute before end_date), not at the midpoint of
+        // the now-asymmetric bracket.
         const en = new Date(p.get('end_date').replace(' ', 'T') + 'Z').getTime();
-        const mid = new Date((st + en) / 2).toISOString().slice(0, 19).replace('T', ' ');
+        const expiry = new Date(en - 60 * 1000).toISOString().slice(0, 19).replace('T', ' ');
         return { ok: true, status: 200, json: async () => ({ values: [{
-          datetime: mid, open: '1', high: '1', low: '1', close: String(expiryPrice),
+          datetime: expiry, open: String(expiryPrice), high: String(expiryPrice),
+          low: String(expiryPrice), close: String(expiryPrice),
         }] }), text: async () => '' };
       }
       // per-interval candle data; 15min oscillates so the regime stays RANGING

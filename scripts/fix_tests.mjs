@@ -38,6 +38,7 @@
  *   T30 F3-17  /api/history excludes cbShadow rows from decided/pending
  *   T31 F3-18  winRate is the last WIN_RATE_LOOKBACK window (ring buffer)
  *   T32 F3-19  decideTfDirection fallback needs winning-side confluence
+ *   T33 FIX-EH entry-hit uses leave-then-return re-test semantics
  *
  * Engine runs use real modules with only network stubbed (same pattern as
  * phase10_integration.mjs); KV is an in-memory double.
@@ -946,6 +947,144 @@ console.log('\n── T32: fallback needs winning-side confluence (F3-19) ─');
   eq('T32c: first branch unchanged (threshold + cat 5)', decideTfDirection(6, 1, 5, 0, 3.0), 'BUY');
   eq('T32d: losing side cat high, winner cat low -> NO_TRADE', decideTfDirection(6, 1, 0, 6, 3.0), 'NO_TRADE');
   eq('T32e: equal-score tie -> NO_TRADE', decideTfDirection(5, 5, 6, 6, 3.0), 'NO_TRADE');
+}
+
+console.log('\n── T33: corrected entry-hit re-test semantics (FIX-EH) ─');
+{
+  // Real UTC timestamps are required because fetchExpiryPrice now separates
+  // the signal candle from candles strictly after it.
+  const signalMs = Date.parse('2020-01-02T10:00:00.000Z');
+  const expiryMs = signalMs + 10 * 60 * 1000;
+  const signalISO = new Date(signalMs).toISOString();
+  const expiryISO = new Date(expiryMs).toISOString();
+  const datetimeAt = (minute) => new Date(signalMs + minute * 60 * 1000)
+    .toISOString().slice(0, 19).replace('T', ' ');
+  const candle = (minute, open, high, low, close) => ({
+    datetime: datetimeAt(minute),
+    open: String(open), high: String(high), low: String(low), close: String(close),
+  });
+
+  const resolve = async (id, direction, values, fillStatus = 'INSTANT') => {
+    const record = {
+      id, pair: 'TEST/USD', direction, fillStatus,
+      entryPrice: 100, expiryTime: expiryISO, timestamp: signalISO,
+      bestTF: '5min', marketRegime: 'RANGING', session: [],
+      result: null, exitPrice: null,
+    };
+    const kv = makeKV({
+      ['pending:' + id]: record,
+      'sig:TEST_USD': [record],
+    });
+    const env = { SIGNAL_CACHE: kv, TWELVEDATA_API_KEYS: '["k1"]' };
+    globalThis.fetch = async () => ({
+      ok: true, status: 200,
+      // TwelveData order is newest-first; production must sort it once parsed.
+      json: async () => ({ values: [...values].reverse() }),
+      text: async () => '',
+    });
+    await scheduledTracker(env);
+    return (await kv.get('sig:TEST_USD', 'json'))[0];
+  };
+
+  const buyStraightUp = await resolve('t33a', 'BUY', [
+    candle(0, 100, 100, 100, 100),
+    candle(1, 100.1, 100.6, 100.1, 100.5),
+    candle(10, 101, 102, 101, 101.5),
+  ]);
+  ok('T33a: BUY straight-up WIN never returns',
+    buyStraightUp.result === 'WIN' && buyStraightUp.entryHit === false &&
+      buyStraightUp.entryHitLegacy === false, JSON.stringify(buyStraightUp));
+
+  const buyStraightDown = await resolve('t33b', 'BUY', [
+    candle(0, 100, 100, 100, 100),
+    candle(1, 100, 100, 99.4, 99.5),
+    candle(10, 99, 99.2, 98.8, 99),
+  ]);
+  ok('T33b: BUY straight-down LOSS is not a re-test',
+    buyStraightDown.result === 'LOSS' && buyStraightDown.entryHit === false &&
+      buyStraightDown.entryHitLegacy === true, JSON.stringify(buyStraightDown));
+
+  const buyRetestWin = await resolve('t33c', 'BUY', [
+    candle(0, 100, 100, 100, 100),
+    candle(1, 100.2, 101, 100.2, 100.8),
+    candle(2, 100.8, 100.9, 100, 100.2),
+    candle(10, 101, 102.2, 100.9, 102),
+  ]);
+  ok('T33c: BUY leaves, re-tests entry, then wins',
+    buyRetestWin.result === 'WIN' && buyRetestWin.entryHit === true,
+    JSON.stringify(buyRetestWin));
+
+  const sellStraightUp = await resolve('t33d', 'SELL', [
+    candle(0, 100, 100, 100, 100),
+    candle(1, 100, 100.6, 100, 100.5),
+    candle(10, 101, 101.3, 100.8, 101),
+  ]);
+  ok('T33d: SELL straight-up LOSS is not a re-test',
+    sellStraightUp.result === 'LOSS' && sellStraightUp.entryHit === false &&
+      sellStraightUp.entryHitLegacy === true, JSON.stringify(sellStraightUp));
+
+  const sellRetestWin = await resolve('t33e', 'SELL', [
+    candle(0, 100, 100, 100, 100),
+    candle(1, 99.8, 99.8, 99, 99.2),
+    candle(2, 99.2, 100, 99.1, 99.8),
+    candle(10, 99, 99.1, 98, 98.5),
+  ]);
+  ok('T33e: SELL leaves, re-tests entry, then wins',
+    sellRetestWin.result === 'WIN' && sellRetestWin.entryHit === true,
+    JSON.stringify(sellRetestWin));
+
+  // Use the real save path here so this case also protects persistence of the
+  // FIX-3/F3-04 fields needed to distinguish PENDING_ENTRY from INSTANT.
+  const pendingKv = makeKV();
+  const pendingEnv = { SIGNAL_CACHE: pendingKv, TWELVEDATA_API_KEYS: '["k1"]' };
+  await saveSignalToHistory({
+    finalSignal: 'BUY', confidence: '80%', grade: { grade: 'A' },
+    bestTimeframe: { timeframe: '5min', expiry: { expiryTime: expiryISO } },
+    recommendations: { '5min': { entry: { price: 100 } } },
+    session: { sessions: [], quality: 'N/A' }, marketRegime: 'RANGING',
+    fillStatus: 'PENDING_ENTRY', currentPrice: 101, entryDistancePct: 1,
+  }, 'TEST/USD', false, pendingEnv, 't33f', 'FRESH_API');
+  const pending = await pendingKv.get('pending:t33f', 'json');
+  pending.timestamp = signalISO;
+  await pendingKv.put('pending:t33f', JSON.stringify(pending));
+  globalThis.fetch = async () => ({
+    ok: true, status: 200,
+    json: async () => ({ values: [
+      candle(10, 100.5, 101, 100.2, 100.8),
+      candle(1, 101, 101.1, 100, 100.2),
+      candle(0, 101, 101, 101, 101),
+    ] }),
+    text: async () => '',
+  });
+  await scheduledTracker(pendingEnv);
+  const pendingRow = (await pendingKv.get('sig:TEST_USD', 'json'))[0];
+  ok('T33f: PENDING_ENTRY BUY uses plain touch',
+    pendingRow.entryHit === true && pendingRow.fillStatus === 'PENDING_ENTRY' &&
+      pendingRow.currentPrice === 101 && pendingRow.entryDistancePct === 1,
+    JSON.stringify(pendingRow));
+
+  let legacyUrl = '';
+  globalThis.fetch = async (url) => {
+    legacyUrl = String(url);
+    return {
+      ok: true, status: 200,
+      json: async () => ({ values: [
+        candle(15, 101, 103, 97, 102),
+        candle(10, 100, 102, 98, 101),
+        candle(5, 100, 105, 95, 100),
+      ] }),
+      text: async () => '',
+    };
+  };
+  const legacyFetch = await fetchExpiryPrice('TEST/USD', expiryISO,
+    { TWELVEDATA_API_KEYS: '["k1"]' });
+  const legacyParams = new URL(legacyUrl).searchParams;
+  ok('T33g: no startTimeISO preserves legacy expiry bracket/extrema',
+    legacyFetch.windowLow === 95 && legacyFetch.windowHigh === 105 &&
+      legacyFetch.postSignal === null &&
+      legacyParams.get('start_date') === datetimeAt(5) &&
+      legacyParams.get('end_date') === datetimeAt(15),
+    JSON.stringify(legacyFetch));
 }
 
 console.log('\n───────────────────────────────────────────────────────────');
