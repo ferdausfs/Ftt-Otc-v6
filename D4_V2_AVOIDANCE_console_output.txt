@@ -1,0 +1,209 @@
+##############################################################################
+#  D4 v2 — AVOIDANCE MODEL (Phase F)
+##############################################################################
+
+  Universe: 5083 decided WIN/LOSS signals (dedup by id)
+  Engine pool WR = 2160/5083 = 42.5% (CI 41.1-43.9%)  | breakeven bar = 55.6%
+
+==============================================================================
+  AUG TRAIN (08-01..08-06)  [primary — post-calibration, no July regime]
+==============================================================================
+
+  TRAIN n=2652  WR=41.9% (CI 40.0-43.8%)
+  VAL   n=635  WR=48.0% (CI 44.2-51.9%)  <- holdout base
+
+  [numpy logistic] TRAIN rank-AUC=0.605  VAL rank-AUC=0.559
+
+  >> tau selected on TRAIN only: P(WIN) >= 0.507  (TRAIN picks coverage=15%, the most selective point TRAIN supports above the 15% R1 floor)
+     TRAIN-subset @tau: WR=54.8% CI[49.9-59.6] n=398
+
+  ---- HOLDOUT (VAL) TRADE-subset @ frozen TRAIN tau ----
+   TRAIN-subset: n= 398 (  15% cov) WR= 54.8% CI[49.9-59.6] edge=-0.014  [fail]
+   VAL-subset  : n= 121 (  19% cov) WR= 57.9% CI[48.9-66.3] edge=+0.041  [fail]  <<<
+
+   (post-hoc VAL coverage-sweep — ILLUSTRATION, not the selected gate):
+
+   coverage-sweep (VAL): keep top X% by P(WIN)
+   keep%     n     WR           CI95    edge
+     15%    95  58.9% [48.9-68.3]  +0.061 <== R1 target coverage floor
+     20%   127  57.5% [48.8-65.7]  +0.035
+     30%   190  57.9% [50.8-64.7]  +0.042
+     40%   254  54.3% [48.2-60.3]  -0.022
+     50%   318  52.5% [47.0-57.9]  -0.055
+     60%   381  51.2% [46.2-56.2]  -0.079
+     80%   508  50.0% [45.7-54.3]  -0.100
+    100%   635  48.0% [44.2-51.9]  -0.135
+
+   per-day holdout stability (VAL @ frozen TRAIN tau=0.507):
+   day                         ALL                 TRADE-subset
+   2026-08-07   n=413 WR=46.0%      n= 56 WR=55.4% CI[42.4-67.6]
+   2026-08-08   n=165 WR=49.1%      n= 34 WR=58.8% CI[42.2-73.6]
+   2026-08-09   n= 57 WR=59.6%      n= 31 WR=61.3% CI[43.8-76.3]
+
+   HONESTY AUDIT - best post-hoc point on VAL curve:
+     scanned 540 thresholds; best at k=190 (cov=30%): WR=57.9% CI[50.8-64.7]
+     >>> This point 'passes' R1, BUT it is the MAX over 540 holdout-
+         peaked thresholds (multiple-comparison / threshold-fishing).
+         The TRAIN-selected gate (above) is the only pre-committed choice and
+         it FAILS the CI. Edge is REAL-but-WEAK; not robustly tradeable yet.
+
+  [sklearn cross-check] VAL rank-corr vs numpy = 1.000
+   sklearn VAL : n= 122 (  19% cov) WR= 58.2% CI[49.3-66.6] edge=+0.048  [fail]
+
+  [XGBoost oracle] TRAIN rank-AUC=0.754 VAL rank-AUC=0.523  (flexible ceiling)
+   xgb VAL @tau: n=  95 (  15% cov) WR= 46.3% CI[36.6-56.3] edge=-0.166  [fail]
+
+   coverage-sweep (XGB VAL): keep top X% by P(WIN)
+   keep%     n     WR           CI95    edge
+     15%    95  46.3% [36.6-56.3]  -0.166 <== R1 target coverage floor
+     20%   127  48.0% [39.5-56.7]  -0.135
+     30%   190  50.0% [43.0-57.0]  -0.100
+     40%   254  51.2% [45.1-57.3]  -0.079
+     50%   318  50.3% [44.8-55.8]  -0.094
+     60%   381  49.1% [44.1-54.1]  -0.117
+     80%   508  48.6% [44.3-53.0]  -0.125
+    100%   635  48.0% [44.2-51.9]  -0.135
+
+  [hand-rule baseline] skip AUD/USD,USD/JPY,GBP/USD,EUR/USD,DOT/USD,HIGHEST,conf80-84,grade A+
+   rules TRAIN : n=1545 (  58% cov) WR= 44.8% CI[42.3-47.3] edge=-0.194  [fail]
+   rules VAL   : n= 360 (  57% cov) WR= 52.2% CI[47.1-57.3] edge=-0.060  [fail]
+
+   intercept b0 = -0.7603
+   numeric coefficients (on standardized scale):
+      confidence     w=+0.0104  (mean=82.000 std=7.163)
+      coreConfidence w=-0.0309  (mean=96.000 std=6.578)
+      hour           w=-0.1026  (mean=11.000 std=6.845)
+      dow            w=+0.0473  (mean=2.000 std=1.770)
+   categorical levels — TOP 12 (most WIN-associated, KEEP):
+      alignment=ALL_BEARISH              +0.3410
+      marketRegime=TRENDING              +0.3235
+      marketRegime=BREAKOUT              +0.3168
+      pair=USD/JPY                       +0.2879
+      pair=XRP/USD                       +0.2592
+      sessionQuality=HIGH                +0.2393
+      alignment=ALL_BULLISH              +0.2268
+      sessionQuality=N/A                 +0.1744
+      assetType=CRYPTO                   +0.1744
+      pair=LINK/USD                      +0.1455
+      pair=SOL/USD                       +0.1248
+      structureVerdict=AGAINST           +0.0851
+   categorical levels — BOTTOM 12 (most LOSS-associated, SKIP):
+      marketRegime=VOLATILE              -0.8177
+      alignment=MOSTLY_BEARISH           -0.3834
+      pair=GBP/USD                       -0.3546
+      alignment=MOSTLY_BULLISH           -0.3526
+      assetType=FOREX                    -0.3426
+      sessionQuality=MEDIUM              -0.2499
+      sessionQuality=LOW                 -0.2388
+      pair=EUR/USD                       -0.2123
+      grade=A+                           -0.2006
+      pair=BTC/USD                       -0.1563
+      structureVerdict=MIXED             -0.1498
+      bestTF=1min                        -0.1372
+
+==============================================================================
+  FULL TRAIN (<=08-06)     [robustness — includes pre-calibration July]
+==============================================================================
+
+  TRAIN n=4448  WR=41.7% (CI 40.3-43.2%)
+  VAL   n=635  WR=48.0% (CI 44.2-51.9%)  <- holdout base
+
+  [numpy logistic] TRAIN rank-AUC=0.590  VAL rank-AUC=0.549
+
+  >> tau selected on TRAIN only: P(WIN) >= 0.491  (TRAIN picks coverage=15%, the most selective point TRAIN supports above the 15% R1 floor)
+     TRAIN-subset @tau: WR=53.7% CI[50.0-57.5] n=668
+
+  ---- HOLDOUT (VAL) TRADE-subset @ frozen TRAIN tau ----
+   TRAIN-subset: n= 668 (  15% cov) WR= 53.7% CI[50.0-57.5] edge=-0.033  [fail]
+   VAL-subset  : n= 174 (  27% cov) WR= 55.2% CI[47.8-62.4] edge=-0.007  [fail]  <<<
+
+   (post-hoc VAL coverage-sweep — ILLUSTRATION, not the selected gate):
+
+   coverage-sweep (VAL): keep top X% by P(WIN)
+   keep%     n     WR           CI95    edge
+     15%    95  58.9% [48.9-68.3]  +0.061 <== R1 target coverage floor
+     20%   127  59.1% [50.4-67.2]  +0.063
+     30%   190  56.3% [49.2-63.2]  +0.014
+     40%   254  55.5% [49.4-61.5]  -0.001
+     50%   318  50.6% [45.2-56.1]  -0.089
+     60%   381  49.3% [44.4-54.3]  -0.112
+     80%   508  48.6% [44.3-53.0]  -0.125
+    100%   635  48.0% [44.2-51.9]  -0.135
+
+   per-day holdout stability (VAL @ frozen TRAIN tau=0.491):
+   day                         ALL                 TRADE-subset
+   2026-08-07   n=413 WR=46.0%      n= 85 WR=48.2% CI[37.9-58.7]
+   2026-08-08   n=165 WR=49.1%      n= 44 WR=63.6% CI[48.9-76.2]
+   2026-08-09   n= 57 WR=59.6%      n= 45 WR=60.0% CI[45.5-73.0]
+
+   HONESTY AUDIT - best post-hoc point on VAL curve:
+     scanned 540 thresholds; best at k=109 (cov=17%): WR=60.6% CI[51.2-69.2]
+     >>> This point 'passes' R1, BUT it is the MAX over 540 holdout-
+         peaked thresholds (multiple-comparison / threshold-fishing).
+         The TRAIN-selected gate (above) is the only pre-committed choice and
+         it FAILS the CI. Edge is REAL-but-WEAK; not robustly tradeable yet.
+
+  [sklearn cross-check] VAL rank-corr vs numpy = 1.000
+   sklearn VAL : n= 174 (  27% cov) WR= 55.2% CI[47.8-62.4] edge=-0.007  [fail]
+
+  [XGBoost oracle] TRAIN rank-AUC=0.715 VAL rank-AUC=0.534  (flexible ceiling)
+   xgb VAL @tau: n= 112 (  18% cov) WR= 50.9% CI[41.8-60.0] edge=-0.084  [fail]
+
+   coverage-sweep (XGB VAL): keep top X% by P(WIN)
+   keep%     n     WR           CI95    edge
+     15%    95  48.4% [38.6-58.3]  -0.128 <== R1 target coverage floor
+     20%   127  52.0% [43.3-60.5]  -0.065
+     30%   190  52.1% [45.0-59.1]  -0.062
+     40%   254  51.6% [45.5-57.7]  -0.072
+     50%   318  51.6% [46.1-57.0]  -0.072
+     60%   381  50.4% [45.4-55.4]  -0.093
+     80%   508  48.8% [44.5-53.2]  -0.121
+    100%   635  48.0% [44.2-51.9]  -0.135
+
+  [hand-rule baseline] skip AUD/USD,USD/JPY,GBP/USD,EUR/USD,DOT/USD,HIGHEST,conf80-84,grade A+
+   rules TRAIN : n=2492 (  56% cov) WR= 45.5% CI[43.6-47.5] edge=-0.180  [fail]
+   rules VAL   : n= 360 (  57% cov) WR= 52.2% CI[47.1-57.3] edge=-0.060  [fail]
+
+   intercept b0 = -0.7422
+   numeric coefficients (on standardized scale):
+      confidence     w=+0.0181  (mean=82.000 std=7.081)
+      coreConfidence w=-0.0263  (mean=97.000 std=6.430)
+      hour           w=-0.0692  (mean=10.000 std=6.650)
+      dow            w=+0.0698  (mean=3.000 std=1.496)
+   categorical levels — TOP 12 (most WIN-associated, KEEP):
+      pair=USD/CHF                       +0.6699
+      structureVerdict=NEUTRAL           +0.3355
+      structureVerdict=AGAINST           +0.3334
+      pair=GBP/CHF                       +0.3162
+      sessionQuality=HIGH                +0.2884
+      pair=BNB/BTC                       +0.2866
+      marketRegime=BREAKOUT              +0.2790
+      structureVerdict=MIXED             +0.2626
+      sessionQuality=LOW                 +0.2517
+      marketRegime=RANGING               +0.2410
+      structureVerdict=ALIGNED           +0.2329
+      marketRegime=TRENDING              +0.1773
+   categorical levels — BOTTOM 12 (most LOSS-associated, SKIP):
+      marketRegime=VOLATILE              -0.9182
+      sessionQuality=HIGHEST             -0.8326
+      pair=AUD/USD                       -0.6595
+      pair=DOT/USD                       -0.4540
+      assetType=FOREX                    -0.2897
+      pair=GBP/USD                       -0.2884
+      alignment=MOSTLY_BEARISH           -0.2869
+      pair=USD/JPY                       -0.2002
+      pair=EUR/USD                       -0.1747
+      alignment=MOSTLY_BULLISH           -0.1437
+      grade=A+                           -0.1360
+      bestTF=1min                        -0.1169
+
+  >> portable JS gate written: scripts/d4v2_avoidance_gate.js
+
+##############################################################################
+#  VERDICT
+##############################################################################
+   AUG TRAIN (08-01..08-06)  [primary — pos VAL WR=57.9% CI[48.9-66.3] cov=19% -> does NOT clear R1 on holdout
+   FULL TRAIN (<=08-06)     [robustness — i VAL WR=55.2% CI[47.8-62.4] cov=27% -> does NOT clear R1 on holdout
+
+  Raw indicators (RSI/ATR/ADX/BB) are NOT persisted in history records.
+  See report for the instrumentation gap + worker PR proposal.
