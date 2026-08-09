@@ -10,6 +10,7 @@ import { analyzeTimeframe } from './timeframe.js';
 import { calculateCandleDuration } from '../analysis/duration.js';
 import { generateEntryReason, getSessionWeightMultiplier, getCandleQualityMultiplier, computeFxLevels } from '../analysis/filters.js';
 import { getSignalGrade } from '../analysis/grade.js';
+import { getCalibratedGradeAndConfidence } from '../analysis/calibration.js';
 import { callCerebrasValidation } from '../ai/cerebras.js';
 import { callGroqValidation } from '../ai/groq.js';
 import { combineDualAIResults, buildIndicatorSnapshot } from '../ai/combine.js';
@@ -326,19 +327,49 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (isDeadMarket && finalDirection !== 'NO_TRADE') filtersApplied.push('DEAD_MARKET_WARN (AI rescued)');
 
   const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
+  // ── CALIBRATION: overwrite confidence & grade with calibrated versions
+  // Raw confidence (vote-share) is kept for filtering (floor etc.) but
+  // reported confidence is calibrated to empirical WR (TRAIN 08-01..06).
+  // This fixes inverted ladder: A+ was worst 37.8% WR, now A+ best.
+  let calibratedConfForReport = confidence;
+  let calibratedScoreForTrace = null;
+  if (finalDirection !== 'NO_TRADE') {
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    calibratedConfForReport = cal.calibratedConfidence;
+    calibratedScoreForTrace = cal.score;
+  }
+
   // F3-05 (BUG-013): a blocked signal must never carry a tradable grade
   // (previously a NO_TRADE could still score "B — GOOD, suitable for trading"
   // from alignment + confluence at confidence 0).
-  const finalGrade = finalDirection === 'NO_TRADE'
-    ? { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' }
-    : getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
+  let finalGrade;
+  if (finalDirection === 'NO_TRADE') {
+    finalGrade = { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' };
+  } else {
+    // getSignalGrade now itself uses calibrated scoring, but we also have calibrated
+    // confidence from above. Use the calibrated grade directly to ensure consistency.
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    finalGrade = cal.grade;
+    calibratedConfForReport = cal.calibratedConfidence;
+    calibratedScoreForTrace = cal.score;
+  }
+
+  // Use calibrated confidence for reporting, rawConfidence kept in coreConfidence
+  const reportConfidence = finalDirection === 'NO_TRADE' ? 0 : calibratedConfForReport;
 
   const __signal = {
-    finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
+    finalSignal: finalDirection, confidence: reportConfidence + '%', grade: finalGrade,
     // B5: pre-filter engine confidence (captured at line ~164, before HTF block,
     // alignment bonus, session/exotic penalties, AI rescue etc). Lets us later
     // separate "engine was weak" from "filters ate it".
     coreConfidence: rawConfidence,
+    // Calibration trace (Phase F fix)
+    calibration: finalDirection === 'NO_TRADE' ? null : {
+      rawConfidence: confidence,
+      calibratedConfidence: calibratedConfForReport,
+      calibratedScore: calibratedScoreForTrace,
+      version: 'calib-v1-2026-08-09',
+    },
     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,
