@@ -121,6 +121,92 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
     // B2/§3.3: only present on shadow rows — keeps normal records lean
     if (signal.cbShadow === true) record.cbShadow = true;
 
+    // ── D4 v2.1 instrumentation: persist a tiny best-TF indicator snapshot ──
+    // Purpose: future avoidance models (D4 v2.1) need raw signal-time indicators
+    // (RSI / ATR% / ADX / BB-bandwidth). The engine already computes them per TF
+    // (indicators/index.js) and they live on signal.timeframeAnalysis[bestTF].indicators,
+    // but history previously discarded them. This persists 4-6 numbers (~40 bytes/row).
+    // Read-only diagnostic — NO runtime consumer yet. Fail-open: diagnostics must
+    // never break a save. See D4_V2_AVOIDANCE_REPORT.md §7.
+    //
+    // Field-shape verification (2026-08-09, against actual engine at 229acdb):
+    //   - raw indicators (calculateAllIndicators) → { rsi: [...], atr: [...],
+    //     adx: { adx: [...], plusDI, minusDI }, bollinger: { bandwidth: [...] } }
+    //   - BUT analyzeTimeframe() flattens to formatted strings:
+    //     { rsi: "55.55", atr: "0.999", adx: "9.90", bbBandwidth: "1.24", ... }
+    //   → instrumentation must support BOTH shapes (raw array + formatted).
+    //   See PR body table.
+    try {
+      const _bestTF = signal.bestTimeframe && signal.bestTimeframe.timeframe;
+      const _tfa = _bestTF && signal.timeframeAnalysis ? signal.timeframeAnalysis[_bestTF] : null;
+      const _ind = _tfa && _tfa.indicators;
+      const _last = (a) => Array.isArray(a) ? a[a.length - 1] : a;
+      const _toNum = (v) => {
+        if (typeof v === 'number' && isFinite(v)) return Math.round(v * 1000) / 1000;
+        if (typeof v === 'string') {
+          const n = parseFloat(v);
+          if (isFinite(n)) return Math.round(n * 1000) / 1000;
+        }
+        return null;
+      };
+      const _extract = (val) => {
+        if (val === null || val === undefined) return null;
+        const last = _last(val);
+        return _toNum(last);
+      };
+      const _extractRaw = (val) => {
+        if (val === null || val === undefined) return null;
+        const last = _last(val);
+        if (typeof last === 'number' && isFinite(last)) return last;
+        if (typeof last === 'string') {
+          const n = parseFloat(last);
+          return isFinite(n) ? n : null;
+        }
+        return null;
+      };
+      if (_ind && _bestTF) {
+        // RSI: raw array OR formatted string/number
+        const rsi = _extract(_ind.rsi);
+
+        // ATR + close → atrPct
+        const atrRaw = _extractRaw(_ind.atr);
+        const closeRaw = _tfa.entry && _tfa.entry.price != null
+          ? (typeof _tfa.entry.price === 'string' ? parseFloat(_tfa.entry.price) : _tfa.entry.price)
+          : null;
+        const atrPct = (atrRaw !== null && closeRaw !== null && isFinite(closeRaw) && closeRaw !== 0)
+          ? Math.round(((atrRaw / closeRaw) * 100) * 1000) / 1000
+          : null;
+
+        // ADX: raw shape { adx: [...] } OR formatted string/number at ind.adx
+        let adx = null;
+        if (_ind.adx !== null && _ind.adx !== undefined) {
+          if (typeof _ind.adx === 'object' && !Array.isArray(_ind.adx) && _ind.adx.adx !== undefined) {
+            adx = _extract(_ind.adx.adx);
+          } else {
+            adx = _extract(_ind.adx);
+          }
+        }
+
+        // BB bandwidth: raw bollinger.bandwidth array OR formatted bbBandwidth
+        let bbBandwidth = null;
+        if (_ind.bollinger && _ind.bollinger.bandwidth !== undefined) {
+          bbBandwidth = _extract(_ind.bollinger.bandwidth);
+        } else if (_ind.bbBandwidth !== undefined) {
+          bbBandwidth = _extract(_ind.bbBandwidth);
+        } else if (_ind.bollinger && typeof _ind.bollinger.bandwidth === 'number') {
+          bbBandwidth = _toNum(_ind.bollinger.bandwidth);
+        }
+
+        record.signalIndicators = {
+          bestTF: _bestTF,
+          rsi: rsi,
+          atrPct: atrPct,
+          adx: adx,
+          bbBandwidth: bbBandwidth,
+        };
+      }
+    } catch (e) { /* diagnostic only — never break a save */ }
+
     // R7.1: attach the bounded structure-attribution audit (standard engine
     // only — OTC signals carry no audit, so getEngineAudit returns null and
     // OTC records stay lean). This enumerable field is the ONLY audit surface;

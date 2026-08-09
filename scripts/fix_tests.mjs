@@ -1099,6 +1099,216 @@ console.log('\n── T33: corrected entry-hit re-test semantics (FIX-EH) ─');
     JSON.stringify(legacyFetch));
 }
 
+console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ───────');
+{
+  // ── T34a: real engine → save → record has signalIndicators ──
+  const rev = (arr) => [...arr].reverse();
+  const candleDataA = {
+    '1min': rev(series(100, 90, 0.02)),
+    '5min': rev(series(100, 90, 0.1)),
+    '15min': rev(seriesFastSin(100, 90, 0.4)),
+  };
+  const qA = quiet();
+  const sigA = await buildMultiTimeframeSignal('TEST/USD', candleDataA, 'CRYPTO', {}, {});
+  qA();
+
+  ok('T34a: engine produced signal for instrumentation', sigA && sigA.bestTimeframe && sigA.timeframeAnalysis, JSON.stringify(sigA && sigA.bestTimeframe));
+  if (sigA && sigA.bestTimeframe && sigA.timeframeAnalysis) {
+    const kvA = makeKV();
+    const envA = { SIGNAL_CACHE: kvA };
+    await saveSignalToHistory(sigA, 'TEST/USD', false, envA, 'sig_t34a', 'FRESH_API');
+    const histA = await kvA.get('sig:TEST_USD', 'json');
+    const recA = histA && histA[0];
+    ok('T34a: history row saved', !!recA, JSON.stringify(recA && recA.id));
+    ok('T34a: signalIndicators present', recA && recA.signalIndicators, JSON.stringify(recA && recA.signalIndicators));
+    if (recA && recA.signalIndicators) {
+      const si = recA.signalIndicators;
+      eq('T34a: bestTF matches engine bestTF', si.bestTF, sigA.bestTimeframe.timeframe);
+      ok('T34a: rsi numeric or null (structure check)', si.rsi === null || (typeof si.rsi === 'number' && isFinite(si.rsi)), 'rsi=' + si.rsi);
+      ok('T34a: atrPct numeric or null', si.atrPct === null || (typeof si.atrPct === 'number' && isFinite(si.atrPct)), 'atrPct=' + si.atrPct);
+      ok('T34a: adx numeric or null', si.adx === null || (typeof si.adx === 'number' && isFinite(si.adx)), 'adx=' + si.adx);
+      ok('T34a: bbBandwidth numeric or null', si.bbBandwidth === null || (typeof si.bbBandwidth === 'number' && isFinite(si.bbBandwidth)), 'bb=' + si.bbBandwidth);
+      // With our deterministic fixture, most indicators should be numeric (not all null)
+      const numericCount = [si.rsi, si.atrPct, si.adx, si.bbBandwidth].filter(v => typeof v === 'number').length;
+      ok('T34a: at least 2 indicators numeric (not all null)', numericCount >= 2, 'numericCount=' + numericCount + ' ' + JSON.stringify(si));
+    }
+  }
+
+  // ── T34b: fail-open — malformed timeframeAnalysis ──
+  const baseSig = {
+    finalSignal: 'BUY', confidence: '80%', grade: { grade: 'A' },
+    bestTimeframe: { timeframe: '5min', expiry: { expiryTime: new Date(Date.now() + 600000).toISOString() } },
+    recommendations: { '5min': { entry: { price: 100 } } },
+    session: { sessions: [], quality: 'N/A' }, marketRegime: 'RANGING',
+    timeframeAnalysis: {
+      '5min': {
+        entry: { price: 100 },
+        indicators: {
+          rsi: [30, 40, 55],
+          atr: [0.5, 0.6, 0.7],
+          adx: { adx: [10, 20, 25] },
+          bollinger: { bandwidth: [2, 2.5, 3] },
+        },
+      },
+    },
+  };
+  // case b1: timeframeAnalysis = null
+  {
+    const kv = makeKV(); const env = { SIGNAL_CACHE: kv };
+    const sig = { ...baseSig, timeframeAnalysis: null };
+    let threw = false;
+    try { await saveSignalToHistory(sig, 'TEST/USD', false, env, 'sig_t34b1', 'FRESH_API'); } catch (e) { threw = true; }
+    ok('T34b1: null timeframeAnalysis does not throw', !threw);
+    const hist = await kv.get('sig:TEST_USD', 'json');
+    ok('T34b1: save still succeeds', hist && hist.length === 1);
+    const rec = hist && hist[0];
+    ok('T34b1: signalIndicators absent or null on malformed', !rec.signalIndicators || rec.signalIndicators === null || Object.keys(rec.signalIndicators).length === 0 || (rec.signalIndicators.rsi === null), JSON.stringify(rec && rec.signalIndicators));
+  }
+  // case b2: missing indicators
+  {
+    const kv = makeKV(); const env = { SIGNAL_CACHE: kv };
+    const sig = { ...baseSig, timeframeAnalysis: { '5min': { entry: { price: 100 } } } };
+    let threw = false;
+    try { await saveSignalToHistory(sig, 'TEST/USD', false, env, 'sig_t34b2', 'FRESH_API'); } catch (e) { threw = true; }
+    ok('T34b2: missing indicators does not throw', !threw);
+    const hist = await kv.get('sig:TEST_USD', 'json');
+    ok('T34b2: save still succeeds', hist && hist.length === 1);
+  }
+  // case b3: indicators.rsi = undefined, atr missing, adx malformed
+  {
+    const kv = makeKV(); const env = { SIGNAL_CACHE: kv };
+    const sig = {
+      ...baseSig,
+      timeframeAnalysis: {
+        '5min': {
+          entry: { price: 100 },
+          indicators: { rsi: undefined, atr: null, adx: null, bollinger: null },
+        },
+      },
+    };
+    let threw = false;
+    try { await saveSignalToHistory(sig, 'TEST/USD', false, env, 'sig_t34b3', 'FRESH_API'); } catch (e) { threw = true; }
+    ok('T34b3: undefined rsi / null atr does not throw', !threw);
+    const hist = await kv.get('sig:TEST_USD', 'json');
+    ok('T34b3: save still succeeds', hist && hist.length === 1);
+    const rec = hist && hist[0];
+    // Should have signalIndicators with nulls, but not throw
+    if (rec && rec.signalIndicators) {
+      ok('T34b3: signalIndicators fields null when indicators missing', rec.signalIndicators.rsi === null && rec.signalIndicators.atrPct === null, JSON.stringify(rec.signalIndicators));
+    } else {
+      ok('T34b3: signalIndicators gracefully absent', true);
+    }
+  }
+  // case b4: bestTimeframe missing
+  {
+    const kv = makeKV(); const env = { SIGNAL_CACHE: kv };
+    const sig = { ...baseSig, bestTimeframe: null };
+    let threw = false;
+    try { await saveSignalToHistory(sig, 'TEST/USD', false, env, 'sig_t34b4', 'FRESH_API'); } catch (e) { threw = true; }
+    ok('T34b4: null bestTimeframe does not throw', !threw);
+    const hist = await kv.get('sig:TEST_USD', 'json');
+    ok('T34b4: save still succeeds even without bestTF', hist && hist.length === 1);
+  }
+
+  // ── T34c: OTC path ──
+  {
+    const zigGen = (n, base, up, dn, upLeg, dnLeg, tail) => {
+      const out = []; let c = base;
+      for (let i = 0; i < n; i++) {
+        const o = c;
+        if (i < n - tail) {
+          const phase = i % (upLeg + dnLeg);
+          if (phase < upLeg) { c = c + up; out.push({ datetime: 'x', open: o, high: c + 0.12, low: o - 0.01, close: c, volume: 1000 }); }
+          else               { c = c - dn; out.push({ datetime: 'x', open: o, high: o + 0.01, low: c - 0.12, close: c, volume: 1000 }); }
+        } else {
+          c = c - 0.06; out.push({ datetime: 'x', open: o, high: o, low: c, close: c, volume: 1000 });
+        }
+      }
+      return out;
+    };
+    const SESSION = { sessions: ['OTC_24/7'], quality: 'N/A' };
+    const cd = {
+      '1min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6),
+      '5min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6),
+      '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6),
+    };
+    const q = quiet();
+    const sig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', SESSION, false, {});
+    q();
+    ok('T34c: OTC engine produced signal', sig && sig.bestTimeframe && sig.timeframeAnalysis, sig && sig.finalSignal);
+    if (sig && sig.bestTimeframe) {
+      const kv = makeKV(); const env = { SIGNAL_CACHE: kv };
+      await saveSignalToHistory(sig, 'EUR/USD-OTC', true, env, 'sig_t34c', 'FRESH_API');
+      const hist = await kv.get('sig:EUR_USD_OTC', 'json');
+      const rec = hist && hist[0];
+      ok('T34c: OTC history row saved', !!rec);
+      if (rec) {
+        // signalIndicators may be present or gracefully null — both ok, but must not throw
+        const hasField = rec.hasOwnProperty('signalIndicators');
+        if (hasField) {
+          const si = rec.signalIndicators;
+          ok('T34c: OTC signalIndicators structure valid', si && typeof si.bestTF === 'string', JSON.stringify(si));
+          if (si) {
+            ok('T34c: OTC rsi numeric or null', si.rsi === null || typeof si.rsi === 'number', 'rsi=' + si.rsi);
+            ok('T34c: OTC adx numeric or null', si.adx === null || typeof si.adx === 'number', 'adx=' + si.adx);
+          }
+        } else {
+          // If no bestTF, gracefully absent is also acceptable per spec
+          ok('T34c: OTC signalIndicators gracefully absent when no bestTF indicators', true);
+        }
+      }
+    }
+  }
+
+  // ── T34d: /api/history round-trip ──
+  {
+    const kv = makeKV({
+      'sig:BTC_USD': [
+        {
+          id: 'hist_t34', pair: 'BTC/USD', direction: 'BUY', confidence: '80%', grade: 'A',
+          entryPrice: 100, expiryTime: new Date(Date.now() + 600000).toISOString(),
+          bestTF: '5min', alignment: 'ALL_BULLISH', marketRegime: 'RANGING',
+          session: ['24/7'], sessionQuality: 'N/A', timestamp: new Date().toISOString(),
+          result: null, exitPrice: null, checkedAt: null,
+          signalIndicators: { bestTF: '5min', rsi: 62.123, atrPct: 0.456, adx: 28.9, bbBandwidth: 4.321 },
+        },
+      ],
+    });
+    const env = { SIGNAL_CACHE: kv };
+    const res = await handleHistory(new URL('https://x/api/history?pair=BTC/USD&limit=10'), env);
+    const body = await res.json();
+    ok('T34d: /api/history returned signals', body && body.signals && body.signals.length === 1);
+    const sigRow = body && body.signals && body.signals[0];
+    ok('T34d: signalIndicators survives round-trip', sigRow && sigRow.signalIndicators, JSON.stringify(sigRow && sigRow.signalIndicators));
+    if (sigRow && sigRow.signalIndicators) {
+      eq('T34d: rsi preserved', sigRow.signalIndicators.rsi, 62.123);
+      eq('T34d: atrPct preserved', sigRow.signalIndicators.atrPct, 0.456);
+      eq('T34d: adx preserved', sigRow.signalIndicators.adx, 28.9);
+      eq('T34d: bbBandwidth preserved', sigRow.signalIndicators.bbBandwidth, 4.321);
+      eq('T34d: bestTF preserved', sigRow.signalIndicators.bestTF, '5min');
+    }
+    // confirm handleHistory strips structureAudit but NOT signalIndicators
+    const kv2 = makeKV({
+      'sig:BTC_USD': [
+        {
+          id: 'hist_t34b', pair: 'BTC/USD', direction: 'BUY', confidence: '80%', grade: 'A',
+          entryPrice: 100, expiryTime: new Date(Date.now() + 600000).toISOString(),
+          bestTF: '5min', alignment: 'ALL_BULLISH', marketRegime: 'RANGING',
+          session: ['24/7'], sessionQuality: 'N/A', timestamp: new Date().toISOString(),
+          result: null, exitPrice: null, checkedAt: null,
+          structureAudit: { secret: true, shouldBeStripped: 1 },
+          signalIndicators: { bestTF: '5min', rsi: 55.5, atrPct: 0.3, adx: 22.1, bbBandwidth: 3.3 },
+        },
+      ],
+    });
+    const env2 = { SIGNAL_CACHE: kv2 };
+    const res2 = await handleHistory(new URL('https://x/api/history?pair=BTC/USD&limit=10'), env2);
+    const body2 = await res2.json();
+    const sigRow2 = body2 && body2.signals && body2.signals[0];
+    ok('T34d: structureAudit stripped, signalIndicators kept', sigRow2 && !sigRow2.structureAudit && sigRow2.signalIndicators, JSON.stringify({ hasAudit: !!(sigRow2 && sigRow2.structureAudit), hasInd: !!(sigRow2 && sigRow2.signalIndicators) }));
+  }
+}
+
 console.log('\n───────────────────────────────────────────────────────────');
 console.log(fail === 0 ? 'PASS: ' + pass + '   FAIL: 0' : 'PASS: ' + pass + '   FAIL: ' + fail);
 console.log(fail === 0 ? 'ALL FIX TESTS PASSED' : 'FAILURES: ' + failures.join(', '));
