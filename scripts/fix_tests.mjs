@@ -39,6 +39,7 @@
  *   T31 F3-18  winRate is the last WIN_RATE_LOOKBACK window (ring buffer)
  *   T32 F3-19  decideTfDirection fallback needs winning-side confluence
  *   T33 FIX-EH entry-hit uses leave-then-return re-test semantics
+ *   T34 D4-v2.1 signalIndicators instrumentation at signal time (fail-open snapshot)
  *
  * Engine runs use real modules with only network stubbed (same pattern as
  * phase10_integration.mjs); KV is an in-memory double.
@@ -1097,6 +1098,100 @@ console.log('\n── T33: corrected entry-hit re-test semantics (FIX-EH) ─');
       legacyParams.get('start_date') === datetimeAt(5) &&
       legacyParams.get('end_date') === datetimeAt(15),
     JSON.stringify(legacyFetch));
+}
+
+console.log('\n── T34: signalIndicators instrumentation (D4 v2.1) ────────');
+{
+  // T34a: real engine signal -> saveSignalToHistory -> record has signalIndicators
+  const kvA = makeKV();
+  const envA = { SIGNAL_CACHE: kvA };
+  const { makeCandleData } = await import('./r71_fixtures.mjs');
+  const cdA = makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 });
+  const rA = quiet();
+  const sigA = await buildMultiTimeframeSignal('BTC/USD', cdA, 'CRYPTO', {}, {});
+  rA();
+  await saveSignalToHistory(sigA, 'BTC/USD', false, envA, 'sig_t34a', 'FRESH_API');
+  const rowA = (await kvA.get('sig:BTC_USD', 'json'))[0];
+  ok('T34a: record has signalIndicators object', rowA && typeof rowA.signalIndicators === 'object' && rowA.signalIndicators !== null);
+  ok('T34a: bestTF matches signal bestTimeframe', rowA?.signalIndicators?.bestTF === (sigA.bestTimeframe && sigA.bestTimeframe.timeframe));
+  ok('T34a: rsi is numeric or null', rowA?.signalIndicators?.rsi === null || (typeof rowA?.signalIndicators?.rsi === 'number' && Number.isFinite(rowA.signalIndicators.rsi)));
+  ok('T34a: atrPct is numeric or null', rowA?.signalIndicators?.atrPct === null || (typeof rowA?.signalIndicators?.atrPct === 'number' && Number.isFinite(rowA.signalIndicators.atrPct)));
+  ok('T34a: adx is numeric or null', rowA?.signalIndicators?.adx === null || (typeof rowA?.signalIndicators?.adx === 'number' && Number.isFinite(rowA.signalIndicators.adx)));
+  ok('T34a: bbBandwidth is numeric or null', rowA?.signalIndicators?.bbBandwidth === null || (typeof rowA?.signalIndicators?.bbBandwidth === 'number' && Number.isFinite(rowA.signalIndicators.bbBandwidth)));
+
+  // T34b: fail-open — malformed timeframeAnalysis / missing indicators
+  const kvB = makeKV();
+  const envB = { SIGNAL_CACHE: kvB };
+  const badSig1 = {
+    finalSignal: 'BUY', confidence: '80%', grade: { grade: 'A' },
+    bestTimeframe: { timeframe: '5min' }, timeframeAnalysis: null,
+  };
+  let threwB1 = false;
+  try {
+    await saveSignalToHistory(badSig1, 'ETH/USD', false, envB, 'sig_t34b1', 'FRESH_API');
+  } catch (e) { threwB1 = true; }
+  const rowB1 = (await kvB.get('sig:ETH_USD', 'json'))[0];
+  ok('T34b: null timeframeAnalysis save succeeds without throw', !threwB1 && !!rowB1 && (rowB1.signalIndicators == null));
+
+  const badSig2 = {
+    finalSignal: 'SELL', confidence: '75%', grade: { grade: 'B' },
+    bestTimeframe: { timeframe: '15min' },
+    timeframeAnalysis: { '15min': { indicators: { rsi: undefined, atr: null, adx: {} } } },
+  };
+  let threwB2 = false;
+  try {
+    await saveSignalToHistory(badSig2, 'SOL/USD', false, envB, 'sig_t34b2', 'FRESH_API');
+  } catch (e) { threwB2 = true; }
+  const rowB2 = (await kvB.get('sig:SOL_USD', 'json'))[0];
+  ok('T34b: malformed indicators save succeeds without throw', !threwB2 && !!rowB2 && typeof rowB2.signalIndicators === 'object' && rowB2.signalIndicators.rsi === null);
+
+  // T34c: OTC path — buildMultiTimeframeSignalOTC output -> save -> signalIndicators present
+  const kvC = makeKV();
+  const envC = { SIGNAL_CACHE: kvC };
+  const cdC = {
+    '1min': makeCandleData({ basePrice: 1.08, vol: 0.001, trend: 0, seed: 10 })['1min'],
+    '5min': makeCandleData({ basePrice: 1.08, vol: 0.001, trend: 0, seed: 10 })['5min'],
+    '15min': makeCandleData({ basePrice: 1.08, vol: 0.001, trend: 0, seed: 10 })['15min'],
+  };
+  const rC = quiet();
+  const sigC = await buildMultiTimeframeSignalOTC(cdC, 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  rC();
+  await saveSignalToHistory(sigC, 'EUR/USD-OTC', true, envC, 'sig_t34c', 'FRESH_API');
+  const rowC = (await kvC.get('sig:EUR_USD_OTC', 'json'))[0];
+  ok('T34c: OTC signalIndicators present on saved row', rowC && typeof rowC.signalIndicators === 'object' && rowC.signalIndicators !== null);
+  ok('T34c: OTC signalIndicators has numeric fields',
+    (rowC?.signalIndicators?.rsi === null || typeof rowC?.signalIndicators?.rsi === 'number') &&
+    (rowC?.signalIndicators?.atrPct === null || typeof rowC?.signalIndicators?.atrPct === 'number') &&
+    (rowC?.signalIndicators?.adx === null || typeof rowC?.signalIndicators?.adx === 'number')
+  );
+
+  // T34d: /api/history round-trip — saved row with signalIndicators survives
+  const kvD = makeKV();
+  const envD = { SIGNAL_CACHE: kvD };
+  const sigD = {
+    finalSignal: 'BUY', confidence: '85%', grade: { grade: 'A+' },
+    bestTimeframe: { timeframe: '5min' },
+    timeframeAnalysis: {
+      '5min': {
+        entry: { price: 100 },
+        indicators: { rsi: '62.50', atr: '1.500000', adx: '30.20', bbBandwidth: '3.4500' }
+      }
+    }
+  };
+  await saveSignalToHistory(sigD, 'GBP/USD', false, envD, 'sig_t34d', 'FRESH_API');
+  const histUrl = new URL('https://worker.local/api/history?pair=GBP/USD');
+  const histRes = await handleHistory(histUrl, envD);
+  const histJson = await histRes.json();
+  ok('T34d: /api/history returns 200 ok with signals array', Array.isArray(histJson.signals) && histJson.signals.length === 1);
+  const returnedRow = histJson.signals[0];
+  ok('T34d: returned row preserves signalIndicators', returnedRow && typeof returnedRow.signalIndicators === 'object' && returnedRow.signalIndicators !== null);
+  eq('T34d: signalIndicators values round-trip correctly', returnedRow.signalIndicators, {
+    bestTF: '5min',
+    rsi: 62.5,
+    atrPct: 1.5,
+    adx: 30.2,
+    bbBandwidth: 3.45,
+  });
 }
 
 console.log('\n───────────────────────────────────────────────────────────');

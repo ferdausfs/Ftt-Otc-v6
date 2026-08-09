@@ -121,6 +121,48 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
     // B2/§3.3: only present on shadow rows — keeps normal records lean
     if (signal.cbShadow === true) record.cbShadow = true;
 
+    // ── D4 v2.1 instrumentation: persist a tiny best-TF indicator snapshot ──
+    // Purpose: future avoidance models (D4 v2.1) need raw signal-time indicators
+    // (RSI / ATR% / ADX / BB-bandwidth). The engine already computes them per TF
+    // (indicators/index.js -> timeframe.js) and they live on signal.timeframeAnalysis[bestTF].indicators,
+    // but history previously discarded them. This persists 4-6 numbers (~40 bytes/row).
+    // Read-only diagnostic — NO runtime consumer yet. Fail-open: diagnostics must
+    // never break a save. See D4_V2_AVOIDANCE_REPORT.md §7.
+    try {
+      const bestTF = signal.bestTimeframe && signal.bestTimeframe.timeframe;
+      const tfa = (bestTF && signal.timeframeAnalysis) ? signal.timeframeAnalysis[bestTF] : null;
+      const ind = tfa && tfa.indicators;
+      if (ind && bestTF && bestTF !== 'N/A') {
+        const _last = (a) => Array.isArray(a) ? a[a.length - 1] : a;
+        const _num = (v) => {
+          if (v === null || v === undefined || v === 'N/A') return null;
+          const val = _last(v);
+          const n = typeof val === 'number' ? val : (typeof val === 'string' ? parseFloat(val) : null);
+          return (typeof n === 'number' && Number.isFinite(n) && !isNaN(n))
+            ? Math.round(n * 1000) / 1000 : null;
+        };
+
+        const rawRsi = ind.rsi;
+        const rawAtr = _num(ind.atr);
+        const close = tfa.entry && typeof tfa.entry.price === 'number' ? tfa.entry.price
+                    : (typeof record.entryPrice === 'number' ? record.entryPrice : null);
+        const rawAdx = (ind.adx && typeof ind.adx === 'object' && !Array.isArray(ind.adx) && ind.adx.adx !== undefined)
+          ? ind.adx.adx : ind.adx;
+        const rawBbBW = ind.bbBandwidth !== undefined
+          ? ind.bbBandwidth
+          : (ind.bollinger && ind.bollinger.bandwidth !== undefined ? ind.bollinger.bandwidth : null);
+
+        record.signalIndicators = {
+          bestTF,
+          rsi:         _num(rawRsi),
+          atrPct:      (rawAtr !== null && close !== null && close > 0)
+                         ? Math.round((rawAtr / close) * 100 * 1000) / 1000 : null,
+          adx:         _num(rawAdx),
+          bbBandwidth: _num(rawBbBW),
+        };
+      }
+    } catch (e) { /* diagnostic only — never break a save */ }
+
     // R7.1: attach the bounded structure-attribution audit (standard engine
     // only — OTC signals carry no audit, so getEngineAudit returns null and
     // OTC records stay lean). This enumerable field is the ONLY audit surface;
