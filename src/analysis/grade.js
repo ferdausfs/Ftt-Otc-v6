@@ -1,51 +1,25 @@
 import { CONFIG } from '../config.js';
+import { getCalibratedGradeAndConfidence, CALIB_GRADE_DEFS } from './calibration.js';
 
+// GRADE_DEFS kept for cap helper and backward compat
+const GRADE_DEFS = CALIB_GRADE_DEFS;
+
+/**
+ * Calibrated grade — replaces inverted sc = conf*0.4 + avgConf*5 + alignmentBonus
+ * Now uses empirical calibration table derived from TRAIN 08-01..06.
+ * avgConf and alignment are kept in signature for compat but not used for scoring
+ * (they were found to be non-predictive / inverted vs WR). StructureOverall is used.
+ */
 export function getSignalGrade(confidence, avgConf, alignment, structureOverall) {
-  let sc = 0;
-  sc += Math.min(40, confidence * 0.4);
-  sc += Math.min(35, avgConf * 5);
-  if (alignment === 'ALL_BULLISH' || alignment === 'ALL_BEARISH') sc += 25;
-  else if (alignment.indexOf('MOSTLY') === 0) sc += 12;
-
-  let grade;
-  if (sc >= 85) grade = { grade:'A+', label:'EXCELLENT',  description:'Very high probability setup.' };
-  else if (sc >= 75) grade = { grade:'A',  label:'STRONG',     description:'High probability with multiple confirmations.' };
-  else if (sc >= 60) grade = { grade:'B',  label:'GOOD',       description:'Solid setup. Suitable for trading.' };
-  else if (sc >= 45) grade = { grade:'C',  label:'MODERATE',   description:'Some conflicts. Trade with caution.' };
-  else if (sc >= 30) grade = { grade:'D',  label:'WEAK',       description:'Low confidence. Consider skipping.' };
-  else grade = { grade:'F',  label:'AVOID',     description:'Very weak. Do NOT trade.' };
-
-  // ── STRUCTURE OVERRIDE ──
-  // Engine direction যদি overall market structure এর বিপরীতে যায়,
-  // তাহলে A+/A grade দেওয়া যাবে না — confidence/alignment যতই ভালো হোক।
-  const order = ['F','D','C','B','A','A+'];
-  const cap = (g, maxGrade) => {
-    const gi = order.indexOf(g.grade);
-    const mi = order.indexOf(maxGrade);
-    if (gi > mi) {
-      const capped = GRADE_DEFS[maxGrade];
-      return { ...capped, description: capped.description + ' (Structure conflict — capped from ' + g.grade + ')' };
-    }
-    return g;
-  };
-
-  if (structureOverall === 'AGAINST') {
-    grade = cap(grade, 'C');     // structure সরাসরি against → max C
-  } else if (structureOverall === 'MIXED') {
-    grade = cap(grade, 'B');     // structure mixed → max B
-  }
-
-  return grade;
+  // Use calibrated scoring
+  const cal = getCalibratedGradeAndConfidence(confidence, structureOverall);
+  return cal.grade;
 }
 
-const GRADE_DEFS = {
-  'A+': { grade:'A+', label:'EXCELLENT',  description:'Very high probability setup.' },
-  'A':  { grade:'A',  label:'STRONG',     description:'High probability with multiple confirmations.' },
-  'B':  { grade:'B',  label:'GOOD',       description:'Solid setup. Suitable for trading.' },
-  'C':  { grade:'C',  label:'MODERATE',   description:'Some conflicts. Trade with caution.' },
-  'D':  { grade:'D',  label:'WEAK',       description:'Low confidence. Consider skipping.' },
-  'F':  { grade:'F',  label:'AVOID',      description:'Very weak. Do NOT trade.' },
-};
+// Expose helper for engine to get both calibrated confidence and grade in one call
+export function getCalibratedGradeAndConfidenceWrapper(confidence, structureOverall) {
+  return getCalibratedGradeAndConfidence(confidence, structureOverall);
+}
 
 export function resolveTieWithTolerance(details) {
   let tU = 0; let tD = 0; let cU = 0; let cD = 0;

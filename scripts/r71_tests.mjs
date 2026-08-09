@@ -93,8 +93,12 @@ console.log('\n── [#1] Baseline production equivalence ───────
   // Baseline tree = full copy of the approved engine at BASELINE_COMMIT
   // (F3-20: e56cd33 — the stale pre-round-1 71e87eb snapshot was retired
   // because every approved round-1/2/3 fix intentionally changed output).
+  // Phase F: calibration (grade/confidence) intentionally changes output to fix
+  // inverted ladder. Those fields are in STANDARD_CALIBRATION_DIVERGENT set and
+  // excluded from byte-equality check with justification.
   bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
+  const STANDARD_CALIBRATION_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence']);
   // deep-strip time-dependent fields so two near-simultaneous runs compare equal
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));
@@ -103,6 +107,7 @@ console.log('\n── [#1] Baseline production equivalence ───────
       if (o && typeof o === 'object') {
         for (const k of Object.keys(o)) {
           if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k];
+          else if (STANDARD_CALIBRATION_DIVERGENT.has(k)) delete o[k];
           else walk(o[k]);
         }
       }
@@ -132,7 +137,7 @@ console.log('\n── [#1] Baseline production equivalence ───────
       console.log('   divergence in fixture ' + f.name + ' at key: ' + diff);
     }
   }
-  ok('[#1a] baseline vs instrumented engine byte-equal on ' + fixtures.length + ' fixtures (direction/score/confluence/confidence/grade/recommendations/timeframeAnalysis)', allEq);
+  ok('[#1a] baseline vs instrumented engine byte-equal on ' + fixtures.length + ' fixtures (direction/score/confluence/confidence/grade/recommendations/timeframeAnalysis) — calibration fields excluded (Phase F)', allEq);
 
   // [#1b] normal history behaviour unchanged (record minus the additive audit)
   const { saveSignalToHistory } = await import('../src/history/stats.js');
@@ -621,7 +626,8 @@ console.log('\n── [#14] OTC regression ────────────�
   // explicit approved-divergence inventory, and every entry is verified below
   // to still be emitted by the engine, so the list cannot silently rot.
   const OTC_APPROVED_DIVERGENT_FIELDS = new Set([
-    'grade',                       // FIX-A: structure-capped grade
+    'grade',                       // FIX-A: structure-capped grade + Phase F calibration (inverted cap)
+    'confidence', 'calibration', 'coreConfidence', // Phase F: calibrated confidence/grade (inverted ladder fix)
     'camarilla',                   // FIX-B: weighting changed
     'roundNumber', 'signals',      // FIX-C: round bonus directional + signal names
     'entryReason', 'filtersApplied', // FIX-C: ROUND_LEVEL_* strings
@@ -856,6 +862,8 @@ console.log('\n── [#16] Shadow confirmation-candle penalty ─────�
 // ════════════════════════════════════════════════════════════════════════
 // [#17] PRODUCTION-EQUIVALENCE FUZZ (>=100 deterministic fixtures vs the
 //       refreshed baseline e56cd33 — F3-20)
+//       Phase F: calibration changes grade/confidence intentionally, so those
+//       fields are excluded from byte-equality (approved divergence).
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#17] Production-equivalence fuzz (100 fixtures) ───────');
 {
@@ -864,10 +872,11 @@ console.log('\n── [#17] Production-equivalence fuzz (100 fixtures) ───
   // contract on all 100 fixtures.
   bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
+  const CALIB_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence']);
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));
     const kill = new Set(['generatedAt', 'expiryTime', 'nextCandleClose', 'humanReadable', 'nextRefresh', 'candleTime']);
-    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k]; else w(o[k]); } } })(clone);
+    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown' || CALIB_DIVERGENT.has(k)) delete o[k]; else w(o[k]); } } })(clone);
     return clone;
   }
   const N = 100; let compared = 0; let mismatches = 0; const mismatchSamples = [];

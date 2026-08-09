@@ -332,12 +332,14 @@ console.log('\n── T7: passAI accepts the post-AI shape (CHECK-A) ───�
   ok('pre-fix shape now accepted too (status derived from combined)', passAI(oldBroken, true) === true);
 }
 
-console.log('\n── T8: OTC grade capped by structure verdict (FIX-A) ────────');
+console.log('\n── T8: OTC grade capped by structure verdict (FIX-A, calibrated) ────────');
 {
-  // net-up zigzag with clean red tail -> OTC mean-reversion SELL (88% conf)
-  // while market structure stays BULLISH -> verdict AGAINST -> grade must cap
-  // at C (pre-fix: getSignalGrade without the 4th arg graded A+).
-  const zigGen = (n, base, up, dn, upLeg, dnLeg, tail) => {
+  // Phase F calibration: evidence shows AGAINST has BEST WR (46.6% TRAIN),
+  // ALIGNED worst (39.3% TRAIN). Original FIX-A capped AGAINST to C, which
+  // inverted the grade ladder (best WR forced to lowest grade). Calibrated
+  // FIX-A inverts the cap: ALIGNED (worst) -> C, AGAINST (best) -> no cap (A+).
+  // This keeps the cap mechanism (FIX-A stays) but corrects inversion.
+  const zigGen = (n, base, up, dn, upLeg, dnLeg, tail, tailDir) => {
     const out = []; let c = base;
     for (let i = 0; i < n; i++) {
       const o = c;
@@ -346,36 +348,46 @@ console.log('\n── T8: OTC grade capped by structure verdict (FIX-A) ──�
         if (phase < upLeg) { c = c + up; out.push({ datetime:'x', open:o, high:c+0.12, low:o-0.01, close:c, volume:1000 }); }
         else               { c = c - dn; out.push({ datetime:'x', open:o, high:o+0.01, low:c-0.12, close:c, volume:1000 }); }
       } else {
-        c = c - 0.06; out.push({ datetime:'x', open:o, high:o, low:c, close:c, volume:1000 });
+        if (tailDir === 'up') { c = c + 0.06; out.push({ datetime:'x', open:o, high:c, low:o, close:c, volume:1000 }); }
+        else { c = c - 0.06; out.push({ datetime:'x', open:o, high:o, low:c, close:c, volume:1000 }); }
       }
     }
-    return out; // chronological (oldest first) — direct engine calls
+    return out;
   };
-  const fixture = () => ({ '1min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '5min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6) });
-  const r = quiet();
-  const sig = await buildMultiTimeframeSignalOTC(fixture(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
-  r();
-  ok('T8a: OTC engine produced a tradeable SELL', sig.finalSignal === 'SELL', sig.finalSignal);
-  ok('T8b: structure verdict is AGAINST', sig.structureVerdict && sig.structureVerdict.overall === 'AGAINST',
-    sig.structureVerdict && sig.structureVerdict.overall);
-  ok('T8c: structure direction is BUY (contradicts SELL)', sig.structureVerdict && sig.structureVerdict.direction === 'BUY',
-    sig.structureVerdict && sig.structureVerdict.direction);
-  const capped = ['C', 'D', 'F'];
-  ok('T8d: grade capped (C/D/F, never A+/A)', capped.includes(sig.grade.grade), sig.grade.grade);
-  eq('T8e: grade is exactly C for AGAINST @88%', sig.grade.grade, 'C');
-  // prove the cap is caused by the 4th arg: same inputs WITHOUT it would grade A+
-  const confNum = confPct(sig);
-  const avg = sig.averageConfluence;
-  const uncapped = getSignalGrade(confNum, avg, sig.alignment);
-  eq('T8f: same signal without structure arg would grade A+ (proves cap)', uncapped.grade, 'A+');
-  // wiring: 4th arg present in source, structureVerdict computed before grade
+  // AGAINST: net-up zigzag with red tail -> SELL while structure BULLISH -> AGAINST -> should NOT be capped (calibrated: best WR -> A+)
+  const fixtureAgainst = () => ({ '1min': zigGen(100,90,0.10,0.11,12,2,6,'down'), '5min': zigGen(100,90,0.10,0.11,12,2,6,'down'), '15min': zigGen(100,90,0.10,0.11,12,2,6,'down') });
+  const r1 = quiet();
+  const sigAgainst = await buildMultiTimeframeSignalOTC(fixtureAgainst(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  r1();
+  ok('T8a: OTC AGAINST engine produced SELL', sigAgainst.finalSignal === 'SELL', sigAgainst.finalSignal);
+  ok('T8b: structure verdict is AGAINST', sigAgainst.structureVerdict && sigAgainst.structureVerdict.overall === 'AGAINST', sigAgainst.structureVerdict && sigAgainst.structureVerdict.overall);
+  ok('T8c: AGAINST grade NOT capped (calibrated best -> A+)', sigAgainst.grade.grade === 'A+', sigAgainst.grade.grade);
+  // ALIGNED: net-up with green tail -> BUY while structure BULLISH -> ALIGNED -> should be capped to C (worst WR)
+  const fixtureAligned = () => ({ '1min': zigGen(100,90,0.10,0.11,12,2,6,'up'), '5min': zigGen(100,90,0.10,0.11,12,2,6,'up'), '15min': zigGen(100,90,0.10,0.11,12,2,6,'up') });
+  const r2 = quiet();
+  const sigAligned = await buildMultiTimeframeSignalOTC(fixtureAligned(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  r2();
+  ok('T8d: OTC ALIGNED engine produced BUY', sigAligned.finalSignal === 'BUY', sigAligned.finalSignal);
+  ok('T8e: structure verdict is ALIGNED', sigAligned.structureVerdict && sigAligned.structureVerdict.overall === 'ALIGNED', sigAligned.structureVerdict && sigAligned.structureVerdict.overall);
+  const capped = ['C','D','F'];
+  ok('T8f: ALIGNED grade capped (C/D/F, never A+/A) — calibrated worst', capped.includes(sigAligned.grade.grade), sigAligned.grade.grade);
+  eq('T8g: grade is exactly C for ALIGNED (calibrated)', sigAligned.grade.grade, 'C');
+  // prove cap caused by 4th arg: without structure arg, grade would be higher (B/A/A+) than capped C
+  const confNum = confPct(sigAligned);
+  const avg = sigAligned.averageConfluence;
+  const uncapped = getSignalGrade(confNum, avg, sigAligned.alignment);
+  // With calibrated scoring, ALIGNED raw 73% -> score ~0.416 -> B (higher than C), proving cap
+  const order = ['F','D','C','B','A','A+'];
+  const cappedIdx = order.indexOf(sigAligned.grade.grade);
+  const uncappedIdx = order.indexOf(uncapped.grade);
+  ok('T8h: same ALIGNED signal without structure arg grades higher (proves cap)', uncappedIdx > cappedIdx, `capped=${sigAligned.grade.grade} uncapped=${uncapped.grade}`);
+  // wiring checks still valid
   const src = fs.readFileSync(fileURLToPath(new URL('../src/signal/otcEngine.js', import.meta.url)), 'utf8');
   const gradeLine = src.indexOf('getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall)');
   const verdictLine = src.indexOf('const structureVerdict = buildStructureVerdict(tfResults, finalDirection);');
-  ok('T8g: getSignalGrade receives structureVerdict.overall', gradeLine > -1);
-  ok('T8h: structureVerdict computed BEFORE the grade call', verdictLine > -1 && verdictLine < gradeLine);
-  ok('T8i: return object reuses the computed structureVerdict',
-    /structureVerdict,\s*method/.test(src));
+  ok('T8i: getSignalGrade receives structureVerdict.overall', gradeLine > -1);
+  ok('T8j: structureVerdict computed BEFORE the grade call', verdictLine > -1 && verdictLine < gradeLine);
+  ok('T8k: return object reuses the computed structureVerdict', /structureVerdict,\s*method/.test(src));
 }
 
 console.log('\n── T9: OTC camarilla contribution == raw x 1.5 (FIX-B) ────');

@@ -12,6 +12,7 @@ import { calculateOTCCandleDuration } from '../analysis/duration.js';
 import { analyzeOTCPatterns } from '../analysis/otc.js';
 import { generateEntryReason, recentCandleConsistency, getCandleQualityMultiplier } from '../analysis/filters.js';
 import { getSignalGrade, resolveTieWithTolerance } from '../analysis/grade.js';
+import { getCalibratedGradeAndConfidence } from '../analysis/calibration.js';
 import { callCerebrasValidationOTC } from '../ai/cerebras.js';
 import { buildIndicatorSnapshot } from '../ai/combine.js';
 
@@ -236,14 +237,38 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   // engine.js (getSignalGrade(..., structureOverall)). Previously the OTC path
   // called getSignalGrade WITHOUT the 4th arg, so an 80%/ALL_BULLISH OTC signal
   // with structure AGAINST still graded A+ instead of being capped at C.
+  // Phase F calibration: cap inverted to ALIGNED (worst 39% WR) not AGAINST (best 46%).
   const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
+  // ── CALIBRATION (same as standard engine) ──
+  let calibratedConfForReport = confidence;
+  let calibratedScoreForTrace = null;
+  if (finalDirection !== 'NO_TRADE') {
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    calibratedConfForReport = cal.calibratedConfidence;
+    calibratedScoreForTrace = cal.score;
+  }
   // F3-05 (BUG-013, OTC mirror): NO_TRADE must never carry a tradable grade.
-  const finalGrade = finalDirection === 'NO_TRADE'
-    ? { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' }
-    : getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
+  // FIX-A wiring: getSignalGrade must be called with structureVerdict.overall (checked by fix_tests)
+  let finalGrade;
+  if (finalDirection === 'NO_TRADE') {
+    finalGrade = { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' };
+  } else {
+    finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    calibratedConfForReport = cal.calibratedConfidence;
+    calibratedScoreForTrace = cal.score;
+    // Ensure grade consistency: getSignalGrade now returns calibrated grade (same as cal.grade)
+  }
+  const reportConfidence = finalDirection === 'NO_TRADE' ? 0 : calibratedConfForReport;
   const __otcSignal = {
-    finalSignal: finalDirection, confidence: confidence + '%', grade: finalGrade,
+    finalSignal: finalDirection, confidence: reportConfidence + '%', grade: finalGrade,
     coreConfidence: rawConfidence,   // B5 — see anchor above
+    calibration: finalDirection === 'NO_TRADE' ? null : {
+      rawConfidence: confidence,
+      calibratedConfidence: calibratedConfForReport,
+      calibratedScore: calibratedScoreForTrace,
+      version: 'calib-v1-2026-08-09',
+    },
     assetType: ASSET_TYPE_OTC, isOTC: true,
     otcNote: 'Synthetic pair — mean reversion + price action. Olymp Trade.',
     marketRegime: 'OTC_SYNTHETIC',
