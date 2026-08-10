@@ -27,7 +27,7 @@ export async function handleHealth(env) {
   const phase10        = await getPushStats(env);        // Phase 10 push
 
   return jsonResponse({
-    status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
+    status: 'healthy', version: '6.10.0', timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
     apiKeysLoaded: keyCount,
     quotaUsedToday,
