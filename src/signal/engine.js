@@ -298,10 +298,11 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   // These gates/multipliers operate on raw engine confidence and deliberately
   // run before the existing CALIB output mapping below.
   let edgeFeatures = null;
+  let rollingCalibration = null;
   if (finalDirection !== 'NO_TRADE') {
     const edgeTF = findBestTimeframe(tfResults, finalDirection).timeframe;
     const edgeCandles = candleData[edgeTF] || candleData['5min'] || candleData['1min'] || [];
-    const rollingCalibration = await getRollingCalibration(env);
+    rollingCalibration = await getRollingCalibration(env);
     edgeFeatures = evaluateEdgeFeatures({ direction: finalDirection, indicators: indicatorCache[edgeTF], candles: edgeCandles, now, hourMultipliers: rollingCalibration && rollingCalibration.hourMultipliers });
     edgeFeatures.calibrationSnapshotVersion = rollingCalibration ? rollingCalibration.version : null;
     if (edgeFeatures.rsiDirectionBlocked) {
@@ -363,7 +364,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   let calibratedConfForReport = confidence;
   let calibratedScoreForTrace = null;
   if (finalDirection !== 'NO_TRADE') {
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, rollingCalibration);
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
   }
@@ -377,7 +378,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   } else {
     // getSignalGrade now itself uses calibrated scoring, but we also have calibrated
     // confidence from above. Use the calibrated grade directly to ensure consistency.
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, rollingCalibration);
     finalGrade = cal.grade;
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;

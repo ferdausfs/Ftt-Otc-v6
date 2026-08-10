@@ -15,7 +15,7 @@ All changes happen **before** `getCalibratedGradeAndConfidence`; CALIB remains t
 
 ## Rolling refresh
 
-The result-checker invokes `refreshRollingCalibration` with a due guard (168 hours). It uses only resolved rows from the prior 14 days and stores a bounded snapshot at `calibration:rolling:v1`: base/structure/confidence-bucket WR tables and hour multipliers. Hour multipliers are consumed live; the other tables are stored for review and a controlled CALIB update rather than silently moving output grade thresholds. A refresh requires 20 resolved rows per aggregate/slice. This is deliberately conservative against tiny-slice drift.
+The result-checker invokes `refreshRollingCalibration` with a due guard (168 hours). It uses only resolved rows from the prior 14 days and stores a bounded snapshot at `calibration:rolling:v1`: base/structure/confidence-bucket WR tables and hour multipliers. Hour multipliers and empirical base/structure/confidence-bucket lookup tables are consumed live; grade/confidence **thresholds** are intentionally not silently refit. A refresh requires 20 resolved rows per aggregate/slice. This is deliberately conservative against tiny-slice drift.
 
 ## Validation
 

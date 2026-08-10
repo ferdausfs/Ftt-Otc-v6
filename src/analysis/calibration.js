@@ -116,23 +116,27 @@ function getConfBucket(confidence) {
   return '88+';
 }
 
-function getStructWR(overall) {
-  if (!overall) return CALIB.base;
-  const v = CALIB.structWR[overall];
+function getStructWR(overall, rolling = null) {
+  const base = rolling && typeof rolling.base === 'number' ? rolling.base : CALIB.base;
+  if (!overall) return base;
+  const v = (rolling && rolling.structWR && rolling.structWR[overall] !== undefined)
+    ? rolling.structWR[overall] : CALIB.structWR[overall];
   if (typeof v === 'number') return v;
-  return CALIB.base;
+  return base;
 }
 
-function getConfBucketWR(bucket) {
-  const v = CALIB.confBucketWR[bucket];
+function getConfBucketWR(bucket, rolling = null) {
+  const base = rolling && typeof rolling.base === 'number' ? rolling.base : CALIB.base;
+  const v = (rolling && rolling.confBucketWR && rolling.confBucketWR[bucket] !== undefined)
+    ? rolling.confBucketWR[bucket] : CALIB.confBucketWR[bucket];
   if (typeof v === 'number') return v;
-  return CALIB.base;
+  return base;
 }
 
-export function getCalibratedScore(confidence, structureOverall) {
+export function getCalibratedScore(confidence, structureOverall, rolling = null) {
   const bucket = getConfBucket(confidence);
-  const sWR = getStructWR(structureOverall);
-  const cWR = getConfBucketWR(bucket);
+  const sWR = getStructWR(structureOverall, rolling);
+  const cWR = getConfBucketWR(bucket, rolling);
   // simple average — stable, interpretable, evidence-backed
   // (could weight, but equal weight worked for TRAIN/VAL monotonic)
   return (sWR + cWR) / 2;
@@ -166,8 +170,8 @@ const GRADE_DEFS = {
   'F':  { grade: 'F',  label: 'AVOID',     description:'Very weak. Do NOT trade.' },
 };
 
-export function getCalibratedGradeAndConfidence(confidence, structureOverall) {
-  const score = getCalibratedScore(confidence, structureOverall);
+export function getCalibratedGradeAndConfidence(confidence, structureOverall, rolling = null) {
+  const score = getCalibratedScore(confidence, structureOverall, rolling);
   const calConf = scoreToCalibratedConfidence(score);
   const gradeLetter = scoreToGrade(score);
   const grade = { ...GRADE_DEFS[gradeLetter] };
