@@ -131,6 +131,7 @@ export async function handleSignal(pair, env, ctx, opts = {}) {
   const result = await handleSignalRaw(pair, env, ctx, {
     fxMode: !!opts?.fxMode,
     noPush: !!opts?.noPush,
+    edgeFeaturesEnabled: opts?.edgeFeaturesEnabled !== false,
   });
 
   if (preferCache && result && !result.error && result.signal
@@ -190,7 +191,10 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
     return { pair, assetType, signal: generateDummySignal(pair), source: 'DUMMY_FALLBACK', errors, timestamp: new Date().toISOString() };
   }
 
-  const signal = await buildMultiTimeframeSignal(pair, candleData, assetType, env, { fxMode: reqFxMode });
+  const signal = await buildMultiTimeframeSignal(pair, candleData, assetType, env, {
+    fxMode: reqFxMode,
+    edgeFeaturesEnabled: opts.edgeFeaturesEnabled !== false,
+  });
   if (holidayWarning) signal.holidayWarning = holidayWarning;
   if (assetType === ASSET_TYPE.FOREX && session.quality === 'LOW')
     signal.sessionWarning = 'Low liquidity session. Best: London (07-16 UTC), NY (12-21 UTC).';

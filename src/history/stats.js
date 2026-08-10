@@ -112,12 +112,40 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
       aiStatus:         derivedAiStatus(signal),
       coreConfidence:   signal.coreConfidence === undefined || signal.coreConfidence === null
                           ? null : signal.coreConfidence,
+      // Raw post-filter confidence is required to refresh CALIB without
+      // accidentally training on its own calibrated output label.
+      calibrationRawConfidence: signal.calibration && typeof signal.calibration.rawConfidence === 'number'
+                          ? signal.calibration.rawConfidence : null,
+      calibrationVersion: signal.calibration ? (signal.calibration.version || null) : null,
       entrySource:      entrySource || null,
       fillStatus:       signal.fillStatus || null,
       currentPrice:     signal.currentPrice || null,
       entryDistancePct: signal.entryDistancePct == null ? null : signal.entryDistancePct,
       timestamp: now, result: null, exitPrice: null, checkedAt: null,
     };
+    // Bounded, additive edge context for future holdout refreshes. Keep only
+    // primitive signal-time fields; never persist the whole adaptive profile.
+    try {
+      const edge = signal.edgeContext;
+      if (edge) {
+        record.edgeContext = {
+          version: edge.version || null,
+          hourUtc: edge.time && Number.isFinite(edge.time.hourUtc) ? edge.time.hourUtc : null,
+          dayOfWeekUtc: edge.time && Number.isFinite(edge.time.dayOfWeekUtc) ? edge.time.dayOfWeekUtc : null,
+          hourMultiplier: edge.time && Number.isFinite(edge.time.multiplier) ? edge.time.multiplier : null,
+          sessionRangePosition: edge.sessionRange && Number.isFinite(edge.sessionRange.position)
+            ? edge.sessionRange.position : null,
+          sessionRangeState: edge.sessionRange ? (edge.sessionRange.state || 'UNKNOWN') : 'UNKNOWN',
+          volatilityState: edge.indicators ? (edge.indicators.volatilityState || 'UNKNOWN') : 'UNKNOWN',
+          atrState: edge.indicators ? (edge.indicators.atrState || 'UNKNOWN') : 'UNKNOWN',
+          recentFormWinRate: edge.recentForm && Number.isFinite(edge.recentForm.winRate)
+            ? edge.recentForm.winRate : null,
+          recentFormSampleSize: edge.recentForm && Number.isFinite(edge.recentForm.sampleSize)
+            ? edge.recentForm.sampleSize : 0,
+          adaptiveVersion: edge.adaptive ? (edge.adaptive.version || null) : null,
+        };
+      }
+    } catch (_) { /* additive diagnostics never break history */ }
     // B2/§3.3: only present on shadow rows — keeps normal records lean
     if (signal.cbShadow === true) record.cbShadow = true;
 
@@ -203,6 +231,13 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
           atrPct: atrPct,
           adx: adx,
           bbBandwidth: bbBandwidth,
+          // Phase edge extension (additive): already flattened by
+          // analyzeTimeframe, with raw-shape support retained for callers that
+          // pass indicator arrays directly.
+          atrPercentile: _extract(_ind.atrPercentile),
+          atrState: typeof _ind.atrState === 'string' ? _ind.atrState : null,
+          bbBandwidthRatio: _extract(_ind.bbBandwidthRatio),
+          volatilityState: typeof _ind.volatilityState === 'string' ? _ind.volatilityState : null,
         };
       }
     } catch (e) { /* diagnostic only — never break a save */ }
@@ -571,6 +606,19 @@ async function updateSignalResult(record, winLoss, exitPrice, env) {
     }
     await env.SIGNAL_CACHE.put(histKey, JSON.stringify(existing), { expirationTtl: 60*60*24*30 });
   } catch (e) { console.warn('updateSignalResult error:', e.message); }
+}
+
+export async function getRecentPairForm(pair, env) {
+  if (!env || !env.SIGNAL_CACHE) return null;
+  try {
+    const stats = await env.SIGNAL_CACHE.get(HISTORY_CONFIG.KV_STATS_PREFIX + pairKey(pair), 'json');
+    if (!stats || typeof stats.winRate !== 'number') return null;
+    return {
+      winRate: stats.winRate,
+      sampleSize: typeof stats.sampleSize === 'number' ? stats.sampleSize : 0,
+      lastUpdated: stats.lastUpdated || null,
+    };
+  } catch (e) { return null; }
 }
 
 export async function getDynamicConfidenceAdjustment(pair, env) {

@@ -19,6 +19,11 @@ export const CONFIG = {
   // behind this flag for a one-line re-enable after the window.
   D2_BAD_PAIR_BLOCK_ENABLED: false,
 
+  // Edge-feature layer (2026-08-10).  All behaviour-changing values live in
+  // EDGE_FEATURE_CONFIG below; this alias keeps feature flags discoverable to
+  // health/debug consumers without duplicating any thresholds in the engine.
+  EDGE_FEATURES_VERSION: 'edge-v1-2026-08-10',
+
   // Phase F (2026-08-04): Forex SELL probe instrumentation. Tracks every
   // forex SELL with its signal-time context (regime/session/HTF/RSI) in a
   // private KV namespace so the forward window can decide whether forex SELL
@@ -130,6 +135,109 @@ export const HISTORY_CONFIG = {
   // B0-3: pending records live 2h; retry-cap gives up after 15 failed checks
   PENDING_TTL_MS:                 2 * 60 * 60 * 1000,
   PENDING_MAX_CHECKS:             15,
+};
+
+// ── EDGE FEATURES (Phase F, 2026-08-10) ─────────────────────
+// Every threshold/factor used by the input-side edge layer is declared here.
+// A weekly refresh may replace empirical hour/pair/session tables in KV, but
+// code never invents a threshold.  Features without a train→holdout-qualified
+// history field remain instrumentation-only (`applyFactor:false`) until the
+// validation script has enough signal-time rows; this is deliberate, not a
+// silent approximation.
+export const EDGE_FEATURE_CONFIG = {
+  VERSION: 'edge-v1-2026-08-10',
+
+  HOUR_OF_DAY: {
+    enabled: true,
+    timezone: 'UTC',
+    minMultiplier: 0.85,
+    maxMultiplier: 1.10,
+    // TRAIN 2026-08-01..06: per-hour WR / pooled WR, clipped.  Weekly KV
+    // calibration replaces this table once its minimum sample bar is met.
+    multipliers: {
+      0:1.08, 1:1.10, 2:0.95, 3:1.04, 4:0.86, 5:0.97,
+      6:0.92, 7:0.93, 8:1.10, 9:1.10, 10:0.85, 11:0.99,
+      12:0.90, 13:1.02, 14:0.89, 15:0.85, 16:0.88, 17:1.10,
+      18:1.07, 19:0.85, 20:0.85, 21:1.10, 22:1.10, 23:0.85,
+    },
+  },
+
+  SESSION_RANGE: {
+    enabled: true,
+    // The position is computed and emitted now.  The bonus remains inactive
+    // until historical rows contain the position across both fixed windows.
+    applyFactor: false,
+    lowExtremeMax: 0.20,
+    highExtremeMin: 0.80,
+    meanReversionFactor: 1.05,
+    preferredTimeframe: '15min',
+  },
+
+  RSI_DIRECTION: {
+    enabled: true,
+    // Gate logic + instrumentation are shipped, but old fixed-window history
+    // has no signal-time RSI. Activate only after feature_validation.py has
+    // both-window rows; do not turn an aggregate slice into fake holdout proof.
+    applyGate: false,
+    buyBlockAbove: 55,
+    sellBlockBelow: 45,
+    action: 'BLOCK',
+  },
+
+  VOLATILITY_STATE: {
+    enabled: true,
+    // Legacy history has absolute BB width, not the required width/own-median
+    // ratio. Keep the normalised gate provisional until it earns activation.
+    applyFactor: false,
+    normalizationLookback: 40,
+    minHistory: 20,
+    deadRatioMax: 0.20,
+    midRatioMax: 0.80,
+    midSqueezeFactor: 0.90,
+    deadAction: 'BLOCK',
+  },
+
+  ATR_PERCENTILE: {
+    enabled: true,
+    // Classification/instrumentation ships immediately.  No directional
+    // behaviour is enabled without the required holdout history.
+    applyFactor: false,
+    historyLookback: 50,
+    minHistory: 20,
+    deadMaxPercentile: 0.10,
+    lowMaxPercentile: 0.25,
+    expansionMinPercentile: 0.75,
+    lowVolFactor: 0.90,
+    deadAction: 'BLOCK',
+  },
+
+  RECENT_FORM: {
+    enabled: true,
+    lookback: 20,
+    minSamples: 20,
+    blockBelowWinRate: 0.35,
+    confidenceFactor: 0.85,
+  },
+
+  ADAPTIVE_CALIBRATION: {
+    enabled: true,
+    kvKey: 'calibration:adaptive:v1',
+    refreshDays: 7,
+    lookbackDays: 14,
+    maxProfileAgeDays: 21,
+    minRows: 100,
+    minBucketRows: 20,
+    shrinkageRows: 20,
+    profileTtlSeconds: 60 * 60 * 24 * 35,
+    weightMin: 0.85,
+    weightMax: 1.10,
+    // Hour earned its place in the fixed train/holdout simulation. Pair and
+    // session tables are still recomputed and published, but are not consumed
+    // as input factors until their independent holdout table passes.
+    applyHourWeights: true,
+    applyPairWeights: false,
+    applySessionWeights: false,
+  },
 };
 
 // ── SESSION WEIGHTS ─────────────────────────────────────────

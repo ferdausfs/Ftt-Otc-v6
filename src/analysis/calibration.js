@@ -116,31 +116,41 @@ function getConfBucket(confidence) {
   return '88+';
 }
 
-function getStructWR(overall) {
-  if (!overall) return CALIB.base;
-  const v = CALIB.structWR[overall];
-  if (typeof v === 'number') return v;
-  return CALIB.base;
+function resolveCalib(calibration) {
+  if (!calibration || typeof calibration !== 'object') return CALIB;
+  if (!calibration.structWR || !calibration.confBucketWR) return CALIB;
+  return calibration;
 }
 
-function getConfBucketWR(bucket) {
-  const v = CALIB.confBucketWR[bucket];
+function getStructWR(overall, calibration = CALIB) {
+  const active = resolveCalib(calibration);
+  if (!overall) return active.base;
+  const v = active.structWR[overall];
   if (typeof v === 'number') return v;
-  return CALIB.base;
+  return active.base;
 }
 
-export function getCalibratedScore(confidence, structureOverall) {
+function getConfBucketWR(bucket, calibration = CALIB) {
+  const active = resolveCalib(calibration);
+  const v = active.confBucketWR[bucket];
+  if (typeof v === 'number') return v;
+  return active.base;
+}
+
+export function getCalibratedScore(confidence, structureOverall, calibration = CALIB) {
+  const active = resolveCalib(calibration);
   const bucket = getConfBucket(confidence);
-  const sWR = getStructWR(structureOverall);
-  const cWR = getConfBucketWR(bucket);
+  const sWR = getStructWR(structureOverall, active);
+  const cWR = getConfBucketWR(bucket, active);
   // simple average — stable, interpretable, evidence-backed
   // (could weight, but equal weight worked for TRAIN/VAL monotonic)
   return (sWR + cWR) / 2;
 }
 
-export function scoreToCalibratedConfidence(score) {
-  const t = CALIB.confThresholds;
-  const v = CALIB.confValues;
+export function scoreToCalibratedConfidence(score, calibration = CALIB) {
+  const active = resolveCalib(calibration);
+  const t = active.confThresholds || CALIB.confThresholds;
+  const v = active.confValues || CALIB.confValues;
   if (score < t.t1) return v['72-75'];
   if (score < t.t2) return v['76-79'];
   if (score < t.t3) return v['80-83'];
@@ -148,8 +158,9 @@ export function scoreToCalibratedConfidence(score) {
   return v['88-92'];
 }
 
-export function scoreToGrade(score) {
-  const g = CALIB.gradeThresholds;
+export function scoreToGrade(score, calibration = CALIB) {
+  const active = resolveCalib(calibration);
+  const g = active.gradeThresholds || CALIB.gradeThresholds;
   if (score >= g.Aplus) return 'A+';
   if (score >= g.A) return 'A';
   if (score >= g.B) return 'B';
@@ -166,10 +177,11 @@ const GRADE_DEFS = {
   'F':  { grade: 'F',  label: 'AVOID',     description:'Very weak. Do NOT trade.' },
 };
 
-export function getCalibratedGradeAndConfidence(confidence, structureOverall) {
-  const score = getCalibratedScore(confidence, structureOverall);
-  const calConf = scoreToCalibratedConfidence(score);
-  const gradeLetter = scoreToGrade(score);
+export function getCalibratedGradeAndConfidence(confidence, structureOverall, calibration = CALIB) {
+  const active = resolveCalib(calibration);
+  const score = getCalibratedScore(confidence, structureOverall, active);
+  const calConf = scoreToCalibratedConfidence(score, active);
+  const gradeLetter = scoreToGrade(score, active);
   const grade = { ...GRADE_DEFS[gradeLetter] };
 
   // ── STRUCTURE OVERRIDE (evidence-based inversion) ──

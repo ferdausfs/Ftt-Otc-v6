@@ -21,9 +21,14 @@ import { computeEngineAudit, attachEngineAudit } from './r71shadow.js';
 import { attachD2Audit } from './d2shadow.js';
 // Forex SELL Probe: forward-evidence context collector (instrumentation only).
 import { attachProbeAudit } from './probeShadow.js';
+import { calculateSessionRangePosition } from '../analysis/edgeFeatures.js';
+import { loadAdaptiveProfile } from '../analysis/adaptiveCalibration.js';
 
 export async function buildMultiTimeframeSignal(pair, candleData, assetType, env, opts = {}) {
   const fxMode = !!opts.fxMode;
+  // Test/counterfactual callers may isolate the legacy pipeline. Production
+  // handlers never set this false; the default is the complete edge layer.
+  const edgeFeaturesEnabled = opts.edgeFeaturesEnabled !== false;
   // F3-16 (BUG-022/CLOCK-001): optional injection so tests (and any caller)
   // can pin the wall clock / trading session instead of inheriting the
   // current time — the D2 HIGHEST-session block made fixture tests
@@ -31,6 +36,11 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   const now     = opts && opts.now ? new Date(opts.now) : new Date();
   const session = (opts && opts.session) || detectTradingSession();
   const exotic  = isExoticPair(pair);
+  // One fail-open KV read supplies both the weekly CALIB tables and adaptive
+  // input weights. Tests/callers may inject a profile for deterministic runs.
+  const adaptiveProfile = (opts && Object.prototype.hasOwnProperty.call(opts, 'adaptiveProfile'))
+    ? opts.adaptiveProfile : await loadAdaptiveProfile(env, now);
+  const sessionRange = calculateSessionRangePosition(candleData, now);
 
   // newsBlock is also injectable (null = no blackout) so fixture tests are
   // invariant to the weekly news windows too (e.g. Thu 17:30-19:45 UTC).
@@ -143,6 +153,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     votes, candleData, tfResults, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, assetType,
     newsBlock, newsBlocked, pair, env,
+    now, sessionRange, adaptiveProfile, edgeFeaturesEnabled,
   });
   let finalDirection    = det.finalDirection;
   let confidence        = det.confidence;
@@ -157,6 +168,8 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   const weightedBuy     = det.weightedBuy;
   const weightedSell    = det.weightedSell;
   const weightedNoTrade = det.weightedNoTrade;
+  const edgeContext      = det.edgeContext;
+  const edgeHardBlock    = det.edgeHardBlock;
 
   // ── Phase D2: verified-bad-slice negative quality filters ──
   // Source: Phase C verified analysis (n=1460 public + n=490 audit).
@@ -213,7 +226,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   // F3-15 (BUG-017): a D2 hard block is a data-backed verdict (6-30% WR
   // slices) — the AI can never override it, so don't spend 2 LLM calls (and
   // ~8s of latency) validating a trade that is already decided NO_TRADE.
-  const aiTargetDir = d2Audit
+  const aiTargetDir = (d2Audit || edgeHardBlock)
     ? null
     : (finalDirection !== 'NO_TRADE'
       ? finalDirection
@@ -228,6 +241,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     // private audit attribution token must NOT be echoed here (JSON-leak
     // surface — asserted by d2_tests #9h).
     filtersApplied.push('AI_SKIPPED (D2 hard block)');
+  } else if (edgeHardBlock && aiTargetDir === null) {
+    // Input-side evidence gates are deterministic hard verdicts too. Letting a
+    // language model revive one would silently undo the measured gate.
+    filtersApplied.push('AI_SKIPPED (edge hard block)');
   }
 
   if (aiTargetDir) {
@@ -327,6 +344,8 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (isDeadMarket && finalDirection !== 'NO_TRADE') filtersApplied.push('DEAD_MARKET_WARN (AI rescued)');
 
   const structureVerdict = buildStructureVerdict(tfResults, finalDirection);
+  const activeCalibration = adaptiveProfile && adaptiveProfile.calibration
+    ? adaptiveProfile.calibration : null;
   // ── CALIBRATION: overwrite confidence & grade with calibrated versions
   // Raw confidence (vote-share) is kept for filtering (floor etc.) but
   // reported confidence is calibrated to empirical WR (TRAIN 08-01..06).
@@ -334,7 +353,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   let calibratedConfForReport = confidence;
   let calibratedScoreForTrace = null;
   if (finalDirection !== 'NO_TRADE') {
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, activeCalibration);
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
   }
@@ -348,7 +367,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   } else {
     // getSignalGrade now itself uses calibrated scoring, but we also have calibrated
     // confidence from above. Use the calibrated grade directly to ensure consistency.
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, activeCalibration);
     finalGrade = cal.grade;
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
@@ -368,8 +387,14 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
       rawConfidence: confidence,
       calibratedConfidence: calibratedConfForReport,
       calibratedScore: calibratedScoreForTrace,
-      version: 'calib-v1-2026-08-09',
+      version: activeCalibration && activeCalibration.version
+        ? activeCalibration.version : 'calib-v1-2026-08-09',
+      source: activeCalibration ? 'ROLLING_14D' : 'STATIC_TRAIN',
     },
+    // Additive signal-time context. It is intentionally separate from
+    // calibration: these are input-side factors/gates feeding the one CALIB
+    // mapping above, never a second probability transform.
+    edgeContext,
     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,
@@ -412,6 +437,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     const r71Audit = await computeEngineAudit({
       tfResults, candleData, assetType, pair, higherTFTrend, marketRegime,
       session, sessionMult, candleQualityMult, exotic, newsBlock, newsBlocked, env,
+      now, sessionRange, adaptiveProfile, edgeFeaturesEnabled,
       productionPreAi:  { finalDirection: det.finalDirection, confidence: det.confidence },
       productionPostAi: { finalDirection, confidence },
     });

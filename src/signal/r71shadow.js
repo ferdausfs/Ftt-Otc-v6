@@ -135,6 +135,7 @@ export async function computeEngineAudit(inputs) {
   const {
     tfResults, candleData, assetType, pair, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, newsBlock, newsBlocked, env,
+    now, sessionRange, adaptiveProfile, edgeFeaturesEnabled,
     productionPreAi, productionPostAi,
   } = inputs;
 
@@ -179,6 +180,7 @@ export async function computeEngineAudit(inputs) {
     votes: shadowVotes, candleData, tfResults, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, assetType,
     newsBlock, newsBlocked, pair, env,
+    now, sessionRange, adaptiveProfile, edgeFeaturesEnabled,
   };
   const shadowDet = await runDeterministicVoteAndFilters(shadowCtx);
 

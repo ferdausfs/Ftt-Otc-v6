@@ -25,13 +25,14 @@
  * This function is the deterministic PRE-AI boundary. It never calls an AI.
  */
 
-import { CONFIG, ASSET_TYPE } from '../config.js';
+import { CONFIG, ASSET_TYPE, EDGE_FEATURE_CONFIG } from '../config.js';
 import { resolveTieWithTolerance } from '../analysis/grade.js';
 import {
   recentCandleConsistency, isVolumeSpikeAnomaly,
 } from '../analysis/filters.js';
 import { detectMarketCondition } from '../indicators/regime.js';
-import { getDynamicConfidenceAdjustment } from '../history/stats.js';
+import { getDynamicConfidenceAdjustment, getRecentPairForm } from '../history/stats.js';
+import { getHourMultiplier, selectDirectionIndicatorContext } from '../analysis/edgeFeatures.js';
 
 /**
  * Pure per-timeframe direction decision (timeframe.js). Extracted verbatim so
@@ -70,9 +71,25 @@ export async function runDeterministicVoteAndFilters(ctx) {
     votes, candleData, tfResults, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, assetType,
     newsBlock, newsBlocked, pair, env,
+    now = new Date(), sessionRange = null, adaptiveProfile = null,
+    edgeFeaturesEnabled = true,
   } = ctx;
 
   const filtersApplied = [];
+  const hourContext = getHourMultiplier(now, adaptiveProfile);
+  const edgeContext = {
+    version: EDGE_FEATURE_CONFIG.VERSION,
+    time: hourContext,
+    sessionRange: sessionRange || { state: 'UNKNOWN', position: null },
+    indicators: null,
+    recentForm: null,
+    adaptive: adaptiveProfile ? {
+      version: adaptiveProfile.version || null,
+      generatedAt: adaptiveProfile.generatedAt || null,
+    } : null,
+    hardBlock: null,
+  };
+  let edgeHardBlock = false;
 
   // ── WEIGHTED VOTING ──
   let weightedBuy = 0; let weightedSell = 0; let weightedNoTrade = 0;
@@ -155,6 +172,100 @@ export async function runDeterministicVoteAndFilters(ctx) {
 
   if (exotic) { confidence = Math.max(20, confidence - CONFIG.EXOTIC_CONFIDENCE_PENALTY); filtersApplied.push('EXOTIC_PENALTY -' + CONFIG.EXOTIC_CONFIDENCE_PENALTY); }
 
+  // ── EDGE INPUT CONTEXT ──────────────────────────────────────
+  // These factors/gates run on raw engine confidence.  The CALIB output mapper
+  // remains later in engine.js and is called exactly once.
+  if (edgeFeaturesEnabled && finalDirection !== 'NO_TRADE') {
+    const indicatorContext = selectDirectionIndicatorContext(tfResults, finalDirection);
+    edgeContext.indicators = indicatorContext;
+
+    // RSI × direction: do not chase BUY above 55 or SELL below 45.  Extreme
+    // mean-reversion in the opposite direction (BUY oversold / SELL overbought)
+    // remains valid.
+    const rsiCfg = EDGE_FEATURE_CONFIG.RSI_DIRECTION;
+    if (rsiCfg.enabled && rsiCfg.applyGate && indicatorContext && indicatorContext.rsi !== null) {
+      const chasingBuy = finalDirection === 'BUY' && indicatorContext.rsi > rsiCfg.buyBlockAbove;
+      const chasingSell = finalDirection === 'SELL' && indicatorContext.rsi < rsiCfg.sellBlockBelow;
+      if (chasingBuy || chasingSell) {
+        edgeHardBlock = true;
+        edgeContext.hardBlock = chasingBuy ? 'RSI_CHASING_BUY' : 'RSI_CHASING_SELL';
+        finalDirection = 'NO_TRADE'; confidence = 0;
+        filtersApplied.push('RSI_DIRECTION_BLOCK (' + indicatorContext.timeframe
+          + ' RSI=' + indicatorContext.rsi.toFixed(1) + ')');
+      }
+    }
+
+    // BB bandwidth relative to its own trailing median. Wide is normal (no
+    // boost), mid squeeze is penalised, and a dead squeeze is a hard block.
+    const volCfg = EDGE_FEATURE_CONFIG.VOLATILITY_STATE;
+    if (finalDirection !== 'NO_TRADE' && volCfg.enabled && volCfg.applyFactor && indicatorContext) {
+      if (indicatorContext.volatilityState === 'DEAD_SQUEEZE' && volCfg.deadAction === 'BLOCK') {
+        edgeHardBlock = true;
+        edgeContext.hardBlock = 'BB_DEAD_SQUEEZE';
+        finalDirection = 'NO_TRADE'; confidence = 0;
+        filtersApplied.push('VOLATILITY_DEAD_SQUEEZE_BLOCK');
+      } else if (indicatorContext.volatilityState === 'MID_SQUEEZE') {
+        confidence = Math.round(confidence * volCfg.midSqueezeFactor);
+        filtersApplied.push('VOLATILITY_MID_SQUEEZE (x' + volCfg.midSqueezeFactor + ')');
+      }
+    }
+
+    // ATR percentile is classified and instrumented now. Its action remains
+    // config-disabled until train→holdout rows exist for the fixed windows.
+    const atrCfg = EDGE_FEATURE_CONFIG.ATR_PERCENTILE;
+    if (finalDirection !== 'NO_TRADE' && atrCfg.enabled && atrCfg.applyFactor && indicatorContext) {
+      if (indicatorContext.atrState === 'DEAD' && atrCfg.deadAction === 'BLOCK') {
+        edgeHardBlock = true;
+        edgeContext.hardBlock = 'ATR_DEAD';
+        finalDirection = 'NO_TRADE'; confidence = 0;
+        filtersApplied.push('ATR_PERCENTILE_DEAD_BLOCK');
+      } else if (indicatorContext.atrState === 'SQUEEZE') {
+        confidence = Math.round(confidence * atrCfg.lowVolFactor);
+        filtersApplied.push('ATR_PERCENTILE_SQUEEZE (x' + atrCfg.lowVolFactor + ')');
+      }
+    }
+
+    // Hour and any holdout-approved adaptive dimensions. Common vote weights
+    // would cancel in the vote-share ratio, so these deliberately scale the raw
+    // confidence before the floor instead.
+    const hourCfg = EDGE_FEATURE_CONFIG.HOUR_OF_DAY;
+    const adaptiveCfg = EDGE_FEATURE_CONFIG.ADAPTIVE_CALIBRATION;
+    if (finalDirection !== 'NO_TRADE' && hourCfg.enabled) {
+      const factor = adaptiveCfg.applyHourWeights ? hourContext.multiplier
+        : (hourCfg.multipliers[hourContext.hourUtc] || 1);
+      confidence = Math.max(0, Math.min(92, Math.round(confidence * factor)));
+      if (factor !== 1) filtersApplied.push('HOUR_OF_DAY_UTC_' + hourContext.hourUtc + ' (x' + factor.toFixed(2) + ')');
+    }
+
+    if (finalDirection !== 'NO_TRADE' && adaptiveProfile && adaptiveProfile.weights) {
+      let factor = 1;
+      if (adaptiveCfg.applyPairWeights && adaptiveProfile.weights.pair)
+        factor *= adaptiveProfile.weights.pair[pair] || 1;
+      const activeSession = session && session.overlap && session.overlap !== 'NONE'
+        ? session.overlap : (session && session.sessions && session.sessions[0]) || 'UNKNOWN';
+      if (adaptiveCfg.applySessionWeights && adaptiveProfile.weights.session)
+        factor *= adaptiveProfile.weights.session[activeSession] || 1;
+      if (factor !== 1) {
+        confidence = Math.max(0, Math.min(92, Math.round(confidence * factor)));
+        filtersApplied.push('ADAPTIVE_PAIR_SESSION (x' + factor.toFixed(2) + ')');
+      }
+    }
+
+    // Session-range mean-reversion bonus: near today's low supports BUY and
+    // near today's high supports SELL. Position is always emitted; factor use
+    // stays behind its evidence flag.
+    const rangeCfg = EDGE_FEATURE_CONFIG.SESSION_RANGE;
+    if (finalDirection !== 'NO_TRADE' && rangeCfg.enabled && rangeCfg.applyFactor && sessionRange) {
+      const supportsMeanReversion =
+        (finalDirection === 'BUY' && sessionRange.state === 'LOW_EXTREME')
+        || (finalDirection === 'SELL' && sessionRange.state === 'HIGH_EXTREME');
+      if (supportsMeanReversion) {
+        confidence = Math.max(0, Math.min(92, Math.round(confidence * rangeCfg.meanReversionFactor)));
+        filtersApplied.push('SESSION_RANGE_MEAN_REVERSION (x' + rangeCfg.meanReversionFactor + ')');
+      }
+    }
+  }
+
   // ── CANDLE CONSISTENCY ──
   const primaryCandles = candleData['5min'] || candleData['1min'] || candleData['15min'];
   let consistencyMult = 1.0;
@@ -230,15 +341,37 @@ export async function runDeterministicVoteAndFilters(ctx) {
     }
   }
 
-  // ── DYNAMIC HISTORY ADJUSTMENT ──
+  // ── RECENT FORM + DYNAMIC HISTORY ADJUSTMENT ──
+  // `/api/stats` already maintains the exact last-20 ring.  A sub-35% pair is
+  // scaled once (not also given the legacy -10 penalty), preventing accidental
+  // double punishment while retaining the older bonus/moderate-penalty path.
   if (finalDirection !== 'NO_TRADE' && env && env.SIGNAL_CACHE) {
-    const dynAdj = await getDynamicConfidenceAdjustment(pair, env);
-    if (dynAdj !== 0) {
-      confidence = Math.max(0, Math.min(92, confidence + dynAdj));
-      filtersApplied.push('DYNAMIC_CONF_ADJ: ' + (dynAdj > 0 ? '+' : '') + dynAdj);
-      if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR && finalDirection !== 'NO_TRADE') {
+    const formCfg = EDGE_FEATURE_CONFIG.RECENT_FORM;
+    const recentForm = await getRecentPairForm(pair, env);
+    edgeContext.recentForm = recentForm;
+    let recentFormApplied = false;
+    if (edgeFeaturesEnabled && formCfg.enabled && recentForm
+        && recentForm.sampleSize >= formCfg.minSamples
+        && recentForm.winRate < formCfg.blockBelowWinRate) {
+      recentFormApplied = true;
+      confidence = Math.round(confidence * formCfg.confidenceFactor);
+      filtersApplied.push('RECENT_FORM_GATE (' + Math.round(recentForm.winRate * 100)
+        + '% n=' + recentForm.sampleSize + ' x' + formCfg.confidenceFactor + ')');
+      if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
         finalDirection = 'NO_TRADE'; confidence = 0;
-        filtersApplied.push('BELOW_FLOOR_AFTER_DYN_ADJ');
+        filtersApplied.push('BELOW_FLOOR_AFTER_RECENT_FORM');
+      }
+    }
+
+    if (!recentFormApplied && finalDirection !== 'NO_TRADE') {
+      const dynAdj = await getDynamicConfidenceAdjustment(pair, env);
+      if (dynAdj !== 0) {
+        confidence = Math.max(0, Math.min(92, confidence + dynAdj));
+        filtersApplied.push('DYNAMIC_CONF_ADJ: ' + (dynAdj > 0 ? '+' : '') + dynAdj);
+        if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
+          finalDirection = 'NO_TRADE'; confidence = 0;
+          filtersApplied.push('BELOW_FLOOR_AFTER_DYN_ADJ');
+        }
       }
     }
   }
@@ -258,5 +391,6 @@ export async function runDeterministicVoteAndFilters(ctx) {
     alignment, alignmentBonus,
     marketCondition, marketContext,
     isDeadMarket, activeDirs,
+    edgeContext, edgeHardBlock,
   };
 }

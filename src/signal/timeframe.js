@@ -5,6 +5,7 @@ import { safeLastValue, safeLastTwo, safeLastN, r2, fmt } from '../utils/helpers
 import { detectRSIDivergence, detectMACDDivergence } from '../indicators/divergence.js';
 import { getRegimeWeights, isTrendingMarket, detectDICrossover } from '../indicators/regime.js';
 import { scoreCamarillaLevels } from '../indicators/math.js';
+import { calculateAtrPercentile, calculateVolatilityState } from '../analysis/edgeFeatures.js';
 // R7.1: shared per-TF decision + private shadow capture transport.
 import { decideTfDirection } from './voteFilters.js';
 import { attachShadowTf } from './r71shadow.js';
@@ -46,6 +47,13 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   const patterns  = indicators.patterns;
   const sr        = indicators.sr  || { supports: [], resistances: [] };
   const fvg       = indicators.fvg || { active: null };
+
+  // Signal-time volatility context.  These calculations use only values up to
+  // the current candle; the reference windows explicitly exclude the current
+  // observation.  They are emitted even when their behaviour flag is off so a
+  // future train→holdout refresh has real (not reconstructed) inputs.
+  const volatilityState = calculateVolatilityState(indicators.bollinger.bandwidth);
+  const atrPercentileState = calculateAtrPercentile(indicators.atr);
 
   if (ema5 === null || ema55 === null) {
     return {
@@ -589,8 +597,15 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
       williamsR: fmt(williamsR, 2), cci: fmt(cci, 2),
       mfi: assetType === ASSET_TYPE.CRYPTO ? fmt(mfi, 2) : 'N/A (Forex)',
       atr: fmt(atr, 6),
+      atrPercentile: atrPercentileState.percentile,
+      atrState: atrPercentileState.state,
+      atrHistorySize: atrPercentileState.sampleSize,
       bbUpper: fmt(bbUpper), bbMiddle: fmt(bbMiddle), bbLower: fmt(bbLower),
       bbBandwidth: bbBandwidth !== null ? bbBandwidth.toFixed(4) : 'N/A',
+      bbBandwidthRatio: volatilityState.ratio,
+      bbBandwidthNorm: volatilityState.normalBandwidth,
+      volatilityState: volatilityState.state,
+      bbHistorySize: volatilityState.sampleSize,
       bbPercentB: fmt(bbPercentB, 4),
       pivot: pivots.pivot !== null ? pivots.pivot.toFixed(5) : 'N/A',
       r1: pivots.r1 !== null ? pivots.r1.toFixed(5) : 'N/A',

@@ -16,6 +16,7 @@ import { resolveShadowObservations } from './history/r71store.js';
 import { resolveD2ShadowObservations } from './history/d2store.js';
 import { resolveProbeObservations } from './history/probeStore.js';
 import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
+import { refreshAdaptiveCalibration } from './analysis/adaptiveCalibration.js';
 
 export default {
   /**
@@ -45,6 +46,10 @@ export default {
     ctx.waitUntil(resolveD2ShadowObservations(env));
     // Forex SELL Probe: resolve private probe observations on the same tick.
     ctx.waitUntil(resolveProbeObservations(env));
+    // Idempotent weekly refresh. The function returns after one KV read while
+    // the existing profile is fresh, and recomputes only from trailing 14-day
+    // decided history when seven days have elapsed.
+    ctx.waitUntil(refreshAdaptiveCalibration(env));
   },
 
   async fetch(request, env, ctx) {
