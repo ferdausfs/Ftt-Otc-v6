@@ -11,6 +11,8 @@ import { calculateCandleDuration } from '../analysis/duration.js';
 import { generateEntryReason, getSessionWeightMultiplier, getCandleQualityMultiplier, computeFxLevels } from '../analysis/filters.js';
 import { getSignalGrade } from '../analysis/grade.js';
 import { getCalibratedGradeAndConfidence } from '../analysis/calibration.js';
+import { evaluateEdgeFeatures, getRecentFormMultiplier } from '../analysis/edgeFeatures.js';
+import { getRollingCalibration } from '../analysis/selfCalibration.js';
 import { callCerebrasValidation } from '../ai/cerebras.js';
 import { callGroqValidation } from '../ai/groq.js';
 import { combineDualAIResults, buildIndicatorSnapshot } from '../ai/combine.js';
@@ -292,6 +294,33 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     }
   }
 
+  // ── Phase F edge inputs (pre-calibration only) ─────────────────────────
+  // These gates/multipliers operate on raw engine confidence and deliberately
+  // run before the existing CALIB output mapping below.
+  let edgeFeatures = null;
+  if (finalDirection !== 'NO_TRADE') {
+    const edgeTF = findBestTimeframe(tfResults, finalDirection).timeframe;
+    const edgeCandles = candleData[edgeTF] || candleData['5min'] || candleData['1min'] || [];
+    const rollingCalibration = await getRollingCalibration(env);
+    edgeFeatures = evaluateEdgeFeatures({ direction: finalDirection, indicators: indicatorCache[edgeTF], candles: edgeCandles, now, hourMultipliers: rollingCalibration && rollingCalibration.hourMultipliers });
+    edgeFeatures.calibrationSnapshotVersion = rollingCalibration ? rollingCalibration.version : null;
+    if (edgeFeatures.rsiDirectionBlocked) {
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('EDGE_RSI_DIRECTION_BLOCK (RSI=' + edgeFeatures.rsi + ')');
+    } else if (edgeFeatures.volatilityState === 'DEAD_SQUEEZE') {
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('EDGE_BB_DEAD_SQUEEZE_BLOCK');
+    } else {
+      const form = await getRecentFormMultiplier(pair, env);
+      Object.assign(edgeFeatures, form);
+      const multiplier = edgeFeatures.hourMultiplier * edgeFeatures.volatilityMultiplier
+        * edgeFeatures.atrMultiplier * edgeFeatures.sessionRangeMultiplier * edgeFeatures.recentFormMultiplier;
+      confidence = Math.max(0, Math.min(100, confidence * multiplier));
+      edgeFeatures.combinedMultiplier = multiplier;
+      if (multiplier !== 1) filtersApplied.push('EDGE_INPUT_MULTIPLIER x' + multiplier.toFixed(3));
+    }
+  }
+
   // ── POST-AI CONFIDENCE FLOOR (Bugfix round 1 / BUG-007) ──
   // The pre-AI floor (voteFilters.js) only runs BEFORE the AI layer. AI boost /
   // agree-with-concerns / rescue can then land the final confidence BELOW the
@@ -373,6 +402,8 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,
+    // Signal-time input context; additive and persisted by history instrumentation.
+    edgeFeatures,
     session: assetType === ASSET_TYPE.FOREX ? session : { sessions: ['24/7'], quality: 'N/A' },
     recommendations, bestTimeframe: best,
     votes: {

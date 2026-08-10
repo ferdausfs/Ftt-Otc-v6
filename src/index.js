@@ -15,7 +15,8 @@ import { scheduledScan } from './handlers/scheduledScan.js';
 import { resolveShadowObservations } from './history/r71store.js';
 import { resolveD2ShadowObservations } from './history/d2store.js';
 import { resolveProbeObservations } from './history/probeStore.js';
-import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
+import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, SCAN_PAIRS } from './config.js';
+import { refreshRollingCalibration } from './analysis/selfCalibration.js';
 
 export default {
   /**
@@ -45,7 +46,9 @@ export default {
     ctx.waitUntil(resolveD2ShadowObservations(env));
     // Forex SELL Probe: resolve private probe observations on the same tick.
     ctx.waitUntil(resolveProbeObservations(env));
-  },
+    // Due-guarded internally: recalculates rolling 14-day lookup tables weekly.
+    ctx.waitUntil(refreshRollingCalibration(env, SCAN_PAIRS));
+  }, 
 
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS')

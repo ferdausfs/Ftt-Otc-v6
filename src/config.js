@@ -26,6 +26,24 @@ export const CONFIG = {
   FOREX_SELL_PROBE_ENABLED: true,
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
+  // Phase F edge inputs. These change the pre-calibration engine confidence;
+  // CALIB remains the only output confidence/grade mapping.
+  EDGE_FEATURES: {
+    // Worker runtime has no Node process; local regression fixtures opt in
+    // explicitly so legacy tests can isolate the subsystem they exercise.
+    enabled: typeof process === 'undefined' || process.env.FTT_EDGE_FEATURES === '1',
+    hourMultipliers: { 0: 0.85, 1: 0.85, 2: 0.85, 3: 0.85, 10: 0.85, 15: 0.85, 23: 1.10 },
+    hourMinMultiplier: 0.85, hourMaxMultiplier: 1.10,
+    rsiBuyBlockAbove: 55, rsiSellBlockBelow: 45,
+    bbMidRatioMin: 0.20, bbMidRatioMax: 0.80, bbMidMultiplier: 0.90,
+    bbDeadRatioBelow: 0.20,
+    atrHistoryPeriods: 30, atrLowPercentile: 0.20, atrHighPercentile: 0.80,
+    atrLowMultiplier: 0.90,
+    recentFormMinTrades: 20, recentFormBadWR: 0.35, recentFormMultiplier: 0.85,
+    sessionRangeExtremePct: 0.15, sessionRangeExtremeMultiplier: 1.03,
+    refreshDays: 14, refreshMinSample: 20, refreshIntervalHours: 168,
+  },
+
   NEWS_BLACKOUT_MINUTES: 15,
   BATCH_MAX_PAIRS: 3,
 

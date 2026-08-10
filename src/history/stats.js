@@ -203,6 +203,14 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
           atrPct: atrPct,
           adx: adx,
           bbBandwidth: bbBandwidth,
+          // Phase F additive signal-time context. Kept alongside raw inputs so
+          // rolling validation can reproduce gates without recomputation.
+          atrPercentile: signal.edgeFeatures ? signal.edgeFeatures.atrPercentile : null,
+          atrState: signal.edgeFeatures ? signal.edgeFeatures.atrState : null,
+          volatilityState: signal.edgeFeatures ? signal.edgeFeatures.volatilityState : null,
+          bbBandwidthRatio: signal.edgeFeatures ? signal.edgeFeatures.bbBandwidthRatio : null,
+          hourUTC: signal.edgeFeatures ? signal.edgeFeatures.hourUTC : null,
+          sessionRangePosition: signal.edgeFeatures ? signal.edgeFeatures.sessionRangePosition : null,
         };
       }
     } catch (e) { /* diagnostic only — never break a save */ }

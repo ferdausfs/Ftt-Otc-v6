@@ -59,7 +59,14 @@ import { runDeterministicVoteAndFilters, decideTfDirection } from '../src/signal
 import { getSessionWeightMultiplier } from '../src/analysis/filters.js';
 import { fetchCandles } from '../src/fetch/candles.js';
 import { writeLatest } from '../src/history/latestCache.js';
-import { ASSET_TYPE } from '../src/config.js';
+import { ASSET_TYPE, CONFIG } from '../src/config.js';
+import { evaluateEdgeFeatures, getRecentFormMultiplier } from '../src/analysis/edgeFeatures.js';
+import { refreshRollingCalibration } from '../src/analysis/selfCalibration.js';
+// Existing regression fixtures deliberately exercise pre-Phase-F behaviour;
+// edge inputs have their own deterministic unit coverage and are enabled in
+// production config. This prevents their RSI gate from changing unrelated
+// push/fill/cache assertions.
+CONFIG.EDGE_FEATURES.enabled = false;
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -1307,6 +1314,25 @@ console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ────
     const sigRow2 = body2 && body2.signals && body2.signals[0];
     ok('T34d: structureAudit stripped, signalIndicators kept', sigRow2 && !sigRow2.structureAudit && sigRow2.signalIndicators, JSON.stringify({ hasAudit: !!(sigRow2 && sigRow2.structureAudit), hasInd: !!(sigRow2 && sigRow2.signalIndicators) }));
   }
+}
+
+console.log('\n── T35: Phase F edge input features ─────────────────────────');
+{
+  CONFIG.EDGE_FEATURES.enabled = true;
+  const inds = { rsi: [60], bollinger: { bandwidth: [1, 1, 1, 1, 0.5] }, atr: [1, 1, 1, 1, 0.5] };
+  const e = evaluateEdgeFeatures({ direction: 'BUY', indicators: inds, candles: [], now: new Date('2026-08-10T23:00:00Z') });
+  eq('T35: hour multiplier applied', e.hourMultiplier, 1.1);
+  ok('T35: RSI direction gate blocks overbought BUY', e.rsiDirectionBlocked === true);
+  eq('T35: volatility mid state penalty', e.volatilityMultiplier, 0.9);
+  eq('T35: ATR percentile low state', e.atrState, 'LOW_SQUEEZE');
+  const env = { SIGNAL_CACHE: makeKV({ 'stats:TEST_USD': { winRate: 0.3, sampleSize: 20, recentResults: Array(20).fill('LOSS') } }) };
+  const form = await getRecentFormMultiplier('TEST/USD', env);
+  eq('T35: recent-form gate', form.recentFormMultiplier, 0.85);
+  const rows = Array.from({ length: 20 }, (_, i) => ({ result: i % 2 ? 'WIN' : 'LOSS', timestamp: new Date().toISOString(), structureVerdict: 'ALIGNED', coreConfidence: 80, signalIndicators: { hourUTC: 23 } }));
+  await env.SIGNAL_CACHE.put('sig:TEST_USD', JSON.stringify(rows));
+  const refreshed = await refreshRollingCalibration(env, ['TEST/USD']);
+  ok('T35: self-cal refresh recomputes tables', refreshed.refreshed && refreshed.snapshot && refreshed.snapshot.hourMultipliers[23] !== undefined);
+  CONFIG.EDGE_FEATURES.enabled = false;
 }
 
 console.log('\n───────────────────────────────────────────────────────────');
