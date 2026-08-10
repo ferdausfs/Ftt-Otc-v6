@@ -316,6 +316,20 @@ def main():
         emit('| %s | %s | %s | %s | %+0.1f |' % (name, fmt(off), fmt(on), fmt(ex), (on['wr'] - off['wr']) * 100))
     emit('')
 
+    # ── 2b. COMBINED (all features with available data) ──
+    emit('### Combined — hour gate + recent-form gate (available data)')
+    emit('')
+    emit('| window | OFF (all) | ON (hour OK AND recent WR >= threshold) | excluded | Δ pts |')
+    emit('|---|---|---|---|---|')
+    for name, pool, surv in (('TRAIN', tr, surv_tr), ('HOLDOUT', va, surv_va)):
+        def combined_ok(r, s=surv):
+            if hour_of(r) in set(bad_hours):
+                return False
+            return s.get(r['id'], True)
+        off, on, ex = row_feature_tables(pool, combined_ok)
+        emit('| %s | %s | %s | %s | %+0.1f |' % (name, fmt(off), fmt(on), fmt(ex), (on['wr'] - off['wr']) * 100))
+    emit('')
+
     # ── 3. INSTRUMENTED FEATURES (RSI×dir, vol-state, ATR-pct) ──
     def with_ind(pool):
         return [r for r in pool if si(r) and si(r).get('rsi') is not None]
