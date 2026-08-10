@@ -61,9 +61,12 @@ const ENV = {}; // deterministic: no AI keys, no SIGNAL_CACHE
 // blocks + AI skip, fillStatus, /12 confluence, F3-05 grade cap, F3-11 RSI
 // score fix, F3-13 session weights, ...) intentionally broke the byte-equality
 // contract (#1a/#17 failed on main). F3-20 moves the baseline to the CURRENT
-// approved engine tip (e56cd33): the contract now guards the current engine,
+// approved engine tip (83054c7): the contract now guards the current engine,
 // and any FUTURE unapproved output change fails the suite.
-const BASELINE_COMMIT = 'e56cd33'; // F3-20: approved engine tip (was 71e87eb)
+// Edge-v1 intentionally adds signal-time fields/factors. Refresh to the source
+// commit that introduced that reviewed production contract; future unapproved
+// source drift still fails byte equality.
+const BASELINE_COMMIT = '83054c7'; // edge-v1 approved engine tip (was e56cd33)
 function bootstrapBaseline() {
   // The verify/baseline tree is gitignored and regenerated on demand. A marker
   // file records which commit it was built from, so changing BASELINE_COMMIT
@@ -91,7 +94,7 @@ function bootstrapBaseline() {
 console.log('\n── [#1] Baseline production equivalence ──────────────────');
 {
   // Baseline tree = full copy of the approved engine at BASELINE_COMMIT
-  // (F3-20: e56cd33 — the stale pre-round-1 71e87eb snapshot was retired
+  // (F3-20: 83054c7 — the stale pre-round-1 71e87eb snapshot was retired
   // because every approved round-1/2/3 fix intentionally changed output).
   // Phase F: calibration (grade/confidence) intentionally changes output to fix
   // inverted ladder. Those fields are in STANDARD_CALIBRATION_DIVERGENT set and
@@ -225,6 +228,10 @@ async function engineAudit({ tfResults, candleData, productionPreAi, productionP
     higherTFTrend: null, marketRegime: 'TRENDING',
     session: SESSION, sessionMult: 1.0, candleQualityMult: 1.0,
     exotic: false, newsBlock: null, newsBlocked: false, env: {},
+    // This section isolates R7.1 confirmation semantics. Edge multipliers have
+    // their own T35-T40 coverage in fix_tests and would otherwise move the
+    // confidence-floor boundary this test is pinning.
+    edgeFeaturesEnabled: false,
     productionPreAi, productionPostAi,
   });
 }
@@ -620,7 +627,7 @@ console.log('\n── [#14] OTC regression ────────────�
   // confluence denominators /12, and F3-04 (BUG-027) fill-status fields
   // (engine.js parity). While the baseline was the stale 71e87eb tree these
   // fields had to be redacted so "everything else" could still be compared.
-  // F3-20 refreshed the baseline to the current approved engine (e56cd33), so
+  // F3-20 refreshed the baseline to the current approved engine (83054c7), so
   // this comparison is now current-vs-current and every field — including the
   // ones below — is byte-guarded on both sides. The list is RETAINED as the
   // explicit approved-divergence inventory, and every entry is verified below
@@ -683,7 +690,7 @@ console.log('\n── [#15] Existing smoke + syntax + git diff --check ───
   ok('[#15a] node --check passes on all changed/new source', syntaxOk);
 
   // git diff --check (whitespace errors) on tracked SOURCE modifications vs the
-  // refreshed baseline commit (F3-20: e56cd33 — same constant as the archive;
+  // refreshed baseline commit (F3-20: 83054c7 — same constant as the archive;
   // scoped to src/ + scripts/ so captured log artifacts in verify/ don't make
   // the check self-referential). This now guards the changes introduced since
   // the current approved engine tip (i.e. this PR's diff) rather than the
@@ -851,8 +858,8 @@ console.log('\n── [#16] Shadow confirmation-candle penalty ─────�
     return { '1min': mk(1), '5min': mk(5), '15min': mk(15) };
   }
   const cd = benignCd();
-  const auditFaithful = await computeEngineAudit({ tfResults: mk(r2n(preUp * 0.85)), candleData: cd, assetType: 'CRYPTO', pair: 'BTC/USD', higherTFTrend: null, marketRegime: 'RANGING', session: SESSION, sessionMult: 1.0, candleQualityMult: 1.0, exotic: false, newsBlock: null, newsBlocked: false, env: {}, productionPreAi: { finalDirection: 'NO_TRADE', confidence: 0 }, productionPostAi: { finalDirection: 'NO_TRADE', confidence: 0 } });
-  const auditOld = await computeEngineAudit({ tfResults: mk(r2n(preUp)), candleData: cd, assetType: 'CRYPTO', pair: 'BTC/USD', higherTFTrend: null, marketRegime: 'RANGING', session: SESSION, sessionMult: 1.0, candleQualityMult: 1.0, exotic: false, newsBlock: null, newsBlocked: false, env: {}, productionPreAi: { finalDirection: 'NO_TRADE', confidence: 0 }, productionPostAi: { finalDirection: 'NO_TRADE', confidence: 0 } });
+  const auditFaithful = await computeEngineAudit({ tfResults: mk(r2n(preUp * 0.85)), candleData: cd, assetType: 'CRYPTO', pair: 'BTC/USD', higherTFTrend: null, marketRegime: 'RANGING', session: SESSION, sessionMult: 1.0, candleQualityMult: 1.0, exotic: false, newsBlock: null, newsBlocked: false, env: {}, edgeFeaturesEnabled: false, productionPreAi: { finalDirection: 'NO_TRADE', confidence: 0 }, productionPostAi: { finalDirection: 'NO_TRADE', confidence: 0 } });
+  const auditOld = await computeEngineAudit({ tfResults: mk(r2n(preUp)), candleData: cd, assetType: 'CRYPTO', pair: 'BTC/USD', higherTFTrend: null, marketRegime: 'RANGING', session: SESSION, sessionMult: 1.0, candleQualityMult: 1.0, exotic: false, newsBlock: null, newsBlocked: false, env: {}, edgeFeaturesEnabled: false, productionPreAi: { finalDirection: 'NO_TRADE', confidence: 0 }, productionPostAi: { finalDirection: 'NO_TRADE', confidence: 0 } });
   eq('[#16-5a] faithful (penalized) shadow => NO_TRADE', auditFaithful.shadowFinalDirection, 'NO_TRADE');
   eq('[#16-5b] pre-correction (unpenalized) would be BUY', auditOld.shadowFinalDirection, 'BUY');
   ok('[#16-5c] faithful confidence below floor', auditFaithful.shadowConfidence < 72);
@@ -861,7 +868,7 @@ console.log('\n── [#16] Shadow confirmation-candle penalty ─────�
 
 // ════════════════════════════════════════════════════════════════════════
 // [#17] PRODUCTION-EQUIVALENCE FUZZ (>=100 deterministic fixtures vs the
-//       refreshed baseline e56cd33 — F3-20)
+//       refreshed baseline 83054c7 — F3-20)
 //       Phase F: calibration changes grade/confidence intentionally, so those
 //       fields are excluded from byte-equality (approved divergence).
 // ════════════════════════════════════════════════════════════════════════
