@@ -619,8 +619,11 @@ console.log('\n── [#14] OTC regression ────────────�
   const session = { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 };
   const PIN_NOW = '2026-08-10T14:05:00Z'; // minute 5 = NORMAL timeContext, hour 14 = mult 1.0
   const cd = makeCandleData({ basePrice: 1.08, vol: 0.0006, trend: 0.0001, seed: 9 });
-  const baseSig = await baselineOtc.buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV, { now: PIN_NOW });
-  const newSig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV, { now: PIN_NOW });
+  // edgeFeatures:false keeps this regression focused on the structure-cap /
+  // grading contract (edge features are covered by fix_tests T35-T42 and the
+  // #1/#17 byte-equality guards); the clock is still pinned for timeContext.
+  const baseSig = await baselineOtc.buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV, { now: PIN_NOW, edgeFeatures: false });
+  const newSig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV, { now: PIN_NOW, edgeFeatures: false });
   function stripTime(obj) {
     const c = JSON.parse(JSON.stringify(obj)); const kill = new Set(['generatedAt', 'expiryTime', 'nextCandleClose', 'humanReadable', 'nextRefresh', 'candleTime']);
     (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k]; else w(o[k]); } } })(c);
