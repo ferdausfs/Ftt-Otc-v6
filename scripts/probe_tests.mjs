@@ -47,7 +47,8 @@ const ENV = {};
 // engine fixtures are time-of-day invariant — during 12-16 UTC the
 // D2_HIGHEST_SESSION_BLOCK suppressed this forex SELL fixture.
 const FIXED_SESSION = { sessions: ['NEW_YORK'], overlap: 'NONE', quality: 'HIGH', hour: 16 };
-const FX_SELL = { basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 };   // -> EUR/USD SELL
+// Seed 20 -> EUR/USD RANGING SELL with best-TF RSI 47 (allowed by edge-v1).
+const FX_SELL = { basePrice: 1.08, vol: 0.0012, trend: 0, seed: 20 };
 
 const pastExpiry = new Date(Date.now() - 10 * 60 * 1000).toISOString();
 const futureExpiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -185,7 +186,7 @@ console.log('\n── [#8] Resolver — transient error retry then terminal UNKN
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#9-10] Engine — FOREX SELL audit attach + no leak; others carry none ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData(FX_SELL), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData(FX_SELL), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null, now: '2026-08-10T04:00:00Z' });
   ok('[#9a] fixture final = SELL', sig.finalSignal === 'SELL', sig.finalSignal);
   const audit = getProbeAudit(sig);
   ok('[#9b] probe audit attached on FOREX SELL', !!audit);

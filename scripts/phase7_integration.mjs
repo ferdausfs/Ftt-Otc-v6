@@ -15,6 +15,10 @@
  */
 
 import { SCAN_CONFIG } from '../src/config.js';
+import { makeCandleData } from './r71_fixtures.mjs';
+
+// Deterministic RANGING SELL with allowed RSI (47) under edge-v1.
+const EDGE_SAFE_CANDLES = makeCandleData({ basePrice: 78000, vol: 60, trend: 0, seed: 20 });
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -80,24 +84,19 @@ function installFetchStub() {
       if ([...failPairs].some(p => symbol.includes(p))) {
         return new Response('upstream boom', { status: 500 });
       }
-      // per-interval data; 15min oscillates (RANGING) so the D2 TRENDING block
-      // (FIX-2) does not suppress the signals under test. 100 candles per TF.
       const interval = new URL(u).searchParams.get('interval');
-      let values;
-      if (interval === '15min') values = candleFastSin(100, 100, 0.4);
-      else if (interval === '5min') values = candleSeries(100, 100, 0.1);
-      else values = candleSeries(100, 100, 0.02);
+      const values = [...EDGE_SAFE_CANDLES[interval]].reverse();
       return new Response(JSON.stringify({ values }),
         { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (u.includes('cerebras')) {
       httpCalls.cerebras++;
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 80, reason: 'stub' }) } }] }),
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'SELL', confidence: 80, reason: 'stub' }) } }] }),
         { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (u.includes('groq')) {
       httpCalls.groq++;
-      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 78, reason: 'stub' }) } }] }),
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ signal: 'SELL', confidence: 78, reason: 'stub' }) } }] }),
         { status: 200, headers: { 'content-type': 'application/json' } });
     }
     throw new Error('unexpected fetch: ' + u.slice(0, 80));

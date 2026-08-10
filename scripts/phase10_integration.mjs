@@ -9,6 +9,12 @@
  * Also drives the real scheduledTracker to prove result pushes fire.
  */
 
+import { makeCandleData } from './r71_fixtures.mjs';
+
+// edge-v1 safe fixture: deterministic RANGING SELL, RSI 47 (not oversold),
+// BB mid-squeeze remains exactly at the tradable floor after x0.90.
+const EDGE_SAFE_CANDLES = makeCandleData({ basePrice: 78000, vol: 60, trend: 0, seed: 20 });
+
 let pass = 0, fail = 0;
 const failures = [];
 const ok = (n, c, d) => { if (c) { pass++; console.log('PASS  ' + n); } else { fail++; failures.push(n); console.log('FAIL  ' + n + (d ? ' — ' + d : '')); } };
@@ -81,19 +87,14 @@ function installNet() {
           low: String(expiryPrice), close: String(expiryPrice),
         }] }), text: async () => '' };
       }
-      // per-interval candle data; 15min oscillates so the regime stays RANGING
-      // (see seriesFastSin note above). 100 candles per TF (matches the
-      // outputsize=100 the handler requests; verified BUY/RANGING).
       const interval = p.get('interval');
-      let values;
-      if (interval === '15min') values = seriesFastSin(100, 100, 0.4);
-      else if (interval === '5min') values = series(100, 100, 0.1);
-      else values = series(100, 100, 0.02);
+      // TwelveData wire order is newest first; fixture is chronological.
+      const values = [...EDGE_SAFE_CANDLES[interval]].reverse();
       return { ok: true, status: 200, json: async () => ({ values }), text: async () => '' };
     }
-    // AI providers
+    // AI providers agree with the edge-safe SELL fixture.
     return { ok: true, status: 200, text: async () => '{}',
-      json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 80, reason: 'stub' }) } }] }) };
+      json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'SELL', confidence: 80, reason: 'stub' }) } }] }) };
   };
 }
 

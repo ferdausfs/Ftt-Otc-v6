@@ -60,6 +60,12 @@ import { getSessionWeightMultiplier } from '../src/analysis/filters.js';
 import { fetchCandles } from '../src/fetch/candles.js';
 import { writeLatest } from '../src/history/latestCache.js';
 import { ASSET_TYPE } from '../src/config.js';
+import {
+  evaluateEdgeFeatures, calculateAtrPercentileState,
+  calculateBbVolatilityState, calculateSessionRangePosition,
+} from '../src/analysis/edgeFeatures.js';
+import { recomputeAdaptiveTables } from '../src/analysis/adaptive.js';
+import { makeCandleData } from './r71_fixtures.mjs';
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -179,18 +185,15 @@ console.log('\n── T2: /api/report idempotency (FIX-4) ───────�
 
 console.log('\n── T3: fillStatus uses an independent current price (FIX-3) ─');
 {
-  // direct engine call -> fixtures must be chronological (oldest first)
+  // Deterministic RANGING SELL with bestTF=15min and RSI=47 (allowed by the
+  // new RSI×direction gate). Independent 1min/15min closes make PENDING_ENTRY.
   const rev = (arr) => [...arr].reverse();
-  const candleData = {
-    // 1min: mild uptrend (freshest data, current price ~91.99)
-    '1min': rev(series(100, 90, 0.02)),
-    // 5min: strong uptrend -> BUY votes
-    '5min': rev(series(100, 90, 0.1)),
-    // 15min: fast oscillation -> ADX ~10, RANGING regime (no D2 block)
-    '15min': rev(seriesFastSin(100, 90, 0.4)),
-  };
+  const candleData = makeCandleData({ basePrice: 78000, vol: 60, trend: 0, seed: 20 });
   const r = quiet();
-  const sig = await buildMultiTimeframeSignal('TEST/USD', candleData, 'CRYPTO', {}, {});
+  const sig = await buildMultiTimeframeSignal('TEST/USD', candleData, 'CRYPTO', {}, {
+    now: '2026-08-10T04:00:00Z', newsBlock: null,
+    session: { quality: 'HIGH', sessions: ['24/7'], overlap: 'NONE' },
+  });
   r();
 
   ok('engine produced a tradeable signal', sig.finalSignal === 'BUY' || sig.finalSignal === 'SELL', sig.finalSignal);
@@ -221,6 +224,9 @@ console.log('\n── T3: fillStatus uses an independent current price (FIX-3) �
 
 console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ───────────');
 {
+  // Seed 20 is a deterministic RANGING SELL with best-TF RSI 47: it tests push
+  // plumbing without intentionally triggering the new chasing gate.
+  const pushCd = makeCandleData({ basePrice: 78000, vol: 60, trend: 0, seed: 20 });
   let tg = [];
   const installNet = () => {
     tg = [];
@@ -232,18 +238,12 @@ console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ────�
         return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '' };
       }
       if (u.includes('twelvedata')) {
-        // per-interval data: 15min oscillates (RANGING, ADX ~10) so the D2
-        // TRENDING block (FIX-2) does not suppress the signal under test.
-        // 100 candles: verified BUY/RANGING/77% (fastSin phase is stable here;
-        // 120 candles flips the 15min vote to SELL -> MIXED -> NO_TRADE).
         const interval = new URL(u).searchParams.get('interval');
-        let values;
-        if (interval === '15min') values = seriesFastSin(100, 100, 0.4);
-        else if (interval === '5min') values = series(100, 100, 0.1);
-        else values = series(100, 100, 0.02);
+        // TwelveData returns newest first; makeCandleData is chronological.
+        const values = [...pushCd[interval]].reverse();
         return { ok: true, status: 200, json: async () => ({ values }), text: async () => '' };
       }
-      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 85, reason: 'stub', concerns: null }) } }] }), text: async () => '' };
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'SELL', confidence: 85, reason: 'stub', concerns: null }) } }] }), text: async () => '' };
     };
   };
   const envOf = () => {
@@ -730,6 +730,7 @@ console.log('\n── T20: timezone=UTC on both fetchers (F3-07) ─────
 
 console.log('\n── T21: fx preferCache forces fresh (F3-08) ───────────');
 {
+  const fxCd = makeCandleData({ basePrice: 78000, vol: 60, trend: 0, seed: 20 });
   const kv = makeKV();
   const env = { SIGNAL_CACHE: kv, TWELVEDATA_API_KEY_1: 'k', CEREBRAS_API_KEY: 'c', GROQ_API_KEY: 'g' };
   await writeLatest('BTC/USD', { pair: 'BTC/USD', signal: { finalSignal: 'BUY', confidence: '80%' } }, { opportunistic: false }, env);
@@ -737,13 +738,10 @@ console.log('\n── T21: fx preferCache forces fresh (F3-08) ─────�
     const u = String(url);
     if (u.includes('twelvedata')) {
       const interval = new URL(u).searchParams.get('interval');
-      let values;
-      if (interval === '15min') values = seriesFastSin(100, 100, 0.4);
-      else if (interval === '5min') values = series(100, 100, 0.1);
-      else values = series(100, 100, 0.02);
+      const values = [...fxCd[interval]].reverse();
       return { ok: true, status: 200, json: async () => ({ values }), text: async () => '' };
     }
-    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 85, reason: 'stub', concerns: null }) } }] }), text: async () => '' };
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'SELL', confidence: 85, reason: 'stub', concerns: null }) } }] }), text: async () => '' };
   };
   const sink1 = []; const q1 = quiet();
   const res1 = await handleSignal('BTC/USD', env, ctxOf(sink1), { preferCache: true });
@@ -1128,6 +1126,10 @@ console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ────
       ok('T34a: atrPct numeric or null', si.atrPct === null || (typeof si.atrPct === 'number' && isFinite(si.atrPct)), 'atrPct=' + si.atrPct);
       ok('T34a: adx numeric or null', si.adx === null || (typeof si.adx === 'number' && isFinite(si.adx)), 'adx=' + si.adx);
       ok('T34a: bbBandwidth numeric or null', si.bbBandwidth === null || (typeof si.bbBandwidth === 'number' && isFinite(si.bbBandwidth)), 'bb=' + si.bbBandwidth);
+      ok('T34a: ATR percentile added to instrumentation', si.atrPercentile === null || (typeof si.atrPercentile === 'number' && isFinite(si.atrPercentile)), 'atrPctl=' + si.atrPercentile);
+      ok('T34a: ATR state added to instrumentation', typeof si.atrState === 'string', 'atrState=' + si.atrState);
+      ok('T34a: BB ratio/state added to instrumentation',
+        (si.bbWidthRatio === null || typeof si.bbWidthRatio === 'number') && typeof si.volatilityState === 'string', JSON.stringify(si));
       // With our deterministic fixture, most indicators should be numeric (not all null)
       const numericCount = [si.rsi, si.atrPct, si.adx, si.bbBandwidth].filter(v => typeof v === 'number').length;
       ok('T34a: at least 2 indicators numeric (not all null)', numericCount >= 2, 'numericCount=' + numericCount + ' ' + JSON.stringify(si));
@@ -1307,6 +1309,120 @@ console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ────
     const sigRow2 = body2 && body2.signals && body2.signals[0];
     ok('T34d: structureAudit stripped, signalIndicators kept', sigRow2 && !sigRow2.structureAudit && sigRow2.signalIndicators, JSON.stringify({ hasAudit: !!(sigRow2 && sigRow2.structureAudit), hasInd: !!(sigRow2 && sigRow2.signalIndicators) }));
   }
+}
+
+console.log('\n── T35: hour-of-day multiplier + time context ─────────');
+{
+  const edge = evaluateEdgeFeatures({
+    direction: 'BUY', confidence: 80, pair: 'BTC/USD', assetType: 'CRYPTO',
+    now: new Date('2026-08-10T00:15:00Z'),
+  });
+  eq('T35a: bad hour 00 UTC applies x0.85 (80 -> 68)', edge.confidence, 68);
+  eq('T35b: UTC hour captured', edge.context.time.utcHour, 0);
+  eq('T35c: day-of-week captured (Monday)', edge.context.time.dayName, 'MON');
+  ok('T35d: applied filter is explicit', edge.filtersApplied.some(f => f.includes('HOUR_UTC_00 x0.85')), JSON.stringify(edge.filtersApplied));
+}
+
+console.log('\n── T36: RSI x direction hard gate ─────────────────────');
+{
+  const edge = evaluateEdgeFeatures({
+    direction: 'BUY', confidence: 84, pair: 'BTC/USD', assetType: 'CRYPTO',
+    now: new Date('2026-08-10T04:00:00Z'),
+    tfResults: {
+      '5min': { direction: 'BUY', confluence: 7, score: { up: 9, down: 2 }, indicators: { rsi: '60.50' } },
+    },
+  });
+  eq('T36a: overbought BUY is blocked', edge.finalDirection, 'NO_TRADE');
+  ok('T36b: edge hard block prevents AI rescue', edge.hardBlocked === true);
+  eq('T36c: RSI reason is precise', edge.hardBlockReason, 'RSI_OVERBOUGHT_BUY');
+  eq('T36d: blocked confidence zero', edge.confidence, 0);
+}
+
+console.log('\n── T37: BB volatility state penalty/block ─────────────');
+{
+  const mid = calculateBbVolatilityState([...Array(20).fill(1), 0.5]);
+  eq('T37a: BB ratio 0.5 classified MID_SQUEEZE', mid.state, 'MID_SQUEEZE');
+  eq('T37b: BB ratio retained', mid.ratio, 0.5);
+  const edge = evaluateEdgeFeatures({
+    direction: 'SELL', confidence: 80, pair: 'BTC/USD', assetType: 'CRYPTO',
+    now: new Date('2026-08-10T04:00:00Z'),
+    tfResults: {
+      '5min': { direction: 'SELL', confluence: 7, score: { up: 2, down: 9 }, indicators: { rsi: '50' } },
+    },
+    indicatorCache: { '5min': { atr: [], bollinger: { bandwidth: [...Array(20).fill(1), 0.5] } } },
+  });
+  eq('T37c: mid squeeze x0.90 (80 -> 72)', edge.confidence, 72);
+  ok('T37d: volatility penalty is instrumented', edge.filtersApplied.some(f => f.includes('BB_MID_SQUEEZE x0.90')), JSON.stringify(edge.filtersApplied));
+  const dead = calculateBbVolatilityState([...Array(20).fill(1), 0.1]);
+  eq('T37e: ratio below 0.2 is DEAD_SQUEEZE', dead.state, 'DEAD_SQUEEZE');
+}
+
+console.log('\n── T38: ATR percentile state ──────────────────────────');
+{
+  const squeeze = calculateAtrPercentileState([...Array(20).fill(10), 1]);
+  eq('T38a: low current ATR is SQUEEZE', squeeze.state, 'SQUEEZE');
+  eq('T38b: low current ATR percentile is 0', squeeze.percentile, 0);
+  const expansion = calculateAtrPercentileState([...Array(20).fill(1), 10]);
+  eq('T38c: high current ATR is EXPANSION', expansion.state, 'EXPANSION');
+  eq('T38d: high current ATR percentile is 100', expansion.percentile, 100);
+}
+
+console.log('\n── T39: rolling recent-form gate ──────────────────────');
+{
+  const edge = evaluateEdgeFeatures({
+    direction: 'SELL', confidence: 80, pair: 'ETH/USD', assetType: 'CRYPTO',
+    now: new Date('2026-08-10T04:00:00Z'),
+    recentForm: { winRate: 0.30, sampleSize: 20 },
+  });
+  eq('T39a: weak rolling form x0.85 (80 -> 68)', edge.confidence, 68);
+  eq('T39b: exact rolling sample recorded', edge.context.recentForm.sampleSize, 20);
+  ok('T39c: recent gate filter recorded', edge.filtersApplied.some(f => f.includes('RECENT_FORM_30PCT x0.85')), JSON.stringify(edge.filtersApplied));
+  const short = evaluateEdgeFeatures({
+    direction: 'SELL', confidence: 80, pair: 'ETH/USD', assetType: 'CRYPTO',
+    now: new Date('2026-08-10T04:00:00Z'), recentForm: { winRate: 0.10, sampleSize: 19 },
+  });
+  eq('T39d: gate waits for full 20-result window', short.confidence, 80);
+}
+
+console.log('\n── T40: weekly self-calibration recomputes tables ─────');
+{
+  const rows = [];
+  const start = Date.parse('2026-08-01T00:00:00Z');
+  for (let day = 0; day < 14; day++) {
+    for (let i = 0; i < 20; i++) {
+      const aligned = i % 2 === 0;
+      const win = aligned ? (i % 4 === 0) : (i % 5 !== 0);
+      rows.push({
+        id: 'adaptive_' + day + '_' + i,
+        pair: i % 3 === 0 ? 'BTC/USD' : 'ETH/USD',
+        result: win ? 'WIN' : 'LOSS',
+        timestamp: new Date(start + day * 86400000 + i * 3600000).toISOString(),
+        coreConfidence: aligned ? 74 : 88,
+        structureVerdict: aligned ? 'ALIGNED' : 'AGAINST',
+        session: ['24/7'],
+      });
+    }
+  }
+  const snapshot = recomputeAdaptiveTables(rows, new Date('2026-08-15T00:00:00Z'));
+  eq('T40a: exact 11d train / 3d holdout split', [snapshot.window.trainSamples, snapshot.window.holdoutSamples], [220, 60]);
+  ok('T40b: CALIB structure table recomputed', snapshot.calibration.structWR.ALIGNED !== 0.39355812783090083, JSON.stringify(snapshot.calibration.structWR));
+  ok('T40c: hour multipliers recomputed and bounded', Object.values(snapshot.hourMultipliers).every(v => v >= 0.85 && v <= 1.10));
+  ok('T40d: pair weights recomputed', typeof snapshot.pairMultipliers['BTC/USD'] === 'number', JSON.stringify(snapshot.pairMultipliers));
+  ok('T40e: holdout ON/OFF evidence stored', snapshot.validation.featureOff.n === 60 && typeof snapshot.validation.cisOverlap === 'boolean');
+  ok('T40f: holdout calibration monotonicity guard stored', typeof snapshot.validation.calibration.passed === 'boolean');
+}
+
+console.log('\n── T41: session-range position calculation ────────────');
+{
+  const candles = [];
+  for (let i = 0; i < 8; i++) candles.push({
+    datetime: '2026-08-10 ' + String(i).padStart(2, '0') + ':00:00',
+    open: 100 + i, high: 102 + i, low: 99 + i, close: 101 + i,
+  });
+  const ctx = calculateSessionRangePosition(
+    { '15min': candles, '1min': [{ close: 99.2 }] }, 'BUY', new Date('2026-08-10T08:00:00Z'));
+  eq('T41a: price near daily low', ctx.state, 'NEAR_LOW');
+  ok('T41b: BUY near low is mean-reversion aligned', ctx.meanReversionAligned === true);
 }
 
 console.log('\n───────────────────────────────────────────────────────────');

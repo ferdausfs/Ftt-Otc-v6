@@ -57,7 +57,8 @@ console.log('\n── [#2] invalid inputs -> null ──');
 
 console.log('\n── [#3] engine fxMode ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { fxMode: true, session: FIXED_SESSION, newsBlock: null });
+  // Seed 20 remains a RANGING SELL with RSI 47 under the edge-v1 chase gate.
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 20 }), 'FOREX', ENV, { fxMode: true, session: FIXED_SESSION, newsBlock: null, now: '2026-08-10T04:00:00Z' });
   if (sig.finalSignal === 'SELL' || sig.finalSignal === 'BUY') {
     ok('[#3a] mode=fx set', sig.mode === 'fx');
     ok('[#3b] fxLevels present', !!sig.fxLevels);

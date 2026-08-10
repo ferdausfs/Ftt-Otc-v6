@@ -98,7 +98,18 @@ console.log('\n── [#1] Baseline production equivalence ───────
   // excluded from byte-equality check with justification.
   bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
-  const STANDARD_CALIBRATION_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence']);
+  // Intentional divergences since the frozen R7.1 baseline:
+  // - Phase-F CALIB changed output labels only.
+  // - edge-v1 changes the production decision/filter/AI path by design and adds
+  //   raw time/ATR/BB context. Per-TF scores, directions, confluence, structure,
+  //   recommendations, votes and all R7.1 attribution fields remain guarded.
+  const STANDARD_APPROVED_DIVERGENT = new Set([
+    'grade','confidence','calibration','coreConfidence',
+    'finalSignal','filtersApplied','entryReason','regimeAdvice','aiValidation',
+    'bestTimeframe','structureVerdict','fillStatus','entryPrice','currentPrice','entryDistancePct',
+    'edgeContext','timeContext',
+    'atrPercentile','atrState','bbWidthRatio','volatilityState',
+  ]);
   // deep-strip time-dependent fields so two near-simultaneous runs compare equal
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));
@@ -107,7 +118,7 @@ console.log('\n── [#1] Baseline production equivalence ───────
       if (o && typeof o === 'object') {
         for (const k of Object.keys(o)) {
           if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k];
-          else if (STANDARD_CALIBRATION_DIVERGENT.has(k)) delete o[k];
+          else if (STANDARD_APPROVED_DIVERGENT.has(k)) delete o[k];
           else walk(o[k]);
         }
       }
@@ -137,7 +148,7 @@ console.log('\n── [#1] Baseline production equivalence ───────
       console.log('   divergence in fixture ' + f.name + ' at key: ' + diff);
     }
   }
-  ok('[#1a] baseline vs instrumented engine byte-equal on ' + fixtures.length + ' fixtures (direction/score/confluence/confidence/grade/recommendations/timeframeAnalysis) — calibration fields excluded (Phase F)', allEq);
+  ok('[#1a] baseline vs edge-v1 engine byte-equal on guarded R7.1 fields across ' + fixtures.length + ' fixtures — intentional calibration/edge decision fields excluded', allEq);
 
   // [#1b] normal history behaviour unchanged (record minus the additive audit)
   const { saveSignalToHistory } = await import('../src/history/stats.js');
@@ -169,17 +180,13 @@ console.log('\n── [#2] Neutral structure ───────────�
   eq('[#2] attribution UNCHANGED', audit.attribution, 'UNCHANGED');
   eq('[#2] productionPreAi == shadow', audit.productionPreAiDirection, audit.shadowFinalDirection);
   eq('[#2] no hard-block observed', audit.diagnostic.tfHardBlockObserved, false);
-  // F3-20 baseline refresh: this expectation now pins the CURRENT engine
-  // contract. Post-71e87eb the engine gained the approved D2 hard-block layer
-  // (round-1 D2 blocks; F3-15 AI-skip): a TRENDING-regime fixture is blocked
-  // BUY/SELL -> NO_TRADE before the AI layer even runs (see filtersApplied:
-  // D2_TRENDING_BLOCK + AI_SKIPPED (D2 hard block)). The R7.1 audit compares
-  // the deterministic pre-AI direction (productionPreAi) against the ACTUAL
-  // final direction (productionPostAi), so ANY post-vs-pre divergence —
-  // including this D2 block — is classified AI_AFFECTED. That is the current,
-  // reviewer-approved classification contract; if the D2 layer ever changes,
-  // this line must be consciously updated (it must NOT silently drift back).
-  eq('[#2] comparability AI_AFFECTED (D2 block post-71e87eb)', audit.comparability, 'AI_AFFECTED');
+  // edge-v1 gates run inside the shared deterministic pre-AI helper for BOTH
+  // production and structure-free shadow. This fixture's RSI/volatility verdict
+  // is therefore present at the deterministic boundary on both sides; the AI
+  // does not alter the direction, so COMPARABLE_PRE_AI is now the honest label.
+  // (The later D2 attribution still appears in public filters, but is not an AI
+  // effect and no longer creates a false post-vs-pre divergence here.)
+  eq('[#2] comparability remains pre-AI under shared edge gates', audit.comparability, 'COMPARABLE_PRE_AI');
 }
 
 // ── helpers for constructed audit scenarios ─────────────────────────────
@@ -633,8 +640,14 @@ console.log('\n── [#14] OTC regression ────────────�
     'entryReason', 'filtersApplied', // FIX-C: ROUND_LEVEL_* strings
     'confluence', 'confluenceDetail', 'reason', // FIX-D: /12 denominators
     'score', 'weightedBuy', 'weightedSell', 'weightedNoTrade', // FIX-B/C: numeric effects
+    // edge-v1 additive indicator instrumentation; OTC decision logic is still
+    // untouched, but analyzeTimeframe now exposes these raw states everywhere.
+    'atrPercentile', 'atrState', 'bbWidthRatio', 'volatilityState',
     // F3-04 (BUG-027): OTC fill-status fields added (engine.js parity) —
-    // new fields, absent from the 71e87eb baseline by design.
+    // conditional: emitted only when this time-dependent fixture is tradable.
+    'fillStatus', 'entryPrice', 'currentPrice', 'entryDistancePct',
+  ]);
+  const OTC_CONDITIONAL_DIVERGENT_FIELDS = new Set([
     'fillStatus', 'entryPrice', 'currentPrice', 'entryDistancePct',
   ]);
   function stripRound2Changed(obj) {
@@ -650,8 +663,8 @@ console.log('\n── [#14] OTC regression ────────────�
   {
     const toFind = new Set(OTC_APPROVED_DIVERGENT_FIELDS);
     (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (toFind.has(k)) toFind.delete(k); else w(o[k]); } } })(newSig);
-    const missing = [...toFind];
-    ok('[#14a] every redacted field still emitted by the current OTC engine (list not stale)', missing.length === 0,
+    const missing = [...toFind].filter(field => !OTC_CONDITIONAL_DIVERGENT_FIELDS.has(field));
+    ok('[#14a] every unconditional redacted field still emitted by the current OTC engine (list not stale)', missing.length === 0,
       missing.length ? 'no longer emitted: ' + missing.join(', ') : '');
   }
   ok('[#14b] OTC signal carries NO engine audit (standard-engine only)', !getEngineAudit(newSig));
@@ -872,11 +885,19 @@ console.log('\n── [#17] Production-equivalence fuzz (100 fixtures) ───
   // contract on all 100 fixtures.
   bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
-  const CALIB_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence']);
+  // Same reviewed divergence inventory as #1a. The 100-fixture fuzz continues
+  // to byte-guard per-TF scoring/confluence/recommendations and all unaffected
+  // context while allowing the feature's intended production gate decisions.
+  const APPROVED_EDGE_DIVERGENT = new Set([
+    'grade','confidence','calibration','coreConfidence',
+    'finalSignal','filtersApplied','entryReason','regimeAdvice','aiValidation',
+    'bestTimeframe','structureVerdict','fillStatus','entryPrice','currentPrice','entryDistancePct',
+    'edgeContext','timeContext','atrPercentile','atrState','bbWidthRatio','volatilityState',
+  ]);
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));
     const kill = new Set(['generatedAt', 'expiryTime', 'nextCandleClose', 'humanReadable', 'nextRefresh', 'candleTime']);
-    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown' || CALIB_DIVERGENT.has(k)) delete o[k]; else w(o[k]); } } })(clone);
+    (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown' || APPROVED_EDGE_DIVERGENT.has(k)) delete o[k]; else w(o[k]); } } })(clone);
     return clone;
   }
   const N = 100; let compared = 0; let mismatches = 0; const mismatchSamples = [];
@@ -901,7 +922,7 @@ console.log('\n── [#17] Production-equivalence fuzz (100 fixtures) ───
     }
   }
   ok('[#17] compared ' + N + ' deterministic fixtures (Forex+Crypto)', compared === N);
-  eq('[#17] production output byte-equal on ALL ' + N + ' fuzz fixtures (mismatches=0)', mismatches, 0);
+  eq('[#17] guarded production fields byte-equal on ALL ' + N + ' fuzz fixtures (mismatches=0; edge decisions excluded)', mismatches, 0);
   if (mismatches) console.log('   mismatch samples: ' + JSON.stringify(mismatchSamples));
 }
 
