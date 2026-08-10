@@ -117,6 +117,10 @@ const baseEnv = () => ({
 const { scheduledScan, selectActivePairs } = await import('../src/handlers/scheduledScan.js');
 const { handleSignal } = await import('../src/handlers/signal.js');
 const { handleLatest } = await import('../src/handlers/latest.js');
+const { EDGE_FEATURE_CONFIG } = await import('../src/config.js');
+// Phase-7 verifies cache/scanner behaviour, not hour admission. Keep its
+// fixtures deterministic at every UTC hour; T35 validates the hour factor.
+EDGE_FEATURE_CONFIG.HOUR_OF_DAY.enabled = false;
 
 console.log('── scheduledScan writes the cache ─────────────────────────');
 {

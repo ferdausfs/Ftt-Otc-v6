@@ -57,7 +57,7 @@ console.log('\n── [#2] invalid inputs -> null ──');
 
 console.log('\n── [#3] engine fxMode ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { fxMode: true, session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { fxMode: true, session: FIXED_SESSION, newsBlock: null, edgeFeaturesEnabled: false });
   if (sig.finalSignal === 'SELL' || sig.finalSignal === 'BUY') {
     ok('[#3a] mode=fx set', sig.mode === 'fx');
     ok('[#3b] fxLevels present', !!sig.fxLevels);
@@ -76,7 +76,7 @@ console.log('\n── [#3] engine fxMode ──');
 
 console.log('\n── [#4] FTT mode default unchanged ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeaturesEnabled: false });
   ok('[#4a] no mode tag', sig.mode === undefined);
   ok('[#4b] no fxLevels', sig.fxLevels === undefined);
   ok('[#4c] finalSignal + confidence intact', typeof sig.finalSignal === 'string' && (typeof sig.confidence === 'number' || typeof sig.confidence === 'string'));

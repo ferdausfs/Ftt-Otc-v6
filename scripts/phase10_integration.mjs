@@ -118,7 +118,10 @@ function envOf(users = { 111: userOf() }) {
 
 const { handleSignalRaw } = await import('../src/handlers/signal.js');
 const { scheduledTracker } = await import('../src/history/stats.js');
-const { HISTORY_CONFIG } = await import('../src/config.js');
+const { HISTORY_CONFIG, EDGE_FEATURE_CONFIG } = await import('../src/config.js');
+// This suite isolates push/dedup semantics. Pin the new wall-clock input so a
+// bad UTC hour cannot turn an otherwise valid push fixture into NO_TRADE.
+EDGE_FEATURE_CONFIG.HOUR_OF_DAY.enabled = false;
 
 console.log('── a real /api/signal call pushes to subscribers ──────────');
 {
