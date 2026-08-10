@@ -61,6 +61,103 @@ export const CONFIG = {
   EXOTIC_CONFIDENCE_PENALTY: 10,
 };
 
+// ── EDGE FEATURE CONFIG (v1 — 2026-08-10) ─────────────────
+// Standard FOREX/CRYPTO engine only. Every decision threshold lives here so a
+// weekly refresh is a data/config update, not an engine-code edit. Multipliers
+// are deliberately bounded: these are input-side quality factors; the CALIB
+// output mapping remains the final confidence/grade layer.
+export const EDGE_FEATURE_CONFIG = {
+  VERSION: 'edge-v1-2026-08-10',
+  CONFIDENCE_CAP: 92,
+
+  HOUR: {
+    enabled: true,
+    timezone: 'UTC',
+    minMultiplier: 0.85,
+    maxMultiplier: 1.10,
+    // Initial Phase-F table. Bad hours: 00-03, 10, 15, 16 UTC. Strong hours
+    // are bounded at +10%; all other hours remain neutral or +5%.
+    multipliers: {
+      0:0.85, 1:0.85, 2:0.85, 3:0.85, 4:1.00, 5:1.00,
+      6:1.00, 7:1.00, 8:1.05, 9:1.10, 10:0.85, 11:1.05,
+      12:1.00, 13:1.00, 14:1.00, 15:0.85, 16:0.85, 17:1.10,
+      18:1.05, 19:1.00, 20:1.00, 21:1.10, 22:1.10, 23:1.10,
+    },
+  },
+
+  SESSION_RANGE: {
+    // The calculation and instrumentation ship now, but the score effect stays
+    // observational until real candle-range snapshots span both train+holdout.
+    enabled: false,
+    validationStatus: 'PROVISIONAL_OBSERVE_ONLY',
+    sourceTimeframe: '15min',
+    minCandles: 8,
+    nearLowMaxPosition: 0.15,
+    nearHighMinPosition: 0.85,
+    meanReversionMultiplier: 1.05,
+  },
+
+  RSI_DIRECTION: {
+    enabled: true,
+    validationStatus: 'PROVISIONAL_SOURCE_EVIDENCE',
+    buyBlockAbove: 55,
+    sellBlockBelow: 45,
+    mode: 'HARD_BLOCK',
+  },
+
+  BB_VOLATILITY: {
+    enabled: true,
+    validationStatus: 'PROVISIONAL_SOURCE_EVIDENCE',
+    normLookback: 20,
+    minHistory: 10,
+    deadRatioBelow: 0.20,
+    midSqueezeRatioBelow: 0.80,
+    midSqueezeMultiplier: 0.90,
+    deadSqueezeBlock: true,
+  },
+
+  ATR_PERCENTILE: {
+    // State is computed and persisted from day one. No score effect is enabled
+    // until this new field has a legitimate chronological holdout.
+    enabled: false,
+    validationStatus: 'PROVISIONAL_OBSERVE_ONLY',
+    lookback: 50,
+    minHistory: 20,
+    squeezeMaxPercentile: 20,
+    expansionMinPercentile: 80,
+    squeezeMultiplier: 0.95,
+    expansionMultiplier: 1.00,
+  },
+
+  RECENT_FORM: {
+    enabled: true,
+    lookback: 20,
+    minSamples: 20,
+    blockBelowWinRate: 0.35,
+    confidenceMultiplier: 0.85,
+  },
+
+  ADAPTIVE: {
+    enabled: true,
+    kvKey: 'adaptive:edge-calibration:v1',
+    lockKey: 'adaptive:edge-calibration:lock:v1',
+    refreshEveryDays: 7,
+    lockTtlSeconds: 10 * 60,
+    windowDays: 14,
+    holdoutDays: 3,
+    ttlDays: 30,
+    minTrainSamples: 100,
+    minHoldoutSamples: 50,
+    minBucketSamples: 20,
+    priorStrength: 20,
+    minMultiplier: 0.85,
+    maxMultiplier: 1.10,
+    minimumCoverage: 0.20,
+    holdoutWrTolerance: 0.0,
+    applyPairSessionWeights: true,
+  },
+};
+
 // ── PHASE 7: CRON SIGNAL SCANNER ────────────────────────────
 // Pairs the 5-min scanner keeps warm in KV. Every entry was verified live
 // against /api/signal on 2026-07-29 — all 14 return FULL_DATA.

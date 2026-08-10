@@ -31,7 +31,8 @@ import {
   recentCandleConsistency, isVolumeSpikeAnomaly,
 } from '../analysis/filters.js';
 import { detectMarketCondition } from '../indicators/regime.js';
-import { getDynamicConfidenceAdjustment } from '../history/stats.js';
+import { getDynamicConfidenceAdjustment, getRecentFormSnapshot } from '../history/stats.js';
+import { evaluateEdgeFeatures } from '../analysis/edgeFeatures.js';
 
 /**
  * Pure per-timeframe direction decision (timeframe.js). Extracted verbatim so
@@ -70,6 +71,8 @@ export async function runDeterministicVoteAndFilters(ctx) {
     votes, candleData, tfResults, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, assetType,
     newsBlock, newsBlocked, pair, env,
+    indicatorCache = {}, now = null, adaptiveSnapshot = null,
+    edgeTfResults = tfResults,
   } = ctx;
 
   const filtersApplied = [];
@@ -213,6 +216,25 @@ export async function runDeterministicVoteAndFilters(ctx) {
     filtersApplied.push('DEAD_MARKET_HARD_BLOCK (conf<65)');
   }
 
+  // ── EDGE FEATURES (input-side; CALIB remains the final output mapping) ──
+  // Read recent form once, then pass immutable snapshots into the pure feature
+  // evaluator. `now` is explicit so production and the R7.1 shadow see the
+  // exact same UTC hour/day instead of drifting across a clock boundary.
+  const preEdgeDirection = finalDirection;
+  const preEdgeConfidence = confidence;
+  let recentForm = null;
+  if (finalDirection !== 'NO_TRADE' && env && env.SIGNAL_CACHE)
+    recentForm = await getRecentFormSnapshot(pair, env);
+  const edge = evaluateEdgeFeatures({
+    direction: finalDirection, confidence, pair, assetType, tfResults: edgeTfResults,
+    indicatorCache, candleData, now, session, recentForm, adaptiveSnapshot,
+  });
+  finalDirection = edge.finalDirection;
+  confidence = edge.confidence;
+  filtersApplied.push(...edge.filtersApplied);
+  const edgeHardBlocked = edge.hardBlocked;
+  const edgeContext = edge.context;
+
   // ── CONFIDENCE FLOOR ──
   let belowFloor = false;
   if (finalDirection !== 'NO_TRADE' && confidence < CONFIG.MIN_CONFIDENCE_FLOOR) {
@@ -230,16 +252,15 @@ export async function runDeterministicVoteAndFilters(ctx) {
     }
   }
 
-  // ── DYNAMIC HISTORY ADJUSTMENT ──
+  // ── DYNAMIC HISTORY BONUS ──
+  // Negative recent form is already handled above by the explicit config-driven
+  // multiplier. Preserve the legacy positive bonus without double-penalizing a
+  // weak pair through both -10 and x0.85.
   if (finalDirection !== 'NO_TRADE' && env && env.SIGNAL_CACHE) {
     const dynAdj = await getDynamicConfidenceAdjustment(pair, env);
-    if (dynAdj !== 0) {
+    if (dynAdj > 0) {
       confidence = Math.max(0, Math.min(92, confidence + dynAdj));
-      filtersApplied.push('DYNAMIC_CONF_ADJ: ' + (dynAdj > 0 ? '+' : '') + dynAdj);
-      if (confidence < CONFIG.MIN_CONFIDENCE_FLOOR && finalDirection !== 'NO_TRADE') {
-        finalDirection = 'NO_TRADE'; confidence = 0;
-        filtersApplied.push('BELOW_FLOOR_AFTER_DYN_ADJ');
-      }
+      filtersApplied.push('DYNAMIC_CONF_BONUS: +' + dynAdj);
     }
   }
 
@@ -258,5 +279,8 @@ export async function runDeterministicVoteAndFilters(ctx) {
     alignment, alignmentBonus,
     marketCondition, marketContext,
     isDeadMarket, activeDirs,
+    edgeContext, edgeHardBlocked,
+    edgeHardBlockReason: edge.hardBlockReason,
+    preEdgeDirection, preEdgeConfidence,
   };
 }

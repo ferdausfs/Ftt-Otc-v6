@@ -116,23 +116,37 @@ function getConfBucket(confidence) {
   return '88+';
 }
 
-function getStructWR(overall) {
-  if (!overall) return CALIB.base;
-  const v = CALIB.structWR[overall];
-  if (typeof v === 'number') return v;
-  return CALIB.base;
+function calibrationTables(override) {
+  // A weekly snapshot may replace only the empirical lookup tables. Grade and
+  // confidence thresholds remain the stable final mapping, preventing a
+  // second calibration layer or a runtime mutation of the exported CALIB data.
+  if (!override || typeof override !== 'object') return CALIB;
+  return {
+    ...CALIB,
+    base: typeof override.base === 'number' ? override.base : CALIB.base,
+    structWR: { ...CALIB.structWR, ...(override.structWR || {}) },
+    confBucketWR: { ...CALIB.confBucketWR, ...(override.confBucketWR || {}) },
+  };
 }
 
-function getConfBucketWR(bucket) {
-  const v = CALIB.confBucketWR[bucket];
+function getStructWR(overall, tables) {
+  if (!overall) return tables.base;
+  const v = tables.structWR[overall];
   if (typeof v === 'number') return v;
-  return CALIB.base;
+  return tables.base;
 }
 
-export function getCalibratedScore(confidence, structureOverall) {
+function getConfBucketWR(bucket, tables) {
+  const v = tables.confBucketWR[bucket];
+  if (typeof v === 'number') return v;
+  return tables.base;
+}
+
+export function getCalibratedScore(confidence, structureOverall, override = null) {
+  const tables = calibrationTables(override);
   const bucket = getConfBucket(confidence);
-  const sWR = getStructWR(structureOverall);
-  const cWR = getConfBucketWR(bucket);
+  const sWR = getStructWR(structureOverall, tables);
+  const cWR = getConfBucketWR(bucket, tables);
   // simple average — stable, interpretable, evidence-backed
   // (could weight, but equal weight worked for TRAIN/VAL monotonic)
   return (sWR + cWR) / 2;
@@ -166,8 +180,8 @@ const GRADE_DEFS = {
   'F':  { grade: 'F',  label: 'AVOID',     description:'Very weak. Do NOT trade.' },
 };
 
-export function getCalibratedGradeAndConfidence(confidence, structureOverall) {
-  const score = getCalibratedScore(confidence, structureOverall);
+export function getCalibratedGradeAndConfidence(confidence, structureOverall, override = null) {
+  const score = getCalibratedScore(confidence, structureOverall, override);
   const calConf = scoreToCalibratedConfidence(score);
   const gradeLetter = scoreToGrade(score);
   const grade = { ...GRADE_DEFS[gradeLetter] };

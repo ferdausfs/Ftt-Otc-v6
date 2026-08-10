@@ -8,6 +8,7 @@ import { scoreCamarillaLevels } from '../indicators/math.js';
 // R7.1: shared per-TF decision + private shadow capture transport.
 import { decideTfDirection } from './voteFilters.js';
 import { attachShadowTf } from './r71shadow.js';
+import { calculateAtrPercentileState, calculateBbVolatilityState } from '../analysis/edgeFeatures.js';
 
 export function analyzeTimeframe(indicators, candles, timeframe, assetType, higherTFTrend, marketRegime) {
   const vt = VOLATILITY_THRESHOLDS[assetType] || VOLATILITY_THRESHOLDS.FOREX;
@@ -33,6 +34,11 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
   const bbMiddle    = safeLastValue(indicators.bollinger.middle);
   const bbBandwidth = safeLastValue(indicators.bollinger.bandwidth);
   const bbPercentB  = safeLastValue(indicators.bollinger.percentB);
+  // Additive signal-time state used by edge gates and history instrumentation.
+  // Both calculations compare the current value with its OWN preceding values;
+  // no cross-asset absolute threshold is smuggled in.
+  const atrPercentileState = calculateAtrPercentileState(indicators.atr);
+  const bbVolatilityState  = calculateBbVolatilityState(indicators.bollinger.bandwidth);
   const stochK       = safeLastValue(indicators.stochastic.k);
   const stochD       = safeLastValue(indicators.stochastic.d);
   const prevStochK   = safeLastTwo(indicators.stochastic.k).prev;
@@ -589,8 +595,12 @@ export function analyzeTimeframe(indicators, candles, timeframe, assetType, high
       williamsR: fmt(williamsR, 2), cci: fmt(cci, 2),
       mfi: assetType === ASSET_TYPE.CRYPTO ? fmt(mfi, 2) : 'N/A (Forex)',
       atr: fmt(atr, 6),
+      atrPercentile: atrPercentileState.percentile,
+      atrState: atrPercentileState.state,
       bbUpper: fmt(bbUpper), bbMiddle: fmt(bbMiddle), bbLower: fmt(bbLower),
       bbBandwidth: bbBandwidth !== null ? bbBandwidth.toFixed(4) : 'N/A',
+      bbWidthRatio: bbVolatilityState.ratio,
+      volatilityState: bbVolatilityState.state,
       bbPercentB: fmt(bbPercentB, 4),
       pivot: pivots.pivot !== null ? pivots.pivot.toFixed(5) : 'N/A',
       r1: pivots.r1 !== null ? pivots.r1.toFixed(5) : 'N/A',

@@ -1,6 +1,6 @@
 // Fix: static import (was dynamic inside fetchExpiryPrice — called every cron tick)
 import { CONFIG } from '../config.js';
-import { HISTORY_CONFIG } from '../config.js';
+import { HISTORY_CONFIG, EDGE_FEATURE_CONFIG } from '../config.js';
 import { getApiKeys, getNextRotationIndex } from '../fetch/keys.js';
 import { incrementQuota } from './quota.js';
 import { applyResult as cbApplyResult } from './circuitBreaker.js';
@@ -197,12 +197,31 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
           bbBandwidth = _toNum(_ind.bollinger.bandwidth);
         }
 
+        const _edge = signal.edgeContext || null;
+        const atrPercentile = _extract(_ind.atrPercentile !== undefined
+          ? _ind.atrPercentile : (_edge && _edge.atrPercentile && _edge.atrPercentile.percentile));
+        const atrState = typeof _ind.atrState === 'string' ? _ind.atrState
+          : (_edge && _edge.atrPercentile ? _edge.atrPercentile.state : 'UNKNOWN');
+        const bbWidthRatio = _extract(_ind.bbWidthRatio !== undefined
+          ? _ind.bbWidthRatio : (_edge && _edge.volatility && _edge.volatility.ratio));
+        const volatilityState = typeof _ind.volatilityState === 'string' ? _ind.volatilityState
+          : (_edge && _edge.volatility ? _edge.volatility.state : 'UNKNOWN');
         record.signalIndicators = {
           bestTF: _bestTF,
           rsi: rsi,
           atrPct: atrPct,
           adx: adx,
           bbBandwidth: bbBandwidth,
+          atrPercentile,
+          atrState,
+          bbWidthRatio,
+          volatilityState,
+          sessionRangePosition: _edge && _edge.sessionRange
+            ? _extract(_edge.sessionRange.position) : null,
+          sessionRangeState: _edge && _edge.sessionRange
+            ? _edge.sessionRange.state : 'UNKNOWN',
+          utcHour: _edge && _edge.time ? _edge.time.utcHour : null,
+          dayOfWeek: _edge && _edge.time ? _edge.time.dayOfWeek : null,
         };
       }
     } catch (e) { /* diagnostic only — never break a save */ }
@@ -573,18 +592,33 @@ async function updateSignalResult(record, winLoss, exitPrice, env) {
   } catch (e) { console.warn('updateSignalResult error:', e.message); }
 }
 
-export async function getDynamicConfidenceAdjustment(pair, env) {
-  if (!env || !env.SIGNAL_CACHE) return 0;
+export async function getRecentFormSnapshot(pair, env) {
+  if (!env || !env.SIGNAL_CACHE) return null;
   try {
     const stats = await env.SIGNAL_CACHE.get(HISTORY_CONFIG.KV_STATS_PREFIX + pairKey(pair), 'json');
-    if (!stats || typeof stats.winRate !== 'number' || stats.sampleSize < 5) return 0;
-    const wr = stats.winRate;
-    if (wr >= 0.70) return HISTORY_CONFIG.CONFIDENCE_BONUS;
-    if (wr >= HISTORY_CONFIG.CONFIDENCE_BONUS_THRESHOLD) return 3;
-    if (wr <= 0.35) return HISTORY_CONFIG.CONFIDENCE_PENALTY;
-    if (wr <= HISTORY_CONFIG.CONFIDENCE_PENALTY_THRESHOLD) return -5;
-    return 0;
-  } catch (e) { return 0; }
+    if (!stats || typeof stats.winRate !== 'number' || typeof stats.sampleSize !== 'number') return null;
+    return {
+      winRate: stats.winRate,
+      sampleSize: stats.sampleSize,
+      lookback: HISTORY_CONFIG.WIN_RATE_LOOKBACK,
+      lastUpdated: stats.lastUpdated || null,
+    };
+  } catch (e) { return null; }
+}
+
+export async function getDynamicConfidenceAdjustment(pair, env) {
+  const recent = await getRecentFormSnapshot(pair, env);
+  if (!recent || recent.sampleSize < 5) return 0;
+  const wr = recent.winRate;
+  if (wr >= 0.70) return HISTORY_CONFIG.CONFIDENCE_BONUS;
+  if (wr >= HISTORY_CONFIG.CONFIDENCE_BONUS_THRESHOLD) return 3;
+  // Kept for the public /api/stats diagnostic contract. The engine itself no
+  // longer double-applies this negative adjustment: voteFilters uses the
+  // config-driven x0.85 recent-form gate instead.
+  if (wr < EDGE_FEATURE_CONFIG.RECENT_FORM.blockBelowWinRate)
+    return HISTORY_CONFIG.CONFIDENCE_PENALTY;
+  if (wr <= HISTORY_CONFIG.CONFIDENCE_PENALTY_THRESHOLD) return -5;
+  return 0;
 }
 
 export async function updatePairStats(pair, winLoss, record, env) {

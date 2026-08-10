@@ -10,7 +10,8 @@ import { analyzeTimeframe } from './timeframe.js';
 import { calculateCandleDuration } from '../analysis/duration.js';
 import { generateEntryReason, getSessionWeightMultiplier, getCandleQualityMultiplier, computeFxLevels } from '../analysis/filters.js';
 import { getSignalGrade } from '../analysis/grade.js';
-import { getCalibratedGradeAndConfidence } from '../analysis/calibration.js';
+import { getCalibratedGradeAndConfidence, CALIB } from '../analysis/calibration.js';
+import { readAdaptiveSnapshot } from '../analysis/adaptive.js';
 import { callCerebrasValidation } from '../ai/cerebras.js';
 import { callGroqValidation } from '../ai/groq.js';
 import { combineDualAIResults, buildIndicatorSnapshot } from '../ai/combine.js';
@@ -31,6 +32,9 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   const now     = opts && opts.now ? new Date(opts.now) : new Date();
   const session = (opts && opts.session) || detectTradingSession();
   const exotic  = isExoticPair(pair);
+  // One bounded KV read. Missing/stale/rejected snapshots fail open to the
+  // static Phase-F config and CALIB tables.
+  const adaptiveSnapshot = await readAdaptiveSnapshot(env);
 
   // newsBlock is also injectable (null = no blackout) so fixture tests are
   // invariant to the weekly news windows too (e.g. Thu 17:30-19:45 UTC).
@@ -143,6 +147,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     votes, candleData, tfResults, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, assetType,
     newsBlock, newsBlocked, pair, env,
+    indicatorCache, now, adaptiveSnapshot,
   });
   let finalDirection    = det.finalDirection;
   let confidence        = det.confidence;
@@ -169,9 +174,14 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   // CONFIG.D2_BAD_PAIR_BLOCK_ENABLED=false so USD/JPY, AUD/USD, DOT/USD can
   // generate the forward signals needed to validate (or reject) those blocks.
   let d2Audit = null;
-  if (finalDirection !== 'NO_TRADE') {
-    const d2PreDir = finalDirection;
-    const d2PreConf = confidence;
+  // Preserve the established D2 attribution when a new edge gate also blocks
+  // the same would-be trade. D2 is an older, independently measured hard gate;
+  // the edge evaluator exposes its pre-edge candidate solely for this ordering.
+  const d2CandidateDir = finalDirection !== 'NO_TRADE'
+    ? finalDirection : (det.edgeHardBlocked ? det.preEdgeDirection : 'NO_TRADE');
+  if (d2CandidateDir !== 'NO_TRADE') {
+    const d2PreDir = d2CandidateDir;
+    const d2PreConf = finalDirection !== 'NO_TRADE' ? confidence : det.preEdgeConfidence;
     if (marketRegime === 'TRENDING') {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_TRENDING_BLOCK (29.5% WR n=356)');
@@ -213,7 +223,8 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   // F3-15 (BUG-017): a D2 hard block is a data-backed verdict (6-30% WR
   // slices) — the AI can never override it, so don't spend 2 LLM calls (and
   // ~8s of latency) validating a trade that is already decided NO_TRADE.
-  const aiTargetDir = d2Audit
+  const edgeHardBlocked = !!det.edgeHardBlocked;
+  const aiTargetDir = (d2Audit || edgeHardBlocked)
     ? null
     : (finalDirection !== 'NO_TRADE'
       ? finalDirection
@@ -228,6 +239,9 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     // private audit attribution token must NOT be echoed here (JSON-leak
     // surface — asserted by d2_tests #9h).
     filtersApplied.push('AI_SKIPPED (D2 hard block)');
+  }
+  if (edgeHardBlocked && aiTargetDir === null) {
+    filtersApplied.push('AI_SKIPPED (edge hard block)');
   }
 
   if (aiTargetDir) {
@@ -333,8 +347,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   // This fixes inverted ladder: A+ was worst 37.8% WR, now A+ best.
   let calibratedConfForReport = confidence;
   let calibratedScoreForTrace = null;
+  const adaptiveCalib = adaptiveSnapshot && adaptiveSnapshot.status === 'ACTIVE'
+    ? adaptiveSnapshot.calibration : null;
   if (finalDirection !== 'NO_TRADE') {
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, adaptiveCalib);
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
   }
@@ -348,7 +364,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   } else {
     // getSignalGrade now itself uses calibrated scoring, but we also have calibrated
     // confidence from above. Use the calibrated grade directly to ensure consistency.
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, adaptiveCalib);
     finalGrade = cal.grade;
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
@@ -368,8 +384,13 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
       rawConfidence: confidence,
       calibratedConfidence: calibratedConfForReport,
       calibratedScore: calibratedScoreForTrace,
-      version: 'calib-v1-2026-08-09',
+      version: adaptiveCalib ? adaptiveSnapshot.version : CALIB.version,
+      source: adaptiveCalib ? 'ROLLING_14D_HOLDOUT_GUARDED' : 'STATIC_PHASE_F',
     },
+    // Additive public context: raw signal-time inputs and factors. This is not
+    // another probability mapping; CALIB above remains the final output layer.
+    edgeContext: det.edgeContext,
+    timeContext: det.edgeContext ? det.edgeContext.time : null,
     assetType, marketRegime, regimeAdvice: getRegimeAdvice(marketRegime, finalDirection),
     marketCondition, alignment, higherTFTrend: higherTFTrend || 'NEUTRAL',
     entryReason, filtersApplied, newsBlackout: newsBlock || null, aiValidation,
@@ -412,6 +433,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
     const r71Audit = await computeEngineAudit({
       tfResults, candleData, assetType, pair, higherTFTrend, marketRegime,
       session, sessionMult, candleQualityMult, exotic, newsBlock, newsBlocked, env,
+      indicatorCache, now, adaptiveSnapshot,
       productionPreAi:  { finalDirection: det.finalDirection, confidence: det.confidence },
       productionPostAi: { finalDirection, confidence },
     });

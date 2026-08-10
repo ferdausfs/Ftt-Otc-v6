@@ -1,4 +1,4 @@
-import { CONFIG, ASSET_TYPE, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS, HISTORY_CONFIG } from '../config.js';
+import { CONFIG, ASSET_TYPE, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, POPULAR_CRYPTO_PAIRS, HISTORY_CONFIG, EDGE_FEATURE_CONFIG } from '../config.js';
 import { jsonResponse } from '../utils/helpers.js';
 import { sanitizePair, isExoticPair } from '../utils/pairs.js';
 import { detectTradingSession, isForexMarketOpen, getForexHoliday, checkNewsBlackout } from '../utils/session.js';
@@ -7,6 +7,7 @@ import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stat
 import { readQuota } from '../history/quota.js';
 import { getScanCacheStats } from './latest.js';
 import { getPushStats } from './pushToSubscribers.js';
+import { readAdaptiveSnapshot } from '../analysis/adaptive.js';
 
 // ── HEALTH ──────────────────────────────────
 export async function handleHealth(env) {
@@ -22,6 +23,7 @@ export async function handleHealth(env) {
   const rotationIdx    = await readRotationIndex(env);
   const scanCache      = await getScanCacheStats(env);   // Phase 7
   const phase10        = await getPushStats(env);        // Phase 10 push
+  const adaptive       = await readAdaptiveSnapshot(env);
 
   return jsonResponse({
     status: 'healthy', version: '6.9.2', timestamp: new Date().toISOString(),
@@ -41,6 +43,16 @@ export async function handleHealth(env) {
       crypto: { status: 'ALWAYS OPEN (24/7)', bases: CRYPTO_BASES, quotes: CRYPTO_QUOTES, topPairs: POPULAR_CRYPTO_PAIRS.slice(0, 10) },
     },
     filters: { minConfidenceFloor: CONFIG.MIN_CONFIDENCE_FLOOR + '%', volumeSpikeMultiplier: CONFIG.VOLUME_SPIKE_FILTER_MULTIPLIER + 'x', newsBlackoutMargin: CONFIG.NEWS_BLACKOUT_MINUTES + ' min', batchMaxPairs: CONFIG.BATCH_MAX_PAIRS },
+    edgeFeatures: {
+      version: EDGE_FEATURE_CONFIG.VERSION,
+      hour: EDGE_FEATURE_CONFIG.HOUR.enabled,
+      rsiDirection: EDGE_FEATURE_CONFIG.RSI_DIRECTION.validationStatus,
+      bbVolatility: EDGE_FEATURE_CONFIG.BB_VOLATILITY.validationStatus,
+      atrPercentile: EDGE_FEATURE_CONFIG.ATR_PERCENTILE.validationStatus,
+      sessionRange: EDGE_FEATURE_CONFIG.SESSION_RANGE.validationStatus,
+      recentForm: EDGE_FEATURE_CONFIG.RECENT_FORM.enabled,
+      adaptive: adaptive ? { status: adaptive.status, version: adaptive.version, generatedAt: adaptive.generatedAt } : { status: 'STATIC_FALLBACK' },
+    },
     // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
     // means the */5 scan is failing or being skipped.
     scanCache,

@@ -135,6 +135,7 @@ export async function computeEngineAudit(inputs) {
   const {
     tfResults, candleData, assetType, pair, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, newsBlock, newsBlocked, env,
+    indicatorCache = {}, now = null, adaptiveSnapshot = null,
     productionPreAi, productionPostAi,
   } = inputs;
 
@@ -175,10 +176,23 @@ export async function computeEngineAudit(inputs) {
   }
 
   // ── 3. run the SAME deterministic pipeline on shadow votes (no AI) ──
+  // Edge gates need the best TF for the SHADOW direction, not production's
+  // structure-influenced direction. Keep raw indicators/entries from the real
+  // TF analysis, but substitute the no-structure vote direction/score.
+  const edgeTfResults = {};
+  for (const vote of shadowVotes) {
+    edgeTfResults[vote.tf] = {
+      ...(tfResults[vote.tf] || {}),
+      direction: vote.direction,
+      score: vote.score,
+      confluence: vote.confluence,
+    };
+  }
   const shadowCtx = {
-    votes: shadowVotes, candleData, tfResults, higherTFTrend, marketRegime,
+    votes: shadowVotes, candleData, tfResults, edgeTfResults, higherTFTrend, marketRegime,
     session, sessionMult, candleQualityMult, exotic, assetType,
     newsBlock, newsBlocked, pair, env,
+    indicatorCache, now, adaptiveSnapshot,
   };
   const shadowDet = await runDeterministicVoteAndFilters(shadowCtx);
 

@@ -15,6 +15,7 @@ import { scheduledScan } from './handlers/scheduledScan.js';
 import { resolveShadowObservations } from './history/r71store.js';
 import { resolveD2ShadowObservations } from './history/d2store.js';
 import { resolveProbeObservations } from './history/probeStore.js';
+import { maybeRefreshAdaptiveCalibration } from './analysis/adaptive.js';
 import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
 
 export default {
@@ -45,6 +46,9 @@ export default {
     ctx.waitUntil(resolveD2ShadowObservations(env));
     // Forex SELL Probe: resolve private probe observations on the same tick.
     ctx.waitUntil(resolveProbeObservations(env));
+    // Weekly, holdout-guarded refresh of CALIB lookups + hour/pair/session
+    // multipliers. Every other */2 tick is only one cheap KV freshness read.
+    ctx.waitUntil(maybeRefreshAdaptiveCalibration(env));
   },
 
   async fetch(request, env, ctx) {
