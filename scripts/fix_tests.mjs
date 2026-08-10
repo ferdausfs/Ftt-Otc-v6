@@ -32,7 +32,10 @@
  *   T24 F3-11  RANGING middle-zone RSI trend-following scores removed
  *   T25 F3-12  HIGHEST-session +3 bonus removed
  *   T26 F3-13  crypto pairs skip forex session weights
- *   T27 F3-14  scheduledScan passes noPush:true
+ *   T27 F3-14  scheduledScan pushes fresh tradeable signals (v6.10 revert of
+ *              the noPush:true contract) — scanner push once, re-scan no-op,
+ *              manual /api/signal after scanner no double-push, and the
+ *              reverse order (manual first, then scanner)
  *   T28 F3-15  AI never called on D2-blocked signals
  *   T29 F3-16  session injection makes engine fixtures time-invariant
  *   T30 F3-17  /api/history excludes cbShadow rows from decided/pending
@@ -50,6 +53,7 @@ import { classifyOutcome, fetchExpiryPrice, scheduledTracker, saveSignalToHistor
 import { passAI, passGrade, pushSignalToSubscribers } from '../src/handlers/pushToSubscribers.js';
 import { handleReport, handleHistory } from '../src/handlers/health.js';
 import { handleSignalRaw, handleSignal } from '../src/handlers/signal.js';
+import { __scanTest } from '../src/handlers/scheduledScan.js';
 import { buildMultiTimeframeSignal } from '../src/signal/engine.js';
 import { buildMultiTimeframeSignalOTC } from '../src/signal/otcEngine.js';
 import { analyzeOTCPatterns } from '../src/analysis/otc.js';
@@ -894,15 +898,89 @@ console.log('\n── T26: crypto skips forex session weights (F3-13) ───�
   ok('T26d: no SESSION_WEIGHT filter on crypto', !(sig.filtersApplied || []).some(f => f.includes('SESSION_WEIGHT')), JSON.stringify(sig.filtersApplied));
 }
 
-console.log('\n── T27: scheduledScan pushes nothing (F3-14) ──────────');
+console.log('\n── T27: scanner pushes fresh tradeable signals, deduped (F3-14 revert) ─');
 {
+  // Real pipeline: scanOnePair -> handleSignalRaw -> saveAndPush -> Telegram,
+  // network stubbed (same pattern as T4 / phase10_integration). Subscriber
+  // 111 watches BTCUSD with every filter open. This proves the auto-push
+  // wiring end-to-end, not just the call-site options (the old grep contract
+  // could not have caught a broken saveAndPush chain).
+  const scanEnvOf = () => {
+    const seed = { 'u:111': { pair: 'BTCUSD', watchlist: [], autoEnabled: true, gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false, channelId: null } };
+    seed['auto_users'] = ['111'];
+    return { SIGNAL_CACHE: makeKV(), BOT_KV: makeKV(seed), BOT_TOKEN: 'tok', TWELVEDATA_API_KEY_1: 'k', CEREBRAS_API_KEY: 'c', GROQ_API_KEY: 'g' };
+  };
+  let tg = [];
+  const installNet = () => {
+    tg = [];
+    globalThis.fetch = async (url, init) => {
+      const u = String(url);
+      if (u.includes('api.telegram.org')) {
+        const b = JSON.parse(init.body);
+        tg.push({ chatId: String(b.chat_id), text: b.text });
+        return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '' };
+      }
+      if (u.includes('twelvedata')) {
+        const interval = new URL(u).searchParams.get('interval');
+        let values;
+        if (interval === '15min') values = seriesFastSin(100, 100, 0.4);
+        else if (interval === '5min') values = series(100, 100, 0.1);
+        else values = series(100, 100, 0.02);
+        return { ok: true, status: 200, json: async () => ({ values }), text: async () => '' };
+      }
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 85, reason: 'stub', concerns: null }) } }] }), text: async () => '' };
+    };
+  };
+  const pushLogIds = (env) => [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('pushLog:')).map(k => k.slice('pushLog:'.length));
+  const lockKeys = (env) => [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('pushLock:'));
+
+  // ── 1) scanner delivers a fresh tradeable signal exactly once ──
+  installNet();
+  const env1 = scanEnvOf(); const sink1 = [];
+  const q1 = quiet();
+  const scan1 = await __scanTest.scanOnePair('BTC/USD', 'gen_t27', env1, ctxOf(sink1), EDGE_OFF);
+  await drain(sink1); q1();
+  ok('T27a: scanOnePair returned a cached result', !!scan1 && scan1.pair === 'BTC/USD', JSON.stringify(scan1));
+  eq('T27a: fresh scanner signal pushed exactly one message', tg.length, 1);
+  eq('T27a: delivered to the matching subscriber', tg[0].chatId, '111');
+  ok('T27a: message names the pair', tg[0].text.includes('BTC/USD'));
+  eq('T27a: pushLog written for the scanner-minted id', pushLogIds(env1).length, 1);
+  eq('T27a: pushLock claimed for the subscriber/pair/direction', lockKeys(env1).length, 1);
+  const hist1 = await env1.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
+  eq('T27a: history holds exactly one row (no double save)', hist1.length, 1);
+
+  // ── 2) re-scan of the same setup: cache warmed again, NOT re-pushed ──
+  const q2 = quiet();
+  const scan2 = await __scanTest.scanOnePair('BTC/USD', 'gen_t27b', env1, ctxOf(sink1), EDGE_OFF);
+  await drain(sink1); q2();
+  ok('T27b: re-scan still returns a cache write', !!scan2, JSON.stringify(scan2));
+  eq('T27b: re-scan of same setup does NOT re-push (history dedup)', tg.length, 1);
+  const hist2 = await env1.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
+  eq('T27b: history still exactly one row', hist2.length, 1);
+
+  // ── 3) manual /api/signal for the same setup right after the scanner ──
+  const q3 = quiet();
+  const manual1 = await handleSignalRaw('BTC/USD', env1, ctxOf(sink1), EDGE_OFF);
+  await drain(sink1); q3();
+  ok('T27c: manual call still produced a signal response', !!manual1 && !!manual1.signal, '');
+  eq('T27c: manual call after scanner push does NOT double-push', tg.length, 1);
+
+  // ── 4) reverse order: manual push first, then the scanner sees it ──
+  installNet();
+  const env2 = scanEnvOf(); const sink2 = [];
+  const q4 = quiet();
+  await handleSignalRaw('BTC/USD', env2, ctxOf(sink2), EDGE_OFF);
+  await drain(sink2);
+  eq('T27d: manual push delivered once', tg.length, 1);
+  const scan3 = await __scanTest.scanOnePair('BTC/USD', 'gen_t27c', env2, ctxOf(sink2), EDGE_OFF);
+  await drain(sink2); q4();
+  ok('T27d: scanner still warmed the cache after a manual push', !!scan3, JSON.stringify(scan3));
+  eq('T27d: scanner does NOT re-push what the manual call pushed', tg.length, 1);
+
+  // ── 5) call-site contract: noPush is no longer forced by the scanner ──
   const ss = fs.readFileSync(fileURLToPath(new URL('../src/handlers/scheduledScan.js', import.meta.url)), 'utf8');
-  // F3-14 contract: the scanner's handleSignalRaw call always carries
-  // noPush:true. Phase F round 2 (edge features) added test-determinism hook
-  // forwarding ({ noPush: true, ...opts }) — production cron passes no opts,
-  // so noPush:true is still unconditional at the call site.
-  ok('T27: scanner calls handleSignalRaw with noPush:true',
-    ss.includes('handleSignalRaw(pair, env, ctx, { noPush: true') && !/noPush:\s*(false|!!opts\.noPush)/.test(ss));
+  ok('T27e: scanner no longer forces noPush:true at the call site',
+    !ss.includes('noPush: true') && ss.includes('handleSignalRaw(pair, env, ctx, opts)'));
 }
 
 console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ─────');
@@ -1410,9 +1488,17 @@ console.log('\n── T36: RSI × direction gate (B4) ────────�
   const s10 = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true, now: '2026-08-10T10:00:00Z' });
   eq('T36b: RSI x hour penalties block below floor', s10.finalSignal, 'NO_TRADE');
 
-  // SELL with RSI < 45 (fx fixture: SELL 73, RSI 37.87) -> penalty -> floor
+  // SELL with RSI < 45 (fx fixture: SELL 73, RSI 37.87) -> penalty -> floor.
+  // Pin the wall-clock-dependent inputs like T29 does: session quality HIGH
+  // (not HIGHEST, which triggers the D2_HIGHEST_SESSION_BLOCK hard block) and
+  // newsBlock null (avoids the real weekly windows, e.g. Mon-Fri 12:00-13:45
+  // UTC US Economic Data Window) — detectTradingSession/checkNewsBlackout
+  // read the real clock even when opts.now is pinned.
   const cdFx = eFix({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 });
-  const sFx = await runEngine('EUR/USD', cdFx, 'FOREX', {}, { edgeFeatures: true });
+  const sFx = await runEngine('EUR/USD', cdFx, 'FOREX', {}, {
+    edgeFeatures: true, newsBlock: null,
+    session: { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 },
+  });
   eq('T36c: SELL+RSI<45 penalty blocks via floor', sFx.finalSignal, 'NO_TRADE');
   ok('T36c: SELL-side gate recorded',
     (sFx.filtersApplied || []).some(f => f.includes('RSI_DIRECTION_GATE_PENALTY x0.85 (SELL rsi=37.87 < 45)')), JSON.stringify(sFx.filtersApplied));

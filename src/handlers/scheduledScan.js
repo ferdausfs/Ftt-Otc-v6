@@ -5,6 +5,19 @@
  * Bot can read one shared, already-computed signal instead of each triggering
  * their own engine run.
  *
+ * ── Auto-signal delivery (v6.10, F3-14 revert) ───────────────────────────
+ * The scanner is ALSO the auto-push path. The worker is the single source of
+ * truth (ledger + subscribers) and the bot v4.5.0 removed its own autoScan,
+ * so this every-5-minutes cron tick is the ONLY place fresh signals are
+ * generated with no human pressing a button — if it does not push, auto
+ * signals never reach Telegram subscribers. Push is NOT done here directly:
+ * it rides handleSignalRaw -> saveAndPush, which saves the history row first
+ * and only pushes when the row is genuinely new (30-min setup dedup), and
+ * pushSignalToSubscribers adds the per-(subscriber,pair,direction) pushLock
+ * (30-min window). Re-scans and manual /api/signal calls therefore cannot
+ * double-deliver. NO_TRADE and circuit-breaker-suppressed signals never mint
+ * an id, so they never push. See AGENT_LOG.md (RESTORE AUTO SIGNAL PUSH).
+ *
  * ── Engine reuse (spec §5) ──────────────────────────────────────────────────
  * The spec expected to import `generateSignalCore` from signal/engine.js and
  * warned a refactor might be needed. No refactor was required: the request path
@@ -110,11 +123,20 @@ async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
   try {
     // Same entry point /api/signal uses — including circuit-breaker checks and
     // the existing history write via ctx.waitUntil.
-    // F3-14 (BUG-028): the cron scanner must never push to Telegram — its job
-    // is warming the latest: cache. User-triggered calls still push.
+    // ── Push contract (v6.10, reverts F3-14/BUG-028) ─────────────────────
+    // F3-14 added noPush:true here to stop scanner-push duplication while the
+    // BOT still had its own autoScan. Bot v4.5.0 removed autoScan (worker =
+    // single source), so noPush would now make auto signals die here: the
+    // */5 scanner would save history rows but never deliver them. We therefore
+    // do NOT pass noPush — handleSignalRaw's saveAndPush chain pushes exactly
+    // when a NEW tradeable row lands in history (30-min setup dedup), and
+    // claimPushLock (30-min per subscriber/pair/direction) makes a manual
+    // /api/signal call for the same setup a no-op, and vice versa. The scanner
+    // itself never double-saves: handleSignalRaw persists, scanOnePair only
+    // writes the latest: cache.
     // opts.edgeFeatures / opts.now are test-determinism hooks (production cron
     // omits them → edge features ON, live clock).
-    const result = await handleSignalRaw(pair, env, ctx, { noPush: true, ...opts });
+    const result = await handleSignalRaw(pair, env, ctx, opts);
 
     if (!result || result.error) {
       console.warn('scanOnePair ' + pair + ' error: '
@@ -150,3 +172,7 @@ async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// Test-only export (not used at runtime) so fix_tests can drive scanOnePair
+// directly on a single pair (repo convention: __dedupTest / __pushTest).
+export const __scanTest = { scanOnePair };

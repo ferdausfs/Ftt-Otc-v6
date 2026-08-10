@@ -1,5 +1,72 @@
 # Ftt-Otc-v6 — Agent Log
 
+## 2026-08-10 — RESTORE AUTO SIGNAL PUSH (worker = single source; v6.10.0)
+
+**Base:** `bad7140c` (main, incl. PR #15 edge features). 5 files: 4 modified +
+fix_tests. Bot repo untouched (R4). This is the in-repo PR for the fix that was
+previously delivered + verified live via `ftt-telegram-bot` PR #9 (patch
+`patches/restore-auto-signal-push-worker.patch`).
+
+### Root cause (two earlier changes collided)
+1. **F3-14 (BUG-028)** made the `*/5` scanner call `handleSignalRaw(..., { noPush: true })`
+   so scanner runs would not duplicate pushes while the BOT still had its own autoScan.
+2. **Bot v4.5.0** removed autoScan entirely (worker = single source of truth; bot = thin client).
+3. Result: `pushSignalToSubscribers` had exactly ONE call site — `signal.js` `saveAndPush`
+   (`if (!noPush)`) — which only fired on manual HTTP `/api/signal` calls without `nopush`.
+   The scanner saved history rows but never delivered them. **Auto signals never reached
+   Telegram subscribers.** Manual `/signal` still worked (bot → worker → push + display).
+
+### Fix — Option B (simplest correct, chosen)
+Remove `noPush: true` from `scanOnePair` so the scanner rides the SAME `handleSignalRaw`
+→ `saveAndPush` chain the manual path uses. No new push code: `saveAndPush` already
+persists via `saveSignalToHistory` and only pushes when the row is genuinely NEW
+(30-min setup dedup: same pair+direction+nearby entry), and `pushSignalToSubscribers`
+adds `claimPushLock` (30-min TTL per subscriber/pair/direction). The scanner still
+writes only the `latest:` cache — no double save (handleSignalRaw persists; the
+scanner's job of warming the cache is unchanged).
+
+Why not Option A (scanner calls pushSignalToSubscribers directly): it would push on
+every scan of a setup unless the scanner re-implements the history-dedup decision,
+which `saveAndPush` already owns. Option B keeps ONE save+push path for every caller.
+
+### Dedup verification (R2) — scanner ↔ manual cannot double-push
+- Scanner pushes first → manual `/api/signal` for the same setup: history guard returns
+  `{deduped:true}` → no push. Even if a re-poll slips past the entry tolerance,
+  `claimPushLock` (same chatId+pair+direction, 30 min) returns false → skipped 'locked'.
+- Manual pushes first → scanner re-scan: identical reasoning, symmetric.
+- Residual (pre-existing, documented in pushToSubscribers.js header): a genuinely NEW
+  same-direction setup inside the 30-min lock window is not pushed (lock wins over
+  history); KV has no CAS so a true concurrent race could deliver one duplicate. Both
+  bounded, both acceptable per the Phase 10 design.
+
+### SELF_CALIB import conflict (PR #15 nesting) — fixed in this PR
+`bad7140` (main) itself fails `esbuild src/index.js --bundle` with "No matching export
+in src/config.js for import SELF_CALIB" because PR #15 moved `SELF_CALIB` inside
+`CONFIG`. index.js now imports `CONFIG` and derives `const SELF_CALIB = CONFIG.SELF_CALIB`
+→ bundle builds cleanly again.
+
+### Verification — full matrix on this branch
+- `node --check` on all changed files → pass; `esbuild src/index.js --bundle --format=esm --target=es2022` → success.
+- `fix_tests` **281/0** — T27 rewritten from the F3-14 grep contract to a behavioral
+  test: real `scanOnePair` → `handleSignalRaw` → `saveAndPush` → Telegram (network
+  stubbed): fresh tradeable signal pushed exactly once to the matching subscriber;
+  pushLog + pushLock written; history exactly one row (no double save); re-scan of
+  the same setup → NOT re-pushed; manual `/api/signal` after scanner push → NOT
+  re-pushed; manual first, then scanner → NOT re-pushed; call site no longer forces
+  `noPush:true`. (T36c also pinned with `session`/`newsBlock:null` — same convention
+  as T29 — so the suite is invariant to the real-clock trading session and weekly
+  news windows; the old 266/0 baseline only passed outside the Mon-Fri 12:00-13:45
+  UTC news window and the HIGHEST-session overlap.)
+- `phase10_integration` 19/19 · `phase7_integration` 36/0 · `phase7_smoke` 68/0 ·
+  `phase10_smoke` 61/0 · `d2_tests` 39/39 · `probe_tests` 34/34 · `entry_hit_tests` 7/7 ·
+  `fx_mode_tests` 20/20 · `r71_tests` 117P/0F (frozen baseline untouched).
+
+### Deploy note
+Next bundle = `git archive origin/main` → esbuild → deploy (no manual patch needed).
+Live behavior unchanged (already live from the v6.10 bundle built off this same patch).
+
+---
+
 ## 2026-07-29 — Phase 10: real-time cross-surface push (NOT deployed)
 
 **Base:** `24985da` (Phase 7.1). 7 files: 3 modified + wrangler.toml, 1 new module,

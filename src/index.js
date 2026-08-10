@@ -1,5 +1,5 @@
 /**
- * FTT Signal Worker v6.9.2
+ * FTT Signal Worker v6.10.0
  * Cloudflare Worker Entry Point
  */
 
@@ -17,7 +17,10 @@ import { resolveD2ShadowObservations } from './history/d2store.js';
 import { resolveProbeObservations } from './history/probeStore.js';
 // Self-calibration (C7): weekly recompute of the calibration tables.
 import { recomputeCalibration } from './history/selfCalib.js';
-import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, SELF_CALIB } from './config.js';
+import { CONFIG, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
+// PR #15 nested SELF_CALIB inside CONFIG (CONFIG.SELF_CALIB); derive the
+// top-level alias here so the cron branch below stays readable.
+const SELF_CALIB = CONFIG.SELF_CALIB;
 
 export default {
   /**
@@ -117,7 +120,7 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.9.2 — Forex + Crypto + OTC + History Tracking',
+          message: 'FTT Signal Worker v6.10.0 — Forex + Crypto + OTC + History Tracking',
           endpoints: {
             health:    '/',
             signal:    '/api/signal?pair=EUR/USD',
