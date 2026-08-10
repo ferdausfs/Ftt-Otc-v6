@@ -185,7 +185,7 @@ console.log('\n── [#8] Resolver — transient error retry then terminal UNKN
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#9-10] Engine — FOREX SELL audit attach + no leak; others carry none ──');
 {
-  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData(FX_SELL), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('EUR/USD', makeCandleData(FX_SELL), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#9a] fixture final = SELL', sig.finalSignal === 'SELL', sig.finalSignal);
   const audit = getProbeAudit(sig);
   ok('[#9b] probe audit attached on FOREX SELL', !!audit);
@@ -199,11 +199,11 @@ console.log('\n── [#9-10] Engine — FOREX SELL audit attach + no leak; othe
   ok('[#9g] NO leak in public JSON', !JSON.stringify(sig).includes('FOREX_SELL_PROBE') && !JSON.stringify(sig).includes('probe.audit'));
 
   // CRYPTO SELL -> no audit
-  const crSig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 }), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const crSig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 }), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#10a] CRYPTO signal carries no probe audit', getProbeAudit(crSig) === null);
 
   // FOREX non-SELL (BUY or NO_TRADE) -> no audit
-  const fxBuy = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.002, trend: 0.0004, seed: 44 }), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const fxBuy = await buildMultiTimeframeSignal('EUR/USD', makeCandleData({ basePrice: 1.08, vol: 0.002, trend: 0.0004, seed: 44 }), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#10b] non-SELL forex carries no probe audit', getProbeAudit(fxBuy) === null, 'final=' + fxBuy.finalSignal);
 }
 

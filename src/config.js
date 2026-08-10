@@ -9,6 +9,131 @@ export const CONFIG = {
   // MAX_RETRIES: reserved (fetch layer now uses apiKeys.length; kept for backward-compat)
   MAX_RETRIES: 3,
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // EDGE FEATURES (Phase F round 2, 2026-08-10) — INPUT-side multipliers/gates.
+  //
+  // These are the "missing edge" features: hour-of-day WR context, RSI×direction
+  // chasing gate, volatility-state (BB-bandwidth) factor, ATR-percentile state,
+  // session-range position, and the pair recent-form gate. They adjust the
+  // ENGINE confidence BEFORE the calibrated output layer (calibration.js) maps
+  // it to grade/confidence — they never replace or double-calibrate that layer
+  // (R3). Every threshold lives here (R4) so the weekly self-calibration refresh
+  // is a data change, not a code change.
+  //
+  // Derivation (TRAIN 08-01..06, n=4462 — see scripts/feature_validation.py):
+  //   HOUR_MULTIPLIERS: wr_h / base_wr, clamped [0.85, 1.10], quantized to 1.0
+  //     within ±0.02. Bad hours (mult 0.85): 10,15,16,19,20,23. Good (1.10):
+  //     01,09,17,21. NOTE: the earlier "bad hours 0-3,10,15,16" hypothesis was
+  //     TESTED and REJECTED — hours 0-3 are not bad on TRAIN (01:00 = 48.7% is
+  //     the best hour) and the reviewer list REVERSES on HOLDOUT (52.1% vs
+  //     45.1%). The train-derived map holds out-of-sample (see PR table).
+  //   RSI_DIRECTION_GATE: reviewer instrumented evidence BUY+RSI>55 = 32.3%
+  //     (chasing). SELL+RSI<45 slice measured 47.4% (above pool) — flagged for
+  //     weekly refresh; shipped symmetric per spec with lighter net effect via
+  //     the confidence floor (mode=penalty ×0.85 blocks only sub-85 signals).
+  //     Extreme mean-rev logic (<30 / >70) is preserved BY CONSTRUCTION: those
+  //     values fall outside the gate's firing range.
+  //   VOL_STATE: reviewer instrumented evidence BB>0.8% = 54.3% vs BB 0.2-0.8%
+  //     = 35-36% (n=66, provisional). CRYPTO thresholds are the reviewer units;
+  //     FOREX scaled ~1/4 (typical forex BB bandwidth 0.03-0.10%).
+  //   RECENT_FORM: TRAIN 35.0% (n=1072) vs 44.4% (n=3242) — non-overlapping
+  //     CIs; HOLDOUT 43.7% vs 49.8% — consistent direction (+6.1 pts).
+  // ─────────────────────────────────────────────────────────────────────────
+  EDGE_FEATURES: {
+    enabled: true,
+
+    // A1 — hour-of-day confidence multiplier (UTC hour of signal time).
+    HOUR_MULTIPLIERS: {
+      0: 1.04, 1: 1.10, 2: 1.04, 3: 0.96, 4: 0.96, 5: 0.92,
+      6: 1.00, 7: 1.05, 8: 1.04, 9: 1.10, 10: 0.85, 11: 1.00,
+      12: 0.95, 13: 1.00, 14: 1.00, 15: 0.85, 16: 0.85, 17: 1.10,
+      18: 1.05, 19: 0.85, 20: 0.89, 21: 1.10, 22: 1.08, 23: 0.87,
+    },
+
+    // A2 — session-range position: where is price within today's high/low?
+    // Near an extreme → mean-reversion bonus; mid → neutral. Needs candle
+    // datetimes; no-op when today's candles are insufficient (minCandles) or
+    // the day range is flat (minRangePct of price).
+    SESSION_RANGE: {
+      enabled: true,
+      extremeLow: 0.15,       // position <= 0.15 → near the day low
+      extremeHigh: 0.85,      // position >= 0.85 → near the day high
+      extremeMult: 1.05,      // mean-rev bonus at extremes
+      minCandles: 20,
+      minRangePct: 0.0005,    // 0.05% of price — flatter days are no-ops
+    },
+
+    // B4 — RSI × direction gate (chasing filter).
+    // BUY with best-TF RSI > buyMaxRsi → chasing (penalty or block).
+    // SELL with best-TF RSI < sellMinRsi → same.
+    RSI_DIRECTION_GATE: {
+      enabled: true,
+      mode: 'penalty',        // 'penalty' (×penaltyMult) | 'block' (hard NO_TRADE)
+      buyMaxRsi: 55,
+      sellMinRsi: 45,
+      penaltyMult: 0.85,
+    },
+
+    // B5 — volatility state via BB bandwidth % ((upper-lower)/mid × 100).
+    // bb <= deadSqueezeBlock → dead-squeeze: hard block (engine's DEAD_MARKET
+    //   soft-block handles the confidence<65 case; this is the strong version).
+    // dead < bb <= squeezeMax → mid/choppy squeeze: ×squeezeMult.
+    // bb > squeezeMax → high-vol/normal: no penalty.
+    VOL_STATE: {
+      enabled: true,
+      deadSqueezeBlock: { FOREX: 0.04, CRYPTO: 0.20 },
+      squeezeMax:       { FOREX: 0.08, CRYPTO: 0.80 },
+      squeezeMult: 0.90,
+    },
+
+    // B6 — ATR percentile: current ATR vs its own `window`-bar history.
+    // pct < squeezePct → squeeze state ×squeezeMult; pct > expansionPct →
+    // expansion ×expansionMult; else neutral.
+    ATR_PERCENTILE: {
+      enabled: true,
+      window: 50,
+      minSamples: 20,
+      squeezePct: 30,
+      expansionPct: 80,
+      squeezeMult: 0.95,
+      expansionMult: 1.05,
+    },
+
+    // C8 — recent-form gate: pair rolling-20 WR (worker history, /api/stats).
+    // Rolling WR < badWr with >= minSample decided trades → ×badMult.
+    RECENT_FORM: {
+      enabled: true,
+      minSample: 10,
+      badWr: 0.35,
+      badMult: 0.85,
+    },
+
+    // Cumulative multiplier clamps (product of all edge multipliers above).
+    MAX_TOTAL_MULT: 1.12,
+    MIN_TOTAL_MULT: 0.55,
+  },
+
+  // ── SELF-CALIBRATION (C7) — weekly refresh of the calibration tables. ────
+  // Mechanism: the Monday 00:00 UTC cron recomputes WR tables from the last
+  // WINDOW_DAYS of decided history in KV (sig:*), writes them to calib:latest.
+  // The engine reads calib:latest per signal and uses it as the ACTIVE
+  // calibration (structWR / confBucketWR for the calibrated output layer, and
+  // hourWR for the hour multipliers). Static CALIB + EDGE_FEATURES values are
+  // the fallback and the initial values. Refresh cadence: weekly (CRON), or
+  // on demand via recomputeCalibration() (admin / test hook).
+  SELF_CALIB: {
+    enabled: true,
+    KV_KEY: 'calib:latest',
+    WINDOW_DAYS: 14,          // recompute from the last 14 days, not lifetime
+    MIN_OBS: 100,             // < this many decided rows → keep previous tables
+    MIN_CELL_OBS: 30,         // per struct/conf-bucket minimum to replace a cell
+    MIN_HOUR_OBS: 20,         // per-hour minimum before an hour multiplier overrides
+    MAX_AGE_DAYS: 8,          // calib:latest older than this is ignored by the engine
+    CRON: '0 0 * * 1',        // Monday 00:00 UTC (wrangler.toml [triggers])
+    HOUR_MULT_MIN: 0.85,
+    HOUR_MULT_MAX: 1.10,
+  },
+
   MIN_CONFLUENCE: 5,
   MIN_CATEGORY_SCORE: 0.3,
   MIN_CONFIDENCE_FLOOR: 72,

@@ -190,7 +190,13 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
     return { pair, assetType, signal: generateDummySignal(pair), source: 'DUMMY_FALLBACK', errors, timestamp: new Date().toISOString() };
   }
 
-  const signal = await buildMultiTimeframeSignal(pair, candleData, assetType, env, { fxMode: reqFxMode });
+  // opts.edgeFeatures / opts.now are test-determinism hooks (F3-16 pattern);
+  // production callers omit both → edge features ON, live clock.
+  const signal = await buildMultiTimeframeSignal(pair, candleData, assetType, env, {
+    fxMode: reqFxMode,
+    edgeFeatures: opts.edgeFeatures,
+    now: opts.now,
+  });
   if (holidayWarning) signal.holidayWarning = holidayWarning;
   if (assetType === ASSET_TYPE.FOREX && session.quality === 'LOW')
     signal.sessionWarning = 'Low liquidity session. Best: London (07-16 UTC), NY (12-21 UTC).';
@@ -282,7 +288,11 @@ async function handleSignalRawOTC(pair, env, ctx, opts = {}) {
   if (totalFailures === timeframes.length)
     return { pair, assetType: ASSET_TYPE_OTC, isOTC: true, signal: generateDummySignal(pair), source: 'DUMMY_FALLBACK', errors, timestamp: new Date().toISOString() };
 
-  const signal = await buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, env);
+  // opts.edgeFeatures / opts.now — test-determinism hooks (see standard path).
+  const signal = await buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, env, {
+    edgeFeatures: opts.edgeFeatures,
+    now: opts.now,
+  });
   if (exotic) signal.exoticWarning = 'Exotic OTC pair. Very high spreads. Confidence heavily reduced.';
 
   const dataStatus = {};

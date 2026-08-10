@@ -203,6 +203,23 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
           atrPct: atrPct,
           adx: adx,
           bbBandwidth: bbBandwidth,
+          // ── Edge features (Phase F round 2, 2026-08-10) — ADDITIVE ──
+          // signal-time values of the input-side multipliers/gates, copied
+          // from the engine's public edgeFeatures audit so the avoidance /
+          // validation pipeline (scripts/feature_validation.py) can reproduce
+          // ON/OFF tables from history rows. Fail-open: absent when the block
+          // was disabled or the signal was blocked pre-edge.
+          atrPercentile: (signal.edgeFeatures && signal.edgeFeatures.atrPercentile != null)
+            ? _toNum(signal.edgeFeatures.atrPercentile) : null,
+          bbState: (signal.edgeFeatures && signal.edgeFeatures.bbState) || null,
+          sessionRange: (signal.edgeFeatures && signal.edgeFeatures.sessionRange != null)
+            ? _toNum(signal.edgeFeatures.sessionRange) : null,
+          hourUtc: (signal.edgeFeatures && signal.edgeFeatures.hourUtc != null)
+            ? signal.edgeFeatures.hourUtc : null,
+          hourMult: (signal.edgeFeatures && signal.edgeFeatures.hourMult != null)
+            ? _toNum(signal.edgeFeatures.hourMult) : null,
+          totalMult: (signal.edgeFeatures && signal.edgeFeatures.totalMult != null)
+            ? _toNum(signal.edgeFeatures.totalMult) : null,
         };
       }
     } catch (e) { /* diagnostic only — never break a save */ }

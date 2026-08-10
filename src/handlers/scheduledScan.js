@@ -53,7 +53,7 @@ export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketO
   return active;
 }
 
-export async function scheduledScan(env, ctx) {
+export async function scheduledScan(env, ctx, opts = {}) {
   const startTime = Date.now();
   if (!env || !env.SIGNAL_CACHE) {
     console.warn('scheduledScan: SIGNAL_CACHE not bound, aborting');
@@ -82,7 +82,7 @@ export async function scheduledScan(env, ctx) {
 
     const batch = activePairs.slice(i, i + SCAN_CONFIG.BATCH_SIZE);
     const results = await Promise.allSettled(
-      batch.map(pair => scanOnePair(pair, generationId, env, ctx)),
+      batch.map(pair => scanOnePair(pair, generationId, env, ctx, opts)),
     );
     for (const r of results) {
       processed++;
@@ -106,13 +106,15 @@ export async function scheduledScan(env, ctx) {
   return { ok, failed, skipped, generationId, ms };
 }
 
-async function scanOnePair(pair, generationId, env, ctx) {
+async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
   try {
     // Same entry point /api/signal uses — including circuit-breaker checks and
     // the existing history write via ctx.waitUntil.
     // F3-14 (BUG-028): the cron scanner must never push to Telegram — its job
     // is warming the latest: cache. User-triggered calls still push.
-    const result = await handleSignalRaw(pair, env, ctx, { noPush: true });
+    // opts.edgeFeatures / opts.now are test-determinism hooks (production cron
+    // omits them → edge features ON, live clock).
+    const result = await handleSignalRaw(pair, env, ctx, { noPush: true, ...opts });
 
     if (!result || result.error) {
       console.warn('scanOnePair ' + pair + ' error: '

@@ -125,7 +125,7 @@ console.log('── scheduledScan writes the cache ─────────�
   const sink = [];
   const restore = quiet();
   // scan a small explicit set by monkey-patching the pair list via selectActivePairs
-  const res = await scheduledScan(env, ctxWith(sink));
+  const res = await scheduledScan(env, ctxWith(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   restore();
 
@@ -160,7 +160,7 @@ console.log('\n── /api/signals/latest serves what the scan wrote ───�
   const env = baseEnv();
   const sink = [];
   const restore = quiet();
-  await scheduledScan(env, ctxWith(sink));
+  await scheduledScan(env, ctxWith(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   const before = { ...httpCalls };
   const res = await handleLatest(new URL('https://x/api/signals/latest'), env);
@@ -253,7 +253,7 @@ console.log('\n── resilience ───────────────�
   const env = baseEnv();
   const sink = [];
   const restore = quiet();
-  const res = await scheduledScan(env, ctxWith(sink));
+  const res = await scheduledScan(env, ctxWith(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   restore();
   failPairs = new Set();
@@ -265,7 +265,7 @@ console.log('\n── resilience ───────────────�
 
   // no KV binding must not throw
   const restore2 = quiet();
-  const noKv = await scheduledScan({}, ctxWith(sink));
+  const noKv = await scheduledScan({}, ctxWith(sink), { edgeFeatures: false });
   restore2();
   eq('scan without KV aborts cleanly', noKv.aborted, true);
 }

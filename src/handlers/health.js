@@ -7,6 +7,9 @@ import { getDynamicConfidenceAdjustment, updatePairStats } from '../history/stat
 import { readQuota } from '../history/quota.js';
 import { getScanCacheStats } from './latest.js';
 import { getPushStats } from './pushToSubscribers.js';
+// Self-calibration (C7): /api/calib shows the ACTIVE calibration tables.
+import { loadCalibration } from '../history/selfCalib.js';
+import { CALIB } from '../analysis/calibration.js';
 
 // ── HEALTH ──────────────────────────────────
 export async function handleHealth(env) {
@@ -127,6 +130,52 @@ export async function handleStats(url, env) {
       return jsonResponse({ totalPairs: summary.length, pairs: summary, timestamp: new Date().toISOString() });
     }
   } catch (e) { return jsonResponse({ error: true, message: 'Stats error: ' + e.message }, 500); }
+}
+
+// ── CALIB (C7) ───────────────────────────────
+// Shows the ACTIVE calibration: the static CALIB (initial values) plus the
+// dynamic tables from the weekly self-calibration (calib:latest) when fresh.
+export async function handleCalib(env) {
+  const dynamic = await loadCalibration(env);
+  return jsonResponse({
+    calibration: {
+      static: {
+        version: CALIB.version,
+        base: CALIB.base,
+        structWR: CALIB.structWR,
+        confBucketWR: CALIB.confBucketWR,
+        gradeThresholds: CALIB.gradeThresholds,
+        confThresholds: CALIB.confThresholds,
+      },
+      dynamic: dynamic ? {
+        version: dynamic.version,
+        computedAt: dynamic.computedAt,
+        windowDays: dynamic.windowDays,
+        n: dynamic.n,
+        base: dynamic.base,
+        structWR: dynamic.structWR,
+        confBucketWR: dynamic.confBucketWR,
+        hourWR: dynamic.hourWR,
+        pairWR: dynamic.pairWR,
+        sessionWR: dynamic.sessionWR,
+      } : null,
+      refresh: {
+        cron: CONFIG.SELF_CALIB.CRON,
+        windowDays: CONFIG.SELF_CALIB.WINDOW_DAYS,
+        minObs: CONFIG.SELF_CALIB.MIN_OBS,
+        maxAgeDays: CONFIG.SELF_CALIB.MAX_AGE_DAYS,
+      },
+      edgeFeatures: {
+        enabled: CONFIG.EDGE_FEATURES.enabled,
+        hourMultipliers: CONFIG.EDGE_FEATURES.HOUR_MULTIPLIERS,
+        rsiDirectionGate: CONFIG.EDGE_FEATURES.RSI_DIRECTION_GATE,
+        volState: CONFIG.EDGE_FEATURES.VOL_STATE,
+        atrPercentile: CONFIG.EDGE_FEATURES.ATR_PERCENTILE,
+        sessionRange: CONFIG.EDGE_FEATURES.SESSION_RANGE,
+        recentForm: CONFIG.EDGE_FEATURES.RECENT_FORM,
+      },
+    },
+  });
 }
 
 // ── REPORT ───────────────────────────────────

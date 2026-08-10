@@ -60,6 +60,11 @@ import { getSessionWeightMultiplier } from '../src/analysis/filters.js';
 import { fetchCandles } from '../src/fetch/candles.js';
 import { writeLatest } from '../src/history/latestCache.js';
 import { ASSET_TYPE } from '../src/config.js';
+// ── Phase F round 2 (edge features + self-calibration) ──
+import { applyEdgeFeatures, computeSessionRange, computeAtrPercentile, getRecentFormMultiplier } from '../src/analysis/edgeFeatures.js';
+import { recomputeCalibration, loadCalibration } from '../src/history/selfCalib.js';
+import { handleCalib } from '../src/handlers/health.js';
+import { makeCandleData } from './r71_fixtures.mjs';
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -129,6 +134,19 @@ const ctxOf = (sink) => ({ waitUntil: (p) => { sink.push(Promise.resolve(p).catc
 
 const confPct = (sig) => parseInt(String((sig && sig.confidence) || '0%').replace('%', ''), 10) || 0;
 
+// ── EDGE FEATURES test hooks (Phase F round 2, 2026-08-10) ──
+// The edge-feature block (hour-of-day / RSI×direction / vol-state / ATR-pct /
+// session-range / recent-form multipliers) is INPUT-side and config-driven.
+// Existing tests pin the PRE-feature engine behaviour with
+// edgeFeatures:false (same philosophy as opts.session / opts.newsBlock);
+// the T35-T42 sections below exercise the features explicitly with
+// edgeFeatures:true and pinned clocks.
+const EDGE_OFF = { edgeFeatures: false };
+// OTC pin: minute 5 = NORMAL time-context window (zero penalty) — the OTC
+// engine's timeContext reads the UTC minute of `now` (getOTCTimeContext), and
+// T8/T9/T10/T34 fixtures were designed under the zero-penalty window.
+const PIN_OTC = '2026-08-10T14:05:00Z';
+
 console.log('── T1: classifyOutcome tie convention (FIX-6) ─────────────');
 {
   eq('BUY up -> WIN', classifyOutcome('BUY', 100, 105), 'WIN');
@@ -190,7 +208,7 @@ console.log('\n── T3: fillStatus uses an independent current price (FIX-3) �
     '15min': rev(seriesFastSin(100, 90, 0.4)),
   };
   const r = quiet();
-  const sig = await buildMultiTimeframeSignal('TEST/USD', candleData, 'CRYPTO', {}, {});
+  const sig = await buildMultiTimeframeSignal('TEST/USD', candleData, 'CRYPTO', {}, EDGE_OFF);
   r();
 
   ok('engine produced a tradeable signal', sig.finalSignal === 'BUY' || sig.finalSignal === 'SELL', sig.finalSignal);
@@ -212,7 +230,7 @@ console.log('\n── T3: fillStatus uses an independent current price (FIX-3) �
     '15min': rev(seriesFastSin(100, 100, 0.4)),
   };
   const r2 = quiet();
-  const sig2 = await buildMultiTimeframeSignal('TEST/USD', same, 'CRYPTO', {}, {});
+  const sig2 = await buildMultiTimeframeSignal('TEST/USD', same, 'CRYPTO', {}, EDGE_OFF);
   r2();
   if (sig2.finalSignal !== 'NO_TRADE') {
     eq('fillStatus INSTANT when entry == current', sig2.fillStatus, 'INSTANT');
@@ -255,7 +273,7 @@ console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ────�
   installNet();
   const env1 = envOf(); const sink1 = [];
   const q1 = quiet();
-  const res1 = await handleSignalRaw('BTC/USD', env1, ctxOf(sink1));
+  const res1 = await handleSignalRaw('BTC/USD', env1, ctxOf(sink1), EDGE_OFF);
   await drain(sink1); q1();
   ok('T4a: engine produced an actionable signal', ['BUY', 'SELL'].includes(res1.signal.finalSignal), res1.signal.finalSignal);
   eq('T4a: subscriber received exactly one message', tg.length, 1);
@@ -264,7 +282,7 @@ console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ────�
   installNet();
   const env2 = envOf(); const sink2 = [];
   const q2 = quiet();
-  const res2 = await handleSignalRaw('BTC/USD', env2, ctxOf(sink2), { noPush: true });
+  const res2 = await handleSignalRaw('BTC/USD', env2, ctxOf(sink2), { noPush: true, ...EDGE_OFF });
   await drain(sink2); q2();
   ok('T4b: engine still produced a signal with nopush', ['BUY', 'SELL'].includes(res2.signal.finalSignal), res2.signal.finalSignal);
   eq('T4b: nopush suppresses the push', tg.length, 0);
@@ -272,7 +290,7 @@ console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ────�
   installNet();
   const env3 = envOf(); const sink3 = [];
   const q3 = quiet();
-  const resp3 = await handleSignal('BTC/USD', env3, ctxOf(sink3), { noPush: true });
+  const resp3 = await handleSignal('BTC/USD', env3, ctxOf(sink3), { noPush: true, ...EDGE_OFF });
   const body3 = await resp3.json();
   await drain(sink3); q3();
   ok('T4c: handleSignal forwards nopush (response ok)', body3 && !body3.error && body3.signal, '');
@@ -294,7 +312,7 @@ console.log('\n── T5: D2 TRENDING block not overridden by AI rescue (FIX-2) 
   };
   const env = { CEREBRAS_API_KEY: 'c', GROQ_API_KEY: 'g' };
   const r = quiet();
-  const sig = await buildMultiTimeframeSignal('TEST/USD', candleData, 'CRYPTO', env, {});
+  const sig = await buildMultiTimeframeSignal('TEST/USD', candleData, 'CRYPTO', env, EDGE_OFF);
   r();
 
   eq('TRENDING signal stays NO_TRADE despite AI agreement', sig.finalSignal, 'NO_TRADE');
@@ -357,7 +375,7 @@ console.log('\n── T8: OTC grade capped by structure verdict (FIX-A, calibrat
   // AGAINST: net-up zigzag with red tail -> SELL while structure BULLISH -> AGAINST -> should NOT be capped (calibrated: best WR -> A+)
   const fixtureAgainst = () => ({ '1min': zigGen(100,90,0.10,0.11,12,2,6,'down'), '5min': zigGen(100,90,0.10,0.11,12,2,6,'down'), '15min': zigGen(100,90,0.10,0.11,12,2,6,'down') });
   const r1 = quiet();
-  const sigAgainst = await buildMultiTimeframeSignalOTC(fixtureAgainst(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  const sigAgainst = await buildMultiTimeframeSignalOTC(fixtureAgainst(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {}, { ...EDGE_OFF, now: PIN_OTC });
   r1();
   ok('T8a: OTC AGAINST engine produced SELL', sigAgainst.finalSignal === 'SELL', sigAgainst.finalSignal);
   ok('T8b: structure verdict is AGAINST', sigAgainst.structureVerdict && sigAgainst.structureVerdict.overall === 'AGAINST', sigAgainst.structureVerdict && sigAgainst.structureVerdict.overall);
@@ -365,8 +383,9 @@ console.log('\n── T8: OTC grade capped by structure verdict (FIX-A, calibrat
   // ALIGNED: net-up with green tail -> BUY while structure BULLISH -> ALIGNED -> should be capped to C (worst WR)
   const fixtureAligned = () => ({ '1min': zigGen(100,90,0.10,0.11,12,2,6,'up'), '5min': zigGen(100,90,0.10,0.11,12,2,6,'up'), '15min': zigGen(100,90,0.10,0.11,12,2,6,'up') });
   const r2 = quiet();
-  const sigAligned = await buildMultiTimeframeSignalOTC(fixtureAligned(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  const sigAligned = await buildMultiTimeframeSignalOTC(fixtureAligned(), 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {}, { ...EDGE_OFF, now: PIN_OTC });
   r2();
+  console.log('DBG T8d:', sigAligned.finalSignal, sigAligned.confidence, JSON.stringify(sigAligned.filtersApplied), 'votes:', JSON.stringify(sigAligned.votes));
   ok('T8d: OTC ALIGNED engine produced BUY', sigAligned.finalSignal === 'BUY', sigAligned.finalSignal);
   ok('T8e: structure verdict is ALIGNED', sigAligned.structureVerdict && sigAligned.structureVerdict.overall === 'ALIGNED', sigAligned.structureVerdict && sigAligned.structureVerdict.overall);
   const capped = ['C','D','F'];
@@ -409,7 +428,7 @@ console.log('\n── T9: OTC camarilla contribution == raw x 1.5 (FIX-B) ──
   const r = quiet();
   const sig = await buildMultiTimeframeSignalOTC(
     { '1min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '5min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6) },
-    'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+    'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {}, { ...EDGE_OFF, now: PIN_OTC });
   r();
   const otcCam = sig.timeframeAnalysis['15min'].categoryScores.camarilla;
   ok('T9a: OTC camarilla carries otcWeight 1.5 marker',
@@ -636,7 +655,7 @@ console.log('\n── T17: OTC fillStatus fields (F3-04) ───────�
   const SESSION = { sessions: ['OTC_24/7'], quality: 'N/A' };
   const cdA = { '1min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '5min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6), '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6) };
   const r = quiet();
-  const sigA = await buildMultiTimeframeSignalOTC(cdA, 'EUR/USD-OTC', SESSION, false, {});
+  const sigA = await buildMultiTimeframeSignalOTC(cdA, 'EUR/USD-OTC', SESSION, false, {}, { ...EDGE_OFF, now: PIN_OTC });
   r();
   eq('T17a: OTC SELL with identical TFs -> INSTANT', sigA.fillStatus, 'INSTANT');
   ok('T17b: entryPrice/currentPrice/entryDistancePct numeric',
@@ -650,7 +669,7 @@ console.log('\n── T17: OTC fillStatus fields (F3-04) ───────�
     '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6),
   };
   const r2 = quiet();
-  const sigB = await buildMultiTimeframeSignalOTC(cdB, 'EUR/USD-OTC', SESSION, false, {});
+  const sigB = await buildMultiTimeframeSignalOTC(cdB, 'EUR/USD-OTC', SESSION, false, {}, { ...EDGE_OFF, now: PIN_OTC });
   r2();
   eq('T17d: price away from entry -> PENDING_ENTRY', sigB.fillStatus, 'PENDING_ENTRY');
   ok('T17e: entryDistancePct > 0 when pending', sigB.entryDistancePct > 0, 'got ' + sigB.entryDistancePct);
@@ -665,7 +684,7 @@ console.log('\n── T18: NO_TRADE grade is N/A (F3-05) ───────�
     '15min': rev(series(100, 90, 0.1)),
   };
   const r = quiet();
-  const sig = await buildMultiTimeframeSignal('TEST/USD', cd, 'CRYPTO', {}, {});
+  const sig = await buildMultiTimeframeSignal('TEST/USD', cd, 'CRYPTO', {}, EDGE_OFF);
   r();
   eq('T18a: TRENDING fixture blocked (NO_TRADE)', sig.finalSignal, 'NO_TRADE');
   eq('T18b: NO_TRADE grade N/A', sig.grade.grade, 'N/A');
@@ -674,7 +693,7 @@ console.log('\n── T18: NO_TRADE grade is N/A (F3-05) ───────�
   const flat = [];
   for (let i = 0; i < 100; i++) flat.push({ datetime: 'x', open: 90, high: 90, low: 90, close: 90, volume: 0 });
   const r2 = quiet();
-  const osig = await buildMultiTimeframeSignalOTC({ '1min': flat, '5min': flat, '15min': flat }, 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {});
+  const osig = await buildMultiTimeframeSignalOTC({ '1min': flat, '5min': flat, '15min': flat }, 'EUR/USD-OTC', { sessions: ['OTC_24/7'], quality: 'N/A' }, false, {}, { ...EDGE_OFF, now: PIN_OTC });
   r2();
   eq('T18d: OTC NO_TRADE grade N/A', osig.grade.grade, 'N/A');
 }
@@ -746,12 +765,12 @@ console.log('\n── T21: fx preferCache forces fresh (F3-08) ─────�
     return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: JSON.stringify({ signal: 'BUY', confidence: 85, reason: 'stub', concerns: null }) } }] }), text: async () => '' };
   };
   const sink1 = []; const q1 = quiet();
-  const res1 = await handleSignal('BTC/USD', env, ctxOf(sink1), { preferCache: true });
+  const res1 = await handleSignal('BTC/USD', env, ctxOf(sink1), { preferCache: true, ...EDGE_OFF });
   const b1 = await res1.json();
   await drain(sink1); q1();
   ok('T21a: plain preferCache serves the cached entry', b1.cached === true);
   const sink2 = []; const q2 = quiet();
-  const res2 = await handleSignal('BTC/USD', env, ctxOf(sink2), { preferCache: true, fxMode: true });
+  const res2 = await handleSignal('BTC/USD', env, ctxOf(sink2), { preferCache: true, fxMode: true, ...EDGE_OFF });
   const b2 = await res2.json();
   await drain(sink2); q2();
   ok('T21b: fx+preferCache forces a fresh run (not the cached entry)', b2.cached === false && b2.signal && b2.signal.confidence !== '80%', JSON.stringify({ cached: b2.cached, conf: b2.signal && b2.signal.confidence }));
@@ -869,7 +888,7 @@ console.log('\n── T26: crypto skips forex session weights (F3-13) ───�
   eq('T26b: forex multiplier unchanged (USD quote x1.4)', getSessionWeightMultiplier('EUR/USD', sess, 'FOREX'), 1.4);
   const { makeCandleData } = await import('./r71_fixtures.mjs');
   const r = quiet();
-  const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 }), 'CRYPTO', {}, {});
+  const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData({ basePrice: 78000, vol: 60, trend: 18, seed: 11 }), 'CRYPTO', {}, EDGE_OFF);
   r();
   eq('T26c: crypto signal sessionWeight = 1', sig.sessionWeight, 1);
   ok('T26d: no SESSION_WEIGHT filter on crypto', !(sig.filtersApplied || []).some(f => f.includes('SESSION_WEIGHT')), JSON.stringify(sig.filtersApplied));
@@ -878,8 +897,12 @@ console.log('\n── T26: crypto skips forex session weights (F3-13) ───�
 console.log('\n── T27: scheduledScan pushes nothing (F3-14) ──────────');
 {
   const ss = fs.readFileSync(fileURLToPath(new URL('../src/handlers/scheduledScan.js', import.meta.url)), 'utf8');
+  // F3-14 contract: the scanner's handleSignalRaw call always carries
+  // noPush:true. Phase F round 2 (edge features) added test-determinism hook
+  // forwarding ({ noPush: true, ...opts }) — production cron passes no opts,
+  // so noPush:true is still unconditional at the call site.
   ok('T27: scanner calls handleSignalRaw with noPush:true',
-    ss.includes('handleSignalRaw(pair, env, ctx, { noPush: true })'));
+    ss.includes('handleSignalRaw(pair, env, ctx, { noPush: true') && !/noPush:\s*(false|!!opts\.noPush)/.test(ss));
 }
 
 console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ─────');
@@ -898,7 +921,7 @@ console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ───�
   };
   const env = { CEREBRAS_API_KEY: 'c', GROQ_API_KEY: 'g' };
   const r = quiet();
-  const sig = await buildMultiTimeframeSignal('TEST/USD', cd, 'CRYPTO', env, {});
+  const sig = await buildMultiTimeframeSignal('TEST/USD', cd, 'CRYPTO', env, EDGE_OFF);
   r();
   eq('T28a: D2-blocked signal is NO_TRADE', sig.finalSignal, 'NO_TRADE');
   eq('T28b: zero LLM calls on a D2 hard block', aiCalls, 0);
@@ -912,8 +935,8 @@ console.log('\n── T29: session injection is time-invariant (F3-16) ───
   const { makeCandleData } = await import('./r71_fixtures.mjs');
   const cd = makeCandleData({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 });
   const r = quiet();
-  const sHigh = await buildMultiTimeframeSignal('EUR/USD', cd, 'FOREX', {}, { session: { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 }, newsBlock: null });
-  const sHighest = await buildMultiTimeframeSignal('EUR/USD', cd, 'FOREX', {}, { session: { sessions: ['LONDON', 'NEW_YORK'], overlap: 'LONDON_NY', quality: 'HIGHEST', hour: 14 }, newsBlock: null });
+  const sHigh = await buildMultiTimeframeSignal('EUR/USD', cd, 'FOREX', {}, { session: { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 }, newsBlock: null, ...EDGE_OFF });
+  const sHighest = await buildMultiTimeframeSignal('EUR/USD', cd, 'FOREX', {}, { session: { sessions: ['LONDON', 'NEW_YORK'], overlap: 'LONDON_NY', quality: 'HIGHEST', hour: 14 }, newsBlock: null, ...EDGE_OFF });
   r();
   ok('T29a: HIGH session -> no D2_HIGHEST_SESSION_BLOCK', !sHigh.filtersApplied.some(f => f.includes('D2_HIGHEST_SESSION_BLOCK')), JSON.stringify(sHigh.filtersApplied));
   ok('T29b: HIGHEST session -> D2_HIGHEST_SESSION_BLOCK fires', sHighest.filtersApplied.some(f => f.includes('D2_HIGHEST_SESSION_BLOCK')), JSON.stringify(sHighest.filtersApplied));
@@ -1109,7 +1132,7 @@ console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ────
     '15min': rev(seriesFastSin(100, 90, 0.4)),
   };
   const qA = quiet();
-  const sigA = await buildMultiTimeframeSignal('TEST/USD', candleDataA, 'CRYPTO', {}, {});
+  const sigA = await buildMultiTimeframeSignal('TEST/USD', candleDataA, 'CRYPTO', {}, EDGE_OFF);
   qA();
 
   ok('T34a: engine produced signal for instrumentation', sigA && sigA.bestTimeframe && sigA.timeframeAnalysis, JSON.stringify(sigA && sigA.bestTimeframe));
@@ -1233,7 +1256,7 @@ console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ────
       '15min': zigGen(100, 90, 0.10, 0.11, 12, 2, 6),
     };
     const q = quiet();
-    const sig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', SESSION, false, {});
+    const sig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', SESSION, false, {}, { ...EDGE_OFF, now: PIN_OTC });
     q();
     ok('T34c: OTC engine produced signal', sig && sig.bestTimeframe && sig.timeframeAnalysis, sig && sig.finalSignal);
     if (sig && sig.bestTimeframe) {
@@ -1306,6 +1329,328 @@ console.log('\n── T34: D4 v2.1 signalIndicators instrumentation ────
     const body2 = await res2.json();
     const sigRow2 = body2 && body2.signals && body2.signals[0];
     ok('T34d: structureAudit stripped, signalIndicators kept', sigRow2 && !sigRow2.structureAudit && sigRow2.signalIndicators, JSON.stringify({ hasAudit: !!(sigRow2 && sigRow2.structureAudit), hasInd: !!(sigRow2 && sigRow2.signalIndicators) }));
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// PHASE F ROUND 2 — EDGE FEATURES (T35-T42)
+// Input-side multipliers/gates + self-calibration. Config-driven, calibrated
+// output layer untouched (R3). These sections run with edgeFeatures:true and
+// pinned clocks so every assertion is deterministic.
+// ════════════════════════════════════════════════════════════════════════
+
+// Fixture notes (verified against the live engine on 2026-08-10; "raw" =
+// calibration.rawConfidence = the pre-calibration engine confidence the edge
+// block operates on — NOT the calibrated bucket value):
+//   E1 = makeCandleData({vol:600,trend:0,seed:20}) -> SELL raw=92, RSI 46.95,
+//       BB 0.82 HIGH_VOL, ATR pct neutral -> ONLY the hour factor can fire.
+//   E2 = makeCandleData({vol:350,trend:0,seed:19}) -> SELL raw=78 (survives at
+//       hour mult 1.0; 78*0.85=66.3 -> blocked by floor at hour mult 0.85).
+//   E3 = makeCandleData({vol:120,trend:6,seed:18}) -> BUY raw=92, RSI 61.68,
+//       BB 0.85 HIGH_VOL -> RSI chasing penalty fires (92*0.85=78 -> survives).
+//   E4 = makeCandleData({vol:60,trend:0,seed:33}) -> BB 0.10 -> DEAD_SQUEEZE.
+//   E5 = makeCandleData({vol:120,trend:6,seed:54}) -> BUY, MID_SQUEEZE x0.90
+//       + ATR_PERCENTILE_EXPANSION x1.05 (pct=96).
+const eFix = (p) => makeCandleData(p);
+const PIN14 = '2026-08-10T14:00:00Z'; // neutral hour (HOUR_MULTIPLIERS[14] = 1.0)
+
+const runEngine = async (pair, cd, assetType, env, opts) => {
+  const r = quiet();
+  const sig = await buildMultiTimeframeSignal(pair, cd, assetType, env || {}, { now: PIN14, ...(opts || {}) });
+  r();
+  return sig;
+};
+
+console.log('\n── T35: hour-of-day WR multiplier (A1) ─────────────────');
+{
+  const cd = eFix({ basePrice: 78000, vol: 600, trend: 0, seed: 20 });
+  const s14 = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true });
+  ok('T35a: neutral hour emits the signal', s14.finalSignal === 'SELL', s14.finalSignal);
+  ok('T35a: no HOUR_FACTOR at neutral hour', !(s14.filtersApplied || []).some(f => f.includes('HOUR_FACTOR')), JSON.stringify(s14.filtersApplied));
+  eq('T35a: raw confidence baseline 92', s14.calibration && s14.calibration.rawConfidence, 92);
+
+  const s10 = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true, now: '2026-08-10T10:00:00Z' });
+  ok('T35b: bad hour keeps the signal tradable (92*0.85=78 >= floor)',
+    s10.finalSignal === 'SELL' && s10.calibration && s10.calibration.rawConfidence === 78,
+    s10.finalSignal + ' raw=' + (s10.calibration && s10.calibration.rawConfidence));
+  ok('T35b: HOUR_FACTOR x0.85 applied at UTC 10',
+    (s10.filtersApplied || []).some(f => f === 'HOUR_FACTOR x0.85 (UTC 10)'), JSON.stringify(s10.filtersApplied));
+  eq('T35b: audit hourUtc/hourMult', s10.edgeFeatures && [s10.edgeFeatures.hourUtc, s10.edgeFeatures.hourMult], [10, 0.85]);
+
+  const s09 = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true, now: '2026-08-10T09:00:00Z' });
+  ok('T35c: good hour boosts 92*1.10 capped at 92',
+    s09.finalSignal === 'SELL' && s09.calibration && s09.calibration.rawConfidence === 92,
+    s09.finalSignal + ' raw=' + (s09.calibration && s09.calibration.rawConfidence));
+  ok('T35c: HOUR_FACTOR x1.10 applied at UTC 09',
+    (s09.filtersApplied || []).some(f => f === 'HOUR_FACTOR x1.10 (UTC 09)'), JSON.stringify(s09.filtersApplied));
+
+  // gate effect: 78 * 0.85 = 66.3 -> below 72 floor -> NO_TRADE
+  const cd2 = eFix({ basePrice: 78000, vol: 350, trend: 0, seed: 19 });
+  const s14b = await runEngine('BTC/USD', cd2, 'CRYPTO', {}, { edgeFeatures: true });
+  eq('T35d: baseline fixture trades at neutral hour', s14b.finalSignal, 'SELL');
+  const s10b = await runEngine('BTC/USD', cd2, 'CRYPTO', {}, { edgeFeatures: true, now: '2026-08-10T10:00:00Z' });
+  eq('T35e: hour penalty + floor blocks the signal', s10b.finalSignal, 'NO_TRADE');
+  ok('T35e: BELOW_FLOOR_AFTER_EDGE_FEATURES recorded',
+    (s10b.filtersApplied || []).some(f => f.includes('BELOW_FLOOR_AFTER_EDGE_FEATURES')), JSON.stringify(s10b.filtersApplied));
+}
+
+console.log('\n── T36: RSI × direction gate (B4) ─────────────────────');
+{
+  // BUY with best-TF RSI 61.68 > 55 -> chasing penalty x0.85 (92*0.85=78)
+  const cd = eFix({ basePrice: 78000, vol: 120, trend: 6, seed: 18 });
+  const s = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true });
+  ok('T36a: BUY+RSI>55 emits with penalty applied',
+    s.finalSignal === 'BUY' && s.calibration && s.calibration.rawConfidence === 78,
+    s.finalSignal + ' raw=' + (s.calibration && s.calibration.rawConfidence));
+  ok('T36a: RSI_DIRECTION_GATE_PENALTY x0.85 recorded',
+    (s.filtersApplied || []).some(f => f.includes('RSI_DIRECTION_GATE_PENALTY x0.85 (BUY rsi=61.68 > 55)')), JSON.stringify(s.filtersApplied));
+  eq('T36a: audit rsiGate', s.edgeFeatures && [s.edgeFeatures.rsiGate.direction, s.edgeFeatures.rsiGate.rsi], ['BUY', 61.68]);
+
+  // compounding: RSI penalty x hour penalty -> 85*0.85*0.85 = 61.4 -> floor
+  const s10 = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true, now: '2026-08-10T10:00:00Z' });
+  eq('T36b: RSI x hour penalties block below floor', s10.finalSignal, 'NO_TRADE');
+
+  // SELL with RSI < 45 (fx fixture: SELL 73, RSI 37.87) -> penalty -> floor
+  const cdFx = eFix({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 });
+  const sFx = await runEngine('EUR/USD', cdFx, 'FOREX', {}, { edgeFeatures: true });
+  eq('T36c: SELL+RSI<45 penalty blocks via floor', sFx.finalSignal, 'NO_TRADE');
+  ok('T36c: SELL-side gate recorded',
+    (sFx.filtersApplied || []).some(f => f.includes('RSI_DIRECTION_GATE_PENALTY x0.85 (SELL rsi=37.87 < 45)')), JSON.stringify(sFx.filtersApplied));
+
+  // extreme mean-rev logic preserved: oversold BUY (RSI<30) and overbought
+  // SELL (RSI>70) are OUTSIDE the gate's firing range (unit level)
+  const base = { finalDirection: 'BUY', confidence: 80, pair: 'BTC/USD', assetType: 'CRYPTO',
+    now: new Date(PIN14), candleData: {}, env: {}, calib: null,
+    tfResults: { '5min': { direction: 'BUY', score: { up: 5 }, confluence: 6, alignedWithHTF: true } } };
+  const uOversold = await applyEdgeFeatures({ ...base, indicators: { '5min': { rsi: [25, 25], bollinger: { bandwidth: [2.0] }, atr: [1, 1] } } });
+  ok('T36d: oversold BUY (rsi 25) NOT gated (mean-rev kept)', !uOversold.audit.rsiGate, JSON.stringify(uOversold.audit));
+  const uOverbought = await applyEdgeFeatures({ ...base, finalDirection: 'SELL',
+    tfResults: { '5min': { direction: 'SELL', score: { down: 5 }, confluence: 6, alignedWithHTF: true } },
+    indicators: { '5min': { rsi: [75, 75], bollinger: { bandwidth: [2.0] }, atr: [1, 1] } } });
+  ok('T36d: overbought SELL (rsi 75) NOT gated (mean-rev kept)', !uOverbought.audit.rsiGate, JSON.stringify(uOverbought.audit));
+
+  // penalty-mode unit: direction intact, blockedBy null, penalty applied
+  const uPen = await applyEdgeFeatures({ ...base, indicators: { '5min': { rsi: [62, 62], bollinger: { bandwidth: [2.0] }, atr: [1, 1] } } });
+  ok('T36e: penalty mode leaves direction intact (unit)',
+    uPen.finalDirection === 'BUY' && uPen.audit.blockedBy === null && uPen.confidence === 68, // 80*0.85
+    uPen.finalDirection + ' ' + uPen.confidence);
+}
+
+console.log('\n── T37: volatility state / BB bandwidth (B5) ───────────');
+{
+  // unit: dead / mid / high
+  const base = { finalDirection: 'BUY', confidence: 80, pair: 'BTC/USD', assetType: 'CRYPTO',
+    now: new Date(PIN14), candleData: {}, env: {}, calib: null,
+    tfResults: { '5min': { direction: 'BUY', score: { up: 5 }, confluence: 6, alignedWithHTF: true } } };
+  const uDead = await applyEdgeFeatures({ ...base, indicators: { '5min': { rsi: [50, 50], bollinger: { bandwidth: [0.10] }, atr: [1, 1] } } });
+  eq('T37a: bb<=0.20 crypto dead-squeeze blocks', uDead.finalDirection, 'NO_TRADE');
+  eq('T37a: blockedBy recorded', uDead.audit.blockedBy, 'VOL_STATE_DEAD_SQUEEZE');
+  const uMid = await applyEdgeFeatures({ ...base, indicators: { '5min': { rsi: [50, 50], bollinger: { bandwidth: [0.50] }, atr: [1, 1] } } });
+  eq('T37b: bb 0.2-0.8 mid-squeeze x0.90', uMid.confidence, 72); // 80*0.90
+  eq('T37b: bbState MID_SQUEEZE', uMid.audit.bbState, 'MID_SQUEEZE');
+  const uHigh = await applyEdgeFeatures({ ...base, indicators: { '5min': { rsi: [50, 50], bollinger: { bandwidth: [1.5] }, atr: [1, 1] } } });
+  eq('T37c: bb>0.8 high-vol no penalty', uHigh.confidence, 80);
+  eq('T37c: bbState HIGH_VOL', uHigh.audit.bbState, 'HIGH_VOL');
+
+  // engine-level: flat fixture = dead squeeze
+  const cd = eFix({ basePrice: 78000, vol: 60, trend: 0, seed: 33 });
+  const s = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true });
+  eq('T37d: flat fixture dead-squeeze blocked', s.finalSignal, 'NO_TRADE');
+  ok('T37d: VOL_STATE_DEAD_SQUEEZE_BLOCK recorded',
+    (s.filtersApplied || []).some(f => f.includes('VOL_STATE_DEAD_SQUEEZE_BLOCK (bb=0.1 <= 0.2)')), JSON.stringify(s.filtersApplied));
+  eq('T37d: audit blockedBy', s.edgeFeatures && s.edgeFeatures.blockedBy, 'VOL_STATE_DEAD_SQUEEZE');
+
+  // engine-level: mid-squeeze penalty (E5)
+  const cd5 = eFix({ basePrice: 78000, vol: 120, trend: 6, seed: 54 });
+  const s5 = await runEngine('BTC/USD', cd5, 'CRYPTO', {}, { edgeFeatures: true });
+  ok('T37e: mid-squeeze fixture emits with VOL_STATE_MID_SQUEEZE',
+    s5.finalSignal !== 'NO_TRADE' && (s5.filtersApplied || []).some(f => f.includes('VOL_STATE_MID_SQUEEZE x0.90 (bb=0.59 <= 0.8)')), s5.finalSignal + ' ' + JSON.stringify(s5.filtersApplied));
+}
+
+console.log('\n── T38: ATR percentile (B6) ────────────────────────────');
+{
+  // unit: percentile of the current ATR within the trailing window (current
+  // bar excluded from the window)
+  const arr = []; for (let i = 1; i <= 50; i++) arr.push(i); // 1..50
+  eq('T38a: current 51 vs hist 1..50 -> pct 100', computeAtrPercentile([...arr, 51], 50, 20), 100);
+  eq('T38b: current 1 vs hist 2..51 -> pct 0', computeAtrPercentile([2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51, 1], 50, 20), 0);
+  eq('T38c: too few samples -> null', computeAtrPercentile([1, 2, 3], 50, 20), null);
+  eq('T38d: short history fallback -> null', computeAtrPercentile(null, 50, 20), null);
+
+  // engine-level: E5 carries atrPercentile 96 + expansion multiplier
+  const cd5 = eFix({ basePrice: 78000, vol: 120, trend: 6, seed: 54 });
+  const s5 = await runEngine('BTC/USD', cd5, 'CRYPTO', {}, { edgeFeatures: true });
+  eq('T38e: engine exposes atrPercentile', s5.edgeFeatures && s5.edgeFeatures.atrPercentile, 96);
+  ok('T38f: ATR_PERCENTILE_EXPANSION x1.05 recorded',
+    (s5.filtersApplied || []).some(f => f.includes('ATR_PERCENTILE_EXPANSION x1.05 (pct=96)')), JSON.stringify(s5.filtersApplied));
+}
+
+console.log('\n── T39: recent-form gate (C8) ──────────────────────────');
+{
+  // unit: sample below minSample -> no penalty
+  const u1 = await getRecentFormMultiplier('BTC/USD', { SIGNAL_CACHE: makeKV({ 'stats:BTC_USD': { winRate: 0.2, recentResults: ['LOSS','LOSS','LOSS','LOSS','LOSS'] } }) }, { minSample: 10, badWr: 0.35, badMult: 0.85 });
+  eq('T39a: < minSample -> mult 1.0', u1.mult, 1.0);
+
+  // unit: bad rolling WR -> x0.85
+  const results = [];
+  for (let i = 0; i < 20; i++) results.push(i < 5 ? 'WIN' : 'LOSS'); // 25% WR
+  const u2 = await getRecentFormMultiplier('BTC/USD', { SIGNAL_CACHE: makeKV({ 'stats:BTC_USD': { winRate: 0.25, recentResults: results } }) }, { minSample: 10, badWr: 0.35, badMult: 0.85 });
+  eq('T39b: bad rolling WR -> x0.85', u2.mult, 0.85);
+  eq('T39b: wr surfaced', u2.wr, 0.25);
+
+  // engine-level: E1 (raw 92) with bad stats. Note the EXISTING dynamic
+  // confidence adjustment (voteFilters, wr<=0.35 -> -10) fires first: 92-10=82,
+  // then RECENT_FORM x0.85 -> 69.7 -> below the 72 floor -> NO_TRADE. That is
+  // the intended gate behaviour for a cold pair (TRAIN 35.0% vs 44.4% WR).
+  const cd = eFix({ basePrice: 78000, vol: 600, trend: 0, seed: 20 });
+  const stats = { pair: 'BTC/USD', winRate: 0.30, sampleSize: 10, recentResults: results };
+  const env = { SIGNAL_CACHE: makeKV({ 'stats:BTC_USD': stats }) };
+  const s = await runEngine('BTC/USD', cd, 'CRYPTO', env, { edgeFeatures: true });
+  eq('T39c: cold pair -> NO_TRADE (dynAdj -10 then x0.85 below floor)', s.finalSignal, 'NO_TRADE');
+  ok('T39c: RECENT_FORM_PENALTY x0.85 recorded',
+    (s.filtersApplied || []).some(f => f.includes('RECENT_FORM_PENALTY x0.85 (wr=0.3, n=20)')), JSON.stringify(s.filtersApplied));
+  ok('T39c: DYNAMIC_CONF_ADJ -10 also recorded (pre-existing consumer)',
+    (s.filtersApplied || []).some(f => f.includes('DYNAMIC_CONF_ADJ: -10')), JSON.stringify(s.filtersApplied));
+  ok('T39c: BELOW_FLOOR_AFTER_EDGE_FEATURES recorded',
+    (s.filtersApplied || []).some(f => f.includes('BELOW_FLOOR_AFTER_EDGE_FEATURES')), JSON.stringify(s.filtersApplied));
+
+  // control: good stats -> no penalty, signal trades
+  const env2 = { SIGNAL_CACHE: makeKV({ 'stats:BTC_USD': { winRate: 0.55, sampleSize: 20, recentResults: Array(20).fill('WIN') } }) };
+  const s2 = await runEngine('BTC/USD', cd, 'CRYPTO', env2, { edgeFeatures: true });
+  ok('T39d: good recent form -> no penalty',
+    s2.finalSignal === 'SELL' && !(s2.filtersApplied || []).some(f => f.includes('RECENT_FORM')), s2.finalSignal + ' ' + JSON.stringify(s2.filtersApplied));
+}
+
+console.log('\n── T40: self-calibration recompute + consume (C7) ─────');
+{
+  // seed 2016 decided rows at 10-min intervals (exactly the 14-day window,
+  // 84 rows per UTC hour — above SELF_CALIB.MIN_HOUR_OBS=20 so the dynamic
+  // hour multiplier path is exercised): UTC hour 9 always wins, UTC hour 10
+  // always loses, everything else alternates. The hour is derived from the
+  // row's OWN timestamp so the pattern is independent of the run hour.
+  const now = Date.now();
+  const hist = [];
+  for (let i = 0; i < 2016; i++) {
+    const ts = new Date(now - (2016 - i) * 600000);
+    const hour = ts.getUTCHours();
+    const win = hour === 9 ? true : (hour === 10 ? false : (i % 2 === 0));
+    hist.push({
+      id: 'sc_' + i, pair: 'BTC/USD', direction: win ? 'BUY' : 'SELL', result: win ? 'WIN' : 'LOSS',
+      timestamp: ts.toISOString(),
+      coreConfidence: 80, structureVerdict: i % 3 === 0 ? 'ALIGNED' : 'AGAINST', sessionQuality: 'N/A',
+    });
+  }
+  const kv = makeKV({ 'sig:BTC_USD': hist });
+  const env = { SIGNAL_CACHE: kv };
+  const tables = await recomputeCalibration(env);
+  ok('T40a: recompute produced tables', !!tables && tables.n >= 1900, JSON.stringify(tables && tables.n));
+  ok('T40a: calib:latest written', !!(await kv.get('calib:latest')));
+  eq('T40b: hourWR h9 (always wins) = 1.0', tables.hourWR[9].wr, 1);
+  eq('T40b: hourWR h10 (always loses) = 0', tables.hourWR[10].wr, 0);
+  ok('T40b: per-hour n above MIN_HOUR_OBS (dynamic path eligible)',
+    tables.hourWR[9].n >= 20 && tables.hourWR[10].n >= 20, JSON.stringify({ n9: tables.hourWR[9].n, n10: tables.hourWR[10].n }));
+  const loaded = await loadCalibration(env);
+  ok('T40c: loadCalibration reads fresh tables', !!loaded && loaded.computedAt === tables.computedAt);
+
+  // engine consumes dynamic hour multiplier: hour 10 wr 0/base ~0.5 -> clamp 0.85
+  const cd = eFix({ basePrice: 78000, vol: 350, trend: 0, seed: 19 });
+  const s = await runEngine('BTC/USD', cd, 'CRYPTO', env, { edgeFeatures: true, now: '2026-08-10T10:00:00Z' });
+  ok('T40d: dynamic calib hour multiplier applied (HOUR_FACTOR x0.85)',
+    (s.filtersApplied || []).some(f => f === 'HOUR_FACTOR x0.85 (UTC 10)'), JSON.stringify(s.filtersApplied));
+  eq('T40d: audit hourMult from dynamic tables', s.edgeFeatures && s.edgeFeatures.hourMult, 0.85);
+
+  // MIN_OBS guard: tiny window -> no write, previous tables kept
+  const kv2 = makeKV({ 'sig:X': [{ id: 'a', pair: 'X', result: 'WIN', timestamp: new Date().toISOString(), coreConfidence: 80 }] });
+  const r2 = await recomputeCalibration({ SIGNAL_CACHE: kv2 });
+  eq('T40e: < MIN_OBS -> no recompute', r2, null);
+  eq('T40e: no calib:latest written', await kv2.get('calib:latest'), null);
+
+  // stale tables are ignored by loadCalibration
+  const kv3 = makeKV({ 'calib:latest': { version: 'old', computedAt: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString(), n: 500, base: 0.4, structWR: {}, confBucketWR: {} } });
+  eq('T40f: stale calib ignored', await loadCalibration({ SIGNAL_CACHE: kv3 }), null);
+
+  // /api/calib endpoint surfaces static + dynamic
+  const res = await handleCalib(env);
+  const body = await res.json();
+  ok('T40g: /api/calib returns calibration payload', !!body.calibration);
+  eq('T40g: dynamic tables surfaced', body.calibration.dynamic && body.calibration.dynamic.n, tables.n);
+  eq('T40g: static CALIB version surfaced', body.calibration.static.version, 'calib-v1-2026-08-09-train-0801-0806');
+}
+
+console.log('\n── T41: session-range position (A2) ───────────────────');
+{
+  // unit: crafted day: low at open (95), high at close (105) -> position 1.0
+  const candles = [];
+  for (let i = 0; i < 60; i++) {
+    const dt = new Date('2026-08-10T00:00:00Z').getTime() + i * 60000;
+    const c = i === 59 ? 105 : 95 + (i / 60) * 9;
+    candles.push({ datetime: new Date(dt).toISOString(), open: c, high: c + 0.5, low: c - 0.5, close: c });
+  }
+  const pos = computeSessionRange({ '1min': candles }, new Date('2026-08-10T01:00:00Z'), { minCandles: 20, minRangePct: 0.0005 });
+  ok('T41a: position near day high', pos && pos.position >= 0.95, JSON.stringify(pos));
+  const posMid = computeSessionRange({ '1min': candles.map((c, i) => i === 59 ? { ...c, close: 100 } : c) }, new Date('2026-08-10T01:00:00Z'), { minCandles: 20, minRangePct: 0.0005 });
+  ok('T41b: position mid-day ~0.5', posMid && Math.abs(posMid.position - 0.5) < 0.1, JSON.stringify(posMid));
+  eq('T41c: no candles -> null', computeSessionRange({}, new Date(PIN14), { minCandles: 20, minRangePct: 0.0005 }), null);
+  eq('T41d: flat day (range < minRangePct) -> null',
+    computeSessionRange({ '1min': candles.map(() => ({ datetime: '2026-08-10T00:30:00Z', open: 100, high: 100.0000001, low: 99.9999999, close: 100 })) }, new Date('2026-08-10T01:00:00Z'), { minCandles: 20, minRangePct: 0.05 }), null);
+
+  // unit: extreme position applies the mean-rev bonus
+  const base = { finalDirection: 'BUY', confidence: 80, pair: 'BTC/USD', assetType: 'CRYPTO',
+    now: new Date(PIN14), env: {}, calib: null,
+    tfResults: { '5min': { direction: 'BUY', score: { up: 5 }, confluence: 6, alignedWithHTF: true } },
+    indicators: { '5min': { rsi: [50, 50], bollinger: { bandwidth: [2.0] }, atr: [1, 1] } } };
+  const uExt = await applyEdgeFeatures({ ...base, candleData: { '1min': candles } }); // pos ~1.0
+  eq('T41e: extreme position -> sessionRangeMult 1.05', uExt.audit.sessionRangeMult, 1.05);
+  eq('T41e: confidence boosted 80*1.05', uExt.confidence, 84);
+
+  // engine wiring: E1 restamped onto the pinned day -> sessionRange reported
+  const cd = eFix({ basePrice: 78000, vol: 350, trend: 0, seed: 19 });
+  const t0 = new Date('2026-08-10T00:00:00Z').getTime();
+  const restamped = {};
+  for (const [tf, arr] of Object.entries(cd)) {
+    const step = (tf === '1min' ? 1 : tf === '5min' ? 5 : 15) * 60000;
+    restamped[tf] = arr.map((c, i) => ({ ...c, datetime: new Date(t0 + i * step).toISOString() }));
+  }
+  const s = await runEngine('BTC/USD', restamped, 'CRYPTO', {}, { edgeFeatures: true });
+  ok('T41f: engine reports sessionRange for the pinned day',
+    typeof s.edgeFeatures.sessionRange === 'number' && s.edgeFeatures.sessionRange > 0 && s.edgeFeatures.sessionRange < 1,
+    JSON.stringify(s.edgeFeatures && s.edgeFeatures.sessionRange));
+}
+
+console.log('\n── T42: signalIndicators extended, additive (R5) ───────');
+{
+  const sig = {
+    finalSignal: 'SELL', confidence: '90%', grade: { grade: 'A' }, bestTimeframe: { timeframe: '5min' },
+    recommendations: { '5min': { entry: { price: 100 } } },
+    timeframeAnalysis: {
+      '5min': {
+        entry: { price: 100 },
+        indicators: { rsi: '46.95', atr: '0.5', adx: '12', bbBandwidth: '0.9600' },
+      },
+    },
+    edgeFeatures: {
+      hourUtc: 10, hourMult: 0.85, sessionRange: 0.54, bbState: 'HIGH_VOL',
+      atrPercentile: 42, totalMult: 0.85, recentFormWr: null,
+    },
+    aiValidation: { status: 'SKIPPED' }, coreConfidence: 88, alignment: 'SELL',
+    marketRegime: 'RANGING', session: { sessions: ['24/7'], quality: 'N/A' },
+    structureVerdict: { overall: 'AGAINST' }, timestamp: new Date().toISOString(),
+  };
+  const kv = makeKV();
+  const env = { SIGNAL_CACHE: kv };
+  await saveSignalToHistory(sig, 'BTC/USD', false, env, 'sig_r5x', 'FRESH_API');
+  const rec = (await kv.get('sig:BTC_USD', 'json'))[0];
+  const si = rec && rec.signalIndicators;
+  ok('T42a: signalIndicators written', !!si);
+  if (si) {
+    eq('T42a: legacy fields preserved (rsi)', si.rsi, 46.95);
+    eq('T42a: legacy fields preserved (bbBandwidth)', si.bbBandwidth, 0.96);
+    eq('T42b: atrPercentile added', si.atrPercentile, 42);
+    eq('T42b: bbState added', si.bbState, 'HIGH_VOL');
+    eq('T42b: sessionRange added', si.sessionRange, 0.54);
+    eq('T42b: hourUtc added', si.hourUtc, 10);
+    eq('T42b: hourMult added', si.hourMult, 0.85);
+    eq('T42b: totalMult added', si.totalMult, 0.85);
   }
 }
 

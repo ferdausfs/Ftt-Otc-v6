@@ -13,6 +13,11 @@ import { analyzeOTCPatterns } from '../analysis/otc.js';
 import { generateEntryReason, recentCandleConsistency, getCandleQualityMultiplier } from '../analysis/filters.js';
 import { getSignalGrade, resolveTieWithTolerance } from '../analysis/grade.js';
 import { getCalibratedGradeAndConfidence } from '../analysis/calibration.js';
+// Edge features (Phase F round 2) + self-calibration — same input-side layer
+// as the standard engine (R3/R4), OTC uses the FOREX vol thresholds because
+// its candles are the base pair's real forex candles.
+import { applyEdgeFeatures } from '../analysis/edgeFeatures.js';
+import { loadCalibration } from '../history/selfCalib.js';
 import { callCerebrasValidationOTC } from '../ai/cerebras.js';
 import { buildIndicatorSnapshot } from '../ai/combine.js';
 
@@ -67,8 +72,13 @@ function analyzeTimeframeOTC(indicators, candles, timeframe) {
   return result;
 }
 
-export async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, env) {
-  const now = new Date(); const tfResults = {}; const votes = [];
+export async function buildMultiTimeframeSignalOTC(candleData, pair, session, exotic, env, opts = {}) {
+  // opts.now / opts.edgeFeatures — test determinism hooks (same philosophy as
+  // the standard engine's opts). Production callers omit both.
+  const now = opts && opts.now ? new Date(opts.now) : new Date();
+  const tfResults = {}; const votes = [];
+  // FIX: calculate indicators ONCE per TF, cache results (mirrors engine.js).
+  const indicatorCache = {};
 
   let htfContext = null;
   if (candleData['15min'] && candleData['15min'].length > 0) {
@@ -81,6 +91,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     const candles = candleData[tf];
     if (!candles || candles.length === 0) continue;
     const indicators = calculateAllIndicators(candles);
+    indicatorCache[tf] = indicators;
     const analysis   = analyzeTimeframeOTC(indicators, candles, tf);
     const dur  = calculateOTCCandleDuration(indicators, analysis.direction, candles, tf);
     const cMin = CANDLE_MINUTES[tf] || 1;
@@ -149,7 +160,9 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
 
   const lastClose = primaryCandles.length > 0 ? primaryCandles[primaryCandles.length - 1].close : 0;
   const atrVal    = primaryCandles.length > 0 ? safeLastValue(calculateATR(primaryCandles, CONFIG.ATR_PERIOD)) : null;
-  const otcPatterns = analyzeOTCPatterns(primaryCandles, atrVal, lastClose);
+  // now is injectable via opts (F3-16 pattern) — timeContext uses the same
+  // clock as the rest of the engine so tests are deterministic.
+  const otcPatterns = analyzeOTCPatterns(primaryCandles, atrVal, lastClose, now);
 
   if (finalDirection !== 'NO_TRADE') {
     const pb = finalDirection === 'BUY' ? otcPatterns.otcBonusUp - otcPatterns.otcBonusDown : otcPatterns.otcBonusDown - otcPatterns.otcBonusUp;
@@ -232,6 +245,35 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     }
   }
 
+  // ── EDGE FEATURES (Phase F round 2, OTC mirror) ──
+  // Same input-side layer as the standard engine: multipliers/gates on the
+  // ENGINE confidence before the calibrated output mapping (R3). OTC uses the
+  // FOREX vol-state thresholds (its candles are the base pair's forex data).
+  // The OTC floor (OTC_CONFIDENCE_FLOOR=68) is re-applied so penalties gate.
+  let edgeAudit = null;
+  let activeCalib = null;
+  if (CONFIG.EDGE_FEATURES.enabled && opts.edgeFeatures !== false) {
+    try {
+      activeCalib = await loadCalibration(env);
+      const edgeRes = await applyEdgeFeatures({
+        finalDirection, confidence, pair, assetType: ASSET_TYPE_OTC, now,
+        candleData, tfResults, indicators: indicatorCache, env, calib: activeCalib,
+      });
+      finalDirection = edgeRes.finalDirection;
+      confidence = edgeRes.confidence;
+      for (const f of edgeRes.filtersApplied) filtersApplied.push(f);
+      edgeAudit = edgeRes.audit;
+      if (edgeAudit && edgeAudit.blockedBy) filtersApplied.push('EDGE_BLOCK (' + edgeAudit.blockedBy + ')');
+      if (finalDirection !== 'NO_TRADE' && confidence < OTC_CONFIDENCE_FLOOR) {
+        finalDirection = 'NO_TRADE'; confidence = 0;
+        filtersApplied.push('OTC_BELOW_FLOOR_AFTER_EDGE_FEATURES (' + OTC_CONFIDENCE_FLOOR + '%)');
+      }
+    } catch (e) {
+      console.warn('OTC edge features failed (production unaffected): ' + e.message);
+      edgeAudit = null;
+    }
+  }
+
   // Bugfix round 2 (FIX-A): compute the structure verdict BEFORE grading so the
   // grade can be capped when market structure contradicts the signal — mirrors
   // engine.js (getSignalGrade(..., structureOverall)). Previously the OTC path
@@ -243,7 +285,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
   let calibratedConfForReport = confidence;
   let calibratedScoreForTrace = null;
   if (finalDirection !== 'NO_TRADE') {
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, activeCalib);
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
   }
@@ -254,7 +296,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     finalGrade = { grade: 'N/A', label: 'NO_TRADE', description: 'Engine blocked — no trade.' };
   } else {
     finalGrade = getSignalGrade(confidence, avgConf, alignment, structureVerdict.overall);
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, activeCalib);
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
     // Ensure grade consistency: getSignalGrade now returns calibrated grade (same as cal.grade)
@@ -275,6 +317,7 @@ export async function buildMultiTimeframeSignalOTC(candleData, pair, session, ex
     regimeAdvice: finalDirection === 'NO_TRADE' ? 'OTC — wait for clearer pattern' : 'OTC — short expiry (2-3 candles), price action based',
     marketCondition: ['OTC_SYNTHETIC'], alignment, higherTFTrend: htfContext || 'N/A',
     entryReason, filtersApplied, newsBlackout: null, aiValidation,
+    edgeFeatures: edgeAudit,
     session: { sessions: ['OTC_24/7'], quality: 'N/A' },
     otcPatterns: { consecutiveCandles: otcPatterns.consecutiveCandles, wickRejection: otcPatterns.wickRejection, roundNumber: otcPatterns.roundNumber, sizeAnomaly: otcPatterns.sizeAnomaly, timeContext: otcPatterns.timeContext, signals: otcPatterns.otcSignals, confluenceBonus: otcPatterns.confluenceBonus },
     recommendations, bestTimeframe: best,

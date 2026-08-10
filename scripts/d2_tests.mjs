@@ -202,7 +202,7 @@ console.log('\n── [#8] Resolver — transient error retry then terminal UNKN
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#9-10] Engine — TRENDING block audit + zero leak ──');
 {
-  const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(P), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(P), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#9a] TRENDING fixture final = NO_TRADE', sig.finalSignal === 'NO_TRADE', sig.finalSignal);
   ok('[#9b] D2_TRENDING_BLOCK applied', sig.filtersApplied.some(f => f.includes('D2_TRENDING_BLOCK')));
   const audit = getD2Audit(sig);
@@ -220,7 +220,7 @@ console.log('\n── [#9-10] Engine — TRENDING block audit + zero leak ──
   // non-D2 fixtures: no audit, no D2 filter
   for (const [name, prof] of [['flat', RANGING],
                                ['flat_v2', { basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }]]) {
-    const s = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(prof), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null });
+    const s = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(prof), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
     ok('[#10] ' + name + ': no D2 audit + no D2_ filter',
       getD2Audit(s) === null && !s.filtersApplied.some(f => f.startsWith('D2_')),
       'filters=' + JSON.stringify(s.filtersApplied));
@@ -231,7 +231,7 @@ console.log('\n── [#9-10] Engine — TRENDING block audit + zero leak ──
 console.log('\n── [#11] Bad-pair block SUSPENDED by default (Phase F) ──');
 {
   // USD/JPY, FOREX, non-trending candles => must NOT be bad-pair blocked
-  const sig = await buildMultiTimeframeSignal('USD/JPY', makeCandleData(RANGING), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('USD/JPY', makeCandleData(RANGING), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#11a] USD/JPY has no D2_BAD_PAIR_BLOCK in filters',
     !sig.filtersApplied.some(f => f.includes('D2_BAD_PAIR_BLOCK')), JSON.stringify(sig.filtersApplied));
   ok('[#11b] USD/JPY D2 audit is null when no D2 branch fires',
@@ -241,7 +241,7 @@ console.log('\n── [#11] Bad-pair block SUSPENDED by default (Phase F) ──
   const prev = CONFIG.D2_BAD_PAIR_BLOCK_ENABLED;
   try {
     CONFIG.D2_BAD_PAIR_BLOCK_ENABLED = true;
-    const sig2 = await buildMultiTimeframeSignal('USD/JPY', makeCandleData(RANGING), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null });
+    const sig2 = await buildMultiTimeframeSignal('USD/JPY', makeCandleData(RANGING), 'FOREX', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
     // TRENDING/HIGHEST could fire instead depending on session; the important
     // assertion is that the branch exists and fires when nothing else blocks.
     ok('[#11c] re-enabled flag: either D2_BAD_PAIR_BLOCK present or a different D2_ fired when blocked',
@@ -255,7 +255,7 @@ console.log('\n── [#11] Bad-pair block SUSPENDED by default (Phase F) ──
 console.log('\n── [#12] Non-D2 engine behaviour unchanged ──');
 {
   // a RANGING signal must still produce a normal trade path with grade etc.
-  const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(RANGING), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null });
+  const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(RANGING), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#12a] signal object intact (finalSignal + grade present)',
     typeof sig.finalSignal === 'string' && sig.grade && sig.grade.grade);
   ok('[#12b] recommendations intact',

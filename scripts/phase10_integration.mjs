@@ -126,7 +126,7 @@ console.log('── a real /api/signal call pushes to subscribers ────�
   const env = envOf();
   const sink = [];
   const r = quiet();
-  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
+  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   r();
 
@@ -146,9 +146,9 @@ console.log('\n── repeated calls (re-poll) do not spam ───────
   const sink = [];
   const r = quiet();
   // three back-to-back calls, exactly like App auto-refresh + Bot cron overlap
-  await handleSignalRaw('BTC/USD', env, ctxOf(sink)); await drain(sink);
-  await handleSignalRaw('BTC/USD', env, ctxOf(sink)); await drain(sink);
-  await handleSignalRaw('BTC/USD', env, ctxOf(sink)); await drain(sink);
+  await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' }); await drain(sink);
+  await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' }); await drain(sink);
+  await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' }); await drain(sink);
   r();
   eq('one Telegram message for three identical calls', tg.length, 1);
   const hist = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
@@ -161,7 +161,7 @@ console.log('\n── a non-subscriber pair pushes nothing ───────
   const env = envOf({ 111: userOf({ pair: 'EURUSD' }) });
   const sink = [];
   const r = quiet();
-  await handleSignalRaw('BTC/USD', env, ctxOf(sink));
+  await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   r();
   eq('no push for an unwatched pair', tg.length, 0);
@@ -178,7 +178,7 @@ console.log('\n── push failure must not break the response ─────�
     return realFetch(url, init);
   };
   const r = quiet();
-  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
+  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   r();
   ok('caller still got a valid signal', !!res.signal && !!res.id);
@@ -192,7 +192,7 @@ console.log('\n── result push via the real cron tracker ──────�
   const sink = [];
   const r = quiet();
 
-  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
+  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   const pushedCount = tg.length;
 
@@ -234,7 +234,7 @@ console.log('\n── NO_TRADE emits nothing ───────────�
     }
     return realFetch(url, init);
   };
-  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink));
+  const res = await handleSignalRaw('BTC/USD', env, ctxOf(sink), { edgeFeatures: false, now: '2026-08-10T14:00:00Z' });
   await drain(sink);
   r();
   if (res.signal.finalSignal === 'NO_TRADE') {
