@@ -1,7 +1,9 @@
 # Edge feature layer — evidence, activation, and refresh plan
 
-**Version:** `edge-v1-2026-08-10`  
-**Fixed validation windows:** TRAIN `2026-08-01..06`; HOLDOUT `2026-08-07..09`  
+**Version:** `edge-v1-2026-08-10`
+
+**Fixed validation windows:** TRAIN `2026-08-01..06`; HOLDOUT `2026-08-07..09`
+
 **Source used locally:** Workplace-drive `phase_f_forward_2026-08-09.tar.gz`
 
 ## Evidence policy
