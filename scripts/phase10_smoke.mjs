@@ -317,7 +317,9 @@ console.log('\n── wiring + bans ──────────────�
   const wr = rd('wrangler.toml');
   ok('BOT_KV bound', wr.includes('binding = "BOT_KV"'));
   ok('bot namespace id correct', wr.includes('39653d1f9b5147259cf3791658f131d7'));
-  ok('crons unchanged', wr.includes('crons = ["*/2 * * * *", "*/5 * * * *"]'));
+  // Phase F round 2: the weekly self-calibration cron (C7) was ADDED — the
+  // result checker (*/2) and scanner (*/5) crons are unchanged.
+  ok('crons unchanged', wr.includes('crons = ["*/2 * * * *", "*/5 * * * *", "0 0 * * 1"]'));
 
   ok('no deploy commands', !/wrangler deploy|git push/.test(sig + stats + health + wr));
   const pushSrc = rd('src/handlers/pushToSubscribers.js');

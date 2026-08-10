@@ -7,7 +7,7 @@ import { CORS_HEADERS, applyCors } from './utils/cors.js';
 import { jsonResponse } from './utils/helpers.js';
 import { sanitizePair } from './utils/pairs.js';
 import { checkRateLimit } from './middleware/rateLimit.js';
-import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
+import { handleHealth, handlePairs, handleHistory, handleStats, handleReport, handleCalib } from './handlers/health.js';
 import { handleSignal, handleBatch } from './handlers/signal.js';
 import { handleLatest } from './handlers/latest.js';
 import { scheduledTracker } from './history/stats.js';
@@ -15,7 +15,9 @@ import { scheduledScan } from './handlers/scheduledScan.js';
 import { resolveShadowObservations } from './history/r71store.js';
 import { resolveD2ShadowObservations } from './history/d2store.js';
 import { resolveProbeObservations } from './history/probeStore.js';
-import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
+// Self-calibration (C7): weekly recompute of the calibration tables.
+import { recomputeCalibration } from './history/selfCalib.js';
+import { VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, SELF_CALIB } from './config.js';
 
 export default {
   /**
@@ -32,6 +34,15 @@ export default {
     const cron = event && event.cron;
     if (cron === '*/5 * * * *') {
       ctx.waitUntil(scheduledScan(env, ctx));
+      return;
+    }
+    // Self-calibration (C7): weekly refresh of the calibration tables
+    // (SELF_CALIB.CRON = Monday 00:00 UTC, see wrangler.toml [triggers]).
+    // Recompute runs off the tick; the engine picks up calib:latest on the
+    // next signal request. Fail-open: fewer than MIN_OBS rows keeps the
+    // previous tables (recomputeCalibration returns null without writing).
+    if (cron === SELF_CALIB.CRON) {
+      ctx.waitUntil(recomputeCalibration(env));
       return;
     }
     if (cron && cron !== '*/2 * * * *') {
@@ -96,6 +107,9 @@ export default {
 
       } else if (path === '/api/stats') {
         response = await handleStats(url, env);
+
+      } else if (path === '/api/calib') {
+        response = await handleCalib(env);
 
       } else if (path === '/api/report') {
         response = await handleReport(url, env);

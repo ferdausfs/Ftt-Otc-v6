@@ -15,4 +15,5 @@ id = "39653d1f9b5147259cf3791658f131d7"
 
 [triggers]
 # */2 = result checker (Phase B) · */5 = signal scanner (Phase 7)
-crons = ["*/2 * * * *", "*/5 * * * *"]
+# 0 0 * * 1 = weekly self-calibration refresh (C7, Monday 00:00 UTC)
+crons = ["*/2 * * * *", "*/5 * * * *", "0 0 * * 1"]

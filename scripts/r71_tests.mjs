@@ -63,7 +63,15 @@ const ENV = {}; // deterministic: no AI keys, no SIGNAL_CACHE
 // contract (#1a/#17 failed on main). F3-20 moves the baseline to the CURRENT
 // approved engine tip (e56cd33): the contract now guards the current engine,
 // and any FUTURE unapproved output change fails the suite.
-const BASELINE_COMMIT = 'e56cd33'; // F3-20: approved engine tip (was 71e87eb)
+//
+// PHASE F ROUND 2 (2026-08-10): edge features are the next approved engine
+// release — the input-side multipliers/gates (hour-of-day, RSI×direction,
+// vol-state, ATR-percentile, session-range, recent-form) intentionally change
+// confidence/filtersApplied/edgeFeatures output, so the baseline is refreshed
+// to the approved tip ec6ed65 via the F3-20 mechanism (justification in the
+// PR: "r71 baseline refresh — divergence redaction update with
+// justification"). The guard now protects the edge-feature engine.
+const BASELINE_COMMIT = 'ec6ed65'; // Phase F round 2: approved engine tip (was e56cd33)
 function bootstrapBaseline() {
   // The verify/baseline tree is gitignored and regenerated on demand. A marker
   // file records which commit it was built from, so changing BASELINE_COMMIT
@@ -605,10 +613,17 @@ console.log('\n── [#13] Fail-open ──────────────
 console.log('\n── [#14] OTC regression ───────────────────────────────────');
 {
   const baselineOtc = await import('../verify/baseline/src/signal/otcEngine.js');
-  const session = (await import('../src/utils/session.js')).detectTradingSession();
+  // Phase F round 2: pin the clock + session (F3-16 pattern) so the OTC
+  // timeContext minute window and the edge-feature hour factor are
+  // deterministic on BOTH sides (baseline = same approved engine).
+  const session = { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 };
+  const PIN_NOW = '2026-08-10T14:05:00Z'; // minute 5 = NORMAL timeContext, hour 14 = mult 1.0
   const cd = makeCandleData({ basePrice: 1.08, vol: 0.0006, trend: 0.0001, seed: 9 });
-  const baseSig = await baselineOtc.buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV);
-  const newSig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV);
+  // edgeFeatures:false keeps this regression focused on the structure-cap /
+  // grading contract (edge features are covered by fix_tests T35-T42 and the
+  // #1/#17 byte-equality guards); the clock is still pinned for timeContext.
+  const baseSig = await baselineOtc.buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV, { now: PIN_NOW, edgeFeatures: false });
+  const newSig = await buildMultiTimeframeSignalOTC(cd, 'EUR/USD-OTC', session, false, ENV, { now: PIN_NOW, edgeFeatures: false });
   function stripTime(obj) {
     const c = JSON.parse(JSON.stringify(obj)); const kill = new Set(['generatedAt', 'expiryTime', 'nextCandleClose', 'humanReadable', 'nextRefresh', 'candleTime']);
     (function w(o) { if (o && typeof o === 'object') { for (const k of Object.keys(o)) { if (kill.has(k) || k === 'expiry' || k === 'entry' || k === 'countdown') delete o[k]; else w(o[k]); } } })(c);
@@ -674,6 +689,8 @@ console.log('\n── [#15] Existing smoke + syntax + git diff --check ───
     'src/signal/r71shadow.js', 'src/history/stats.js', 'src/history/r71store.js',
     'src/handlers/signal.js', 'src/handlers/health.js', 'src/index.js',
     'src/signal/otcEngine.js',
+    // Phase F round 2: edge features + self-calibration
+    'src/analysis/edgeFeatures.js', 'src/history/selfCalib.js',
   ];
   let syntaxOk = true;
   for (const f of files) {
@@ -693,7 +710,9 @@ console.log('\n── [#15] Existing smoke + syntax + git diff --check ───
   catch (e) { diffClean = false; diffOut = (e.stdout && e.stdout.toString()) + (e.stderr && e.stderr.toString()); }
   // also verify NEW (untracked) files carry no trailing whitespace
   const newFiles = ['src/signal/voteFilters.js', 'src/signal/r71shadow.js', 'src/history/r71store.js',
-    'scripts/r71_tests.mjs', 'scripts/r71_fixtures.mjs', 'scripts/r71_smoke.mjs'];
+    'scripts/r71_tests.mjs', 'scripts/r71_fixtures.mjs', 'scripts/r71_smoke.mjs',
+    // Phase F round 2
+    'src/analysis/edgeFeatures.js', 'src/history/selfCalib.js', 'scripts/feature_validation.py'];
   let newWsOk = true;
   for (const f of newFiles) {
     const txt = fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');

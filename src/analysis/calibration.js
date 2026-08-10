@@ -116,23 +116,34 @@ function getConfBucket(confidence) {
   return '88+';
 }
 
-function getStructWR(overall) {
-  if (!overall) return CALIB.base;
-  const v = CALIB.structWR[overall];
+function getStructWR(overall, tables) {
+  if (!overall) return (tables && tables.base) || CALIB.base;
+  const v = (tables && tables.structWR && tables.structWR[overall]);
   if (typeof v === 'number') return v;
-  return CALIB.base;
+  const s = CALIB.structWR[overall];
+  if (typeof s === 'number') return s;
+  return (tables && tables.base) || CALIB.base;
 }
 
-function getConfBucketWR(bucket) {
-  const v = CALIB.confBucketWR[bucket];
+function getConfBucketWR(bucket, tables) {
+  const v = (tables && tables.confBucketWR && tables.confBucketWR[bucket]);
   if (typeof v === 'number') return v;
-  return CALIB.base;
+  const s = CALIB.confBucketWR[bucket];
+  if (typeof s === 'number') return s;
+  return (tables && tables.base) || CALIB.base;
 }
 
-export function getCalibratedScore(confidence, structureOverall) {
+/**
+ * Calibrated score = avg(structWR, confBucketWR).
+ * `tables` (optional) = the ACTIVE dynamic calibration from selfCalib.js
+ * (weekly refresh, SELF_CALIB). When absent or missing cells, the static
+ * CALIB values (TRAIN 08-01..06) are used — the refresh is a data change,
+ * never a second calibration layer (R3).
+ */
+export function getCalibratedScore(confidence, structureOverall, tables = null) {
   const bucket = getConfBucket(confidence);
-  const sWR = getStructWR(structureOverall);
-  const cWR = getConfBucketWR(bucket);
+  const sWR = getStructWR(structureOverall, tables);
+  const cWR = getConfBucketWR(bucket, tables);
   // simple average — stable, interpretable, evidence-backed
   // (could weight, but equal weight worked for TRAIN/VAL monotonic)
   return (sWR + cWR) / 2;
@@ -166,8 +177,8 @@ const GRADE_DEFS = {
   'F':  { grade: 'F',  label: 'AVOID',     description:'Very weak. Do NOT trade.' },
 };
 
-export function getCalibratedGradeAndConfidence(confidence, structureOverall) {
-  const score = getCalibratedScore(confidence, structureOverall);
+export function getCalibratedGradeAndConfidence(confidence, structureOverall, tables = null) {
+  const score = getCalibratedScore(confidence, structureOverall, tables);
   const calConf = scoreToCalibratedConfidence(score);
   const gradeLetter = scoreToGrade(score);
   const grade = { ...GRADE_DEFS[gradeLetter] };

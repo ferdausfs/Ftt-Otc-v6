@@ -65,8 +65,9 @@ export function detectCandleSizeAnomaly(candles) {
   return null;
 }
 
-export function getOTCTimeContext() {
-  const now = new Date();
+// `now` is injectable (F3-16 pattern) so tests can pin the clock; production
+// omits it and the real UTC minute is used.
+export function getOTCTimeContext(now = new Date()) {
   const minute = now.getUTCMinutes();
   if (minute <= 2 || minute >= 57)  return { quality:'AVOID',    reason:'Hour boundary — spike risk',    penaltyPct:12 };
   if (minute >= 28 && minute <= 32) return { quality:'MODERATE', reason:'Half-hour mark',                penaltyPct:0  };
@@ -75,7 +76,7 @@ export function getOTCTimeContext() {
   return { quality:'NORMAL', reason:'Standard window', penaltyPct:0 };
 }
 
-export function analyzeOTCPatterns(candles, atr, lastClose) {
+export function analyzeOTCPatterns(candles, atr, lastClose, now = new Date()) {
   const result = {
     consecutiveCandles:null, wickRejection:null, roundNumber:null, sizeAnomaly:null,
     timeContext:null, otcBonusUp:0, otcBonusDown:0, otcSignals:[], confluenceBonus:0,
@@ -127,7 +128,7 @@ export function analyzeOTCPatterns(candles, atr, lastClose) {
     result.otcSignals.push('SIZE_ANOMALY_' + anomaly.strength);
   }
 
-  result.timeContext = getOTCTimeContext();
+  result.timeContext = getOTCTimeContext(now);
 
   const upC  = [wick&&wick.direction==='BUY'?1:0, consec.count>=3&&consec.direction==='SELL'?1:0, anomaly&&anomaly.likelyDirection==='BUY'?1:0].reduce((a,b)=>a+b,0);
   const dnC  = [wick&&wick.direction==='SELL'?1:0, consec.count>=3&&consec.direction==='BUY'?1:0, anomaly&&anomaly.likelyDirection==='SELL'?1:0].reduce((a,b)=>a+b,0);
