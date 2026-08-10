@@ -89,6 +89,16 @@ ID: `f553a3f10915478fa1b8165dd58ff6ea`
 | `GET /api/stats?pair=EUR/USD` | Win rate stats |
 | `GET /api/report?id=ID&result=WIN` | Manual result report |
 
+## Edge feature layer
+
+Standard FOREX/CRYPTO signals include additive `edgeContext` / `timeContext`
+(hour/day, RSI-direction state, BB volatility state, ATR percentile,
+session-range position, recent form, and adaptive factors). Raw history
+instrumentation remains under `signalIndicators`. Thresholds are centralized in
+`EDGE_FEATURE_CONFIG`; the weekly 14-day/3-day-holdout refresh is fail-open to
+static values. See [`EDGE_FEATURES.md`](EDGE_FEATURES.md) and reproduce the
+train→holdout table with `python3 scripts/feature_validation.py --data <root>`.
+
 ## Deploy
 
 Push to `main` branch → GitHub Actions deploys automatically via `wrangler-action@v3`.
