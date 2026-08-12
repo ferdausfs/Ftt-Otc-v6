@@ -293,8 +293,41 @@ console.log('\n── §5.6: /health block ────────────�
   eq('botKvBound', stats.botKvBound, true);
   eq('pushesLast24h counted', stats.pushesLast24h, 2);
   eq('subscriberCount from auto_users', stats.subscriberCount, 2);
+  eq('noTokenReason null when token set', stats.noTokenReason, null);
+  ok('subscriber snapshot present', Array.isArray(stats.subscribers) && stats.subscribers.length === 2);
   const off = await push.getPushStats({ SIGNAL_CACHE: makeKV() });
   eq('pushEnabled false without token', off.pushEnabled, false);
+  eq('noTokenReason missing when secret absent', off.noTokenReason, 'missing');
+}
+
+console.log('\n── lock released on telegram fail (live 2026-08-12) ────');
+{
+  installTelegram();
+  tgFailFor = new Set(['111']);
+  const env = envOf({ 111: userOf() });
+  const r = quiet();
+  const out = await push.pushSignalToSubscribers(sigOf({ id: 'sig_fail1' }), env);
+  r();
+  tgFailFor = new Set();
+  eq('failed send reports telegram-fail', out.skipped, 'telegram-fail');
+  eq('lock not held after failed send',
+    [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('pushLock:')).length, 0);
+  const retry = await push.pushSignalToSubscribers(sigOf({ id: 'sig_fail2' }), env);
+  eq('retry after fail is delivered', retry.pushed, 1);
+  ok('lastAttempt recorded', !!env.SIGNAL_CACHE._m.get('push:lastAttempt'));
+}
+
+console.log('\n── auto_users shape hardening ──────────────────────────');
+{
+  eq('normalize numbers/objects/u: prefix',
+    push.normalizeAutoUsers([111, 'u:222', { chatId: '333' }]),
+    ['111', '222', '333']);
+  installTelegram();
+  const env = { BOT_TOKEN: 'tok', BOT_KV: makeKV({ 'u:111': userOf(), auto_users: [111] }), SIGNAL_CACHE: makeKV() };
+  const r = quiet();
+  const out = await push.pushSignalToSubscribers(sigOf(), env);
+  r();
+  eq('numeric auto_users entry still matches', out.pushed, 1);
 }
 
 console.log('\n── wiring + bans ──────────────────────────────────────────');
@@ -306,7 +339,10 @@ console.log('\n── wiring + bans ──────────────�
   ok('signal.js imports the push module', sig.includes("from './pushToSubscribers.js'"));
   ok('both emit paths go through saveAndPush', (sig.match(/saveAndPush\(/g) || []).length === 3);
   ok('push is chained behind the dedup result', sig.includes('saveResult.deduped'));
-  ok('push runs inside waitUntil (non-blocking)', sig.includes('ctx.waitUntil(saveAndPush('));
+  ok('push runs inside waitUntil (non-blocking)',
+    sig.includes('ctx.waitUntil(persist)') || sig.includes('ctx.waitUntil(saveAndPush('));
+  ok('scanner/fetch can await persist so scheduled isolate cannot drop the push',
+    sig.includes('opts.awaitPersist'));
 
   const stats = rd('src/history/stats.js');
   ok('result checker pushes results', stats.includes('pushResultToSubscribers(record, winLoss, exitPrice, env)'));

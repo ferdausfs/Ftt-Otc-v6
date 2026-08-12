@@ -136,7 +136,13 @@ async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
     // writes the latest: cache.
     // opts.edgeFeatures / opts.now are test-determinism hooks (production cron
     // omits them → edge features ON, live clock).
-    const result = await handleSignalRaw(pair, env, ctx, opts);
+    // awaitPersist: the */5 scheduled handler used to wrap this scan in
+    // ctx.waitUntil and return immediately; handleSignalRaw then nested
+    // another waitUntil(saveAndPush). When the scan promise resolved, the
+    // isolate could freeze before Telegram sendMessage finished — history
+    // rows landed (fast KV) but pushLog never did. Awaiting the persist
+    // here keeps the scan tick alive until the push attempt completes.
+    const result = await handleSignalRaw(pair, env, ctx, { ...opts, awaitPersist: true });
 
     if (!result || result.error) {
       console.warn('scanOnePair ' + pair + ' error: '

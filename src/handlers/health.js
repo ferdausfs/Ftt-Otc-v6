@@ -24,10 +24,10 @@ export async function handleHealth(env) {
   const quotaUsedToday = await readQuota(env);
   const rotationIdx    = await readRotationIndex(env);
   const scanCache      = await getScanCacheStats(env);   // Phase 7
-  const phase10        = await getPushStats(env);        // Phase 10 push
+  const phase10        = await getPushStats(env, { validateToken: true });        // Phase 10 push
 
   return jsonResponse({
-    status: 'healthy', version: '6.10.0', timestamp: new Date().toISOString(),
+    status: 'healthy', version: '6.10.1', timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, source: keySource, status: keyCount > 0 ? 'ready' : 'NO KEYS' },
     apiKeysLoaded: keyCount,
     quotaUsedToday,
@@ -47,9 +47,21 @@ export async function handleHealth(env) {
     // Phase 7 — cron scanner cache. oldestCachedAge well above scanIntervalSec
     // means the */5 scan is failing or being skipped.
     scanCache,
-    // Phase 10 — cross-surface Telegram push. pushEnabled false means the
-    // BOT_TOKEN secret is not set on this worker, so pushes are inert.
+    // Phase 10 — cross-surface Telegram push.
+    // pushEnabled false  → BOT_TOKEN missing/blank on THIS worker (fttotcv6).
+    // noTokenReason      → 'missing' | 'empty' | 'invalid' | 'error' | null.
+    // lastAttempt        → last pushSignalToSubscribers outcome (even no-match
+    //                      / telegram-fail). Survives result-push deleting
+    //                      pushLog:* so pushesLast24h=0 is no longer silent.
     phase10,
+    push: {
+      enabled: !!(phase10 && phase10.pushEnabled),
+      noTokenReason: phase10 ? phase10.noTokenReason : 'missing',
+      tokenValid: phase10 ? phase10.tokenValid : null,
+      tokenUsername: phase10 ? phase10.tokenUsername : null,
+      lastAttempt: phase10 ? phase10.lastAttempt : null,
+      subscribers: phase10 ? phase10.subscribers : [],
+    },
     history: {
       enabled: !!env.SIGNAL_CACHE, maxPerPair: HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
       winRateLookback: HISTORY_CONFIG.WIN_RATE_LOOKBACK, resultCheckDelay: HISTORY_CONFIG.RESULT_CHECK_DELAY + 's after expiry',
