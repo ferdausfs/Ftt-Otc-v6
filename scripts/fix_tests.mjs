@@ -980,7 +980,9 @@ console.log('\n── T27: scanner pushes fresh tradeable signals, deduped (F3-1
   // ── 5) call-site contract: noPush is no longer forced by the scanner ──
   const ss = fs.readFileSync(fileURLToPath(new URL('../src/handlers/scheduledScan.js', import.meta.url)), 'utf8');
   ok('T27e: scanner no longer forces noPush:true at the call site',
-    !ss.includes('noPush: true') && ss.includes('handleSignalRaw(pair, env, ctx, opts)'));
+    !ss.includes('noPush: true') && ss.includes('handleSignalRaw(pair, env, ctx'));
+  ok('T27e: scanner awaits persist so scheduled isolate cannot drop the push',
+    ss.includes('awaitPersist: true'));
 }
 
 console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ─────');
@@ -1738,6 +1740,90 @@ console.log('\n── T42: signalIndicators extended, additive (R5) ────
     eq('T42b: hourMult added', si.hourMult, 0.85);
     eq('T42b: totalMult added', si.totalMult, 0.85);
   }
+}
+
+
+console.log('\n── T43: push lock released on Telegram fail + health status ─');
+{
+  // Live bug 2026-08-12: claimPushLock ran BEFORE sendMessage. A 401/403
+  // left the lock held for 30 min, wrote no pushLog, and the next tick
+  // returned skipped:'locked'. User saw pushesLast24h=0 forever.
+  const { getPushStats, normalizeAutoUsers, isAutoEnabled } = await import('../src/handlers/pushToSubscribers.js');
+  const seed = {
+    'u:111': { pair: 'BTCUSD', watchlist: [], autoEnabled: true, gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false, channelId: null },
+    'auto_users': ['111'],
+  };
+  const env = { SIGNAL_CACHE: makeKV(), BOT_KV: makeKV(seed), BOT_TOKEN: 'tok' };
+  const signal = {
+    id: 'sig_t43a', pair: 'BTC/USD',
+    signal: {
+      finalSignal: 'BUY', confidence: '85%', grade: { grade: 'A', label: 'STRONG' },
+      bestTimeframe: { timeframe: '5min' },
+      recommendations: { '5min': { entry: { price: 1 }, expiry: { totalMinutes: 10, countdown: { label: '1m' } } } },
+    },
+  };
+  globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => 'Unauthorized', json: async () => ({ ok: false }) });
+  const q = quiet();
+  const r1 = await pushSignalToSubscribers(signal, env);
+  q();
+  eq('T43a: failed send reports telegram-fail (not silent 0)', r1.skipped, 'telegram-fail');
+  eq('T43a: nothing delivered', r1.pushed, 0);
+  eq('T43a: lock NOT held after a failed send',
+    [...env.SIGNAL_CACHE._m.keys()].filter(k => k.startsWith('pushLock:')).length, 0);
+  ok('T43a: lastAttempt recorded', !!env.SIGNAL_CACHE._m.get('push:lastAttempt'));
+
+  let tg = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('api.telegram.org')) {
+      const b = JSON.parse(init.body);
+      tg.push(b.chat_id);
+      return { ok: true, status: 200, json: async () => ({ ok: true }), text: async () => '{}' };
+    }
+    return { ok: true, status: 200, json: async () => ({}), text: async () => '' };
+  };
+  const r2 = await pushSignalToSubscribers({ ...signal, id: 'sig_t43b' }, env);
+  eq('T43b: retry after a failed send is delivered', r2.pushed, 1);
+  eq('T43b: Telegram got the retry', tg.length, 1);
+  ok('T43b: pushLog written on the successful retry', !!env.SIGNAL_CACHE._m.get('pushLog:sig_t43b'));
+
+  const r3 = await pushSignalToSubscribers(signal, { SIGNAL_CACHE: makeKV(), BOT_KV: makeKV(seed) });
+  eq('T43c: missing BOT_TOKEN -> skipped no-token', r3.skipped, 'no-token');
+
+  const r4 = await pushSignalToSubscribers(signal, { SIGNAL_CACHE: makeKV(), BOT_KV: makeKV(seed), BOT_TOKEN: '   ' });
+  eq('T43d: whitespace BOT_TOKEN -> skipped no-token', r4.skipped, 'no-token');
+
+  const stats = await getPushStats(env);
+  ok('T43e: pushEnabled true when token present', stats.pushEnabled === true);
+  eq('T43e: noTokenReason null when token present', stats.noTokenReason, null);
+  ok('T43e: lastAttempt exposed', !!(stats.lastAttempt && stats.lastAttempt.signalId));
+  ok('T43e: durable deliveries counted (not just open pushLog keys)', stats.pushesLast24h >= 1);
+  ok('T43e: subscriber snapshot includes pair/autoEnabled',
+    Array.isArray(stats.subscribers) && stats.subscribers[0] && stats.subscribers[0].autoEnabled === true
+    && stats.subscribers[0].pair === 'BTCUSD');
+
+  const off = await getPushStats({ SIGNAL_CACHE: makeKV() });
+  eq('T43f: noTokenReason missing when secret absent', off.noTokenReason, 'missing');
+  eq('T43f: pushEnabled false without token', off.pushEnabled, false);
+
+  eq('T43g: normalize numbers + u: prefix + objects',
+    normalizeAutoUsers([111, 'u:222', { chatId: '333' }, ' 444 ']),
+    ['111', '222', '333', '444']);
+  ok('T43g: isAutoEnabled accepts true/1/"true"',
+    isAutoEnabled({ autoEnabled: true }) && isAutoEnabled({ autoEnabled: 1 }) && isAutoEnabled({ autoEnabled: 'true' }));
+  ok('T43g: isAutoEnabled rejects false/missing',
+    !isAutoEnabled({ autoEnabled: false }) && !isAutoEnabled({}) && !isAutoEnabled(null));
+
+  const idx = fs.readFileSync(fileURLToPath(new URL('../src/index.js', import.meta.url)), 'utf8');
+  ok('T43h: scheduled */5 awaits scheduledScan (does not wrap-and-return)',
+    idx.includes('await scheduledScan(env, ctx)') && !idx.includes('ctx.waitUntil(scheduledScan'));
+
+  // Reviewer R1/R2: /health must carry version 6.10.1 and a push object whose
+  // delivered24h field is the durable counter (not the deletable pushLog keys).
+  const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
+  ok('T43i: /health push block exposes durable delivered24h at top level',
+    hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
+  ok('T43j: /health version bumped to 6.10.1',
+    hh.includes("version: '6.10.1'"));
 }
 
 console.log('\n───────────────────────────────────────────────────────────');

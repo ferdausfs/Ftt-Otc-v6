@@ -1,5 +1,94 @@
 # Ftt-Otc-v6 — Agent Log
 
+## 2026-08-12 — DEPLOY SCRIPT SILENT-FAIL FIX + v6.10.1 LANDS IN WORKER REPO
+
+**Task A:** the v6.10.1 patch (ftt-telegram-bot PR #12, `patches/v6101-push-silent-death.patch`,
+885 lines) applied verbatim onto main `3df5f1a` and shipped as a worker-repo PR.
+One additive field on top: `/health.push.delivered24h` now mirrors the durable
+`push:delivered24h` KV counter (previously only reachable as
+`phase10.pushesLast24h`), so the live verify reads `push.delivered24h` directly.
+Pins: fix_tests T43i/T43j (302 → 304).
+
+**Task B:** `redeploy.sh` (Termux → Cloudflare direct PUT) died with a bare
+`json.JSONDecodeError` after printing "Uploading worker-v6101-20260812.js +
+triggers..." — it piped curl stdout straight into `json.load()`. A
+`JSONDecodeError` means the response body was empty or not JSON; the four
+candidate causes and the fixes now in `scripts/redeploy.sh`:
+
+| # | Cause | Fix in script |
+|---|---|---|
+| 1 | Bundle missing / zero-size (failed download) → curl exit 26, **empty stdout** → JSONDecodeError. Most consistent with the observed failure. | Preflight: file must exist, be non-empty (`wc -c` printed), optional `EXPECTED_BYTES=322007` exact compare; JS-content sniff. Fails BEFORE curl runs. |
+| 2 | Cloudflare 429 / edge error page (HTML/text, not JSON). | Every call captures `%{http_code}` + raw body; body is printed verbatim BEFORE any JSON parse; 429 exits with a Retry-After hint. |
+| 3 | `wmeta.json` `main_module` ≠ uploaded bundle name (sed rename missed it) → Cloudflare 4xx JSON error, previously hidden. | Metadata is validated: parses as JSON AND `main_module == basename(bundle)`, else the exact python fix is printed; `--fix-metadata` regenerates. Upload part name is pinned to `main_module`. |
+| 4 | Unquoted `-F` breaking multipart on special chars. | All `-F` args fully quoted. |
+
+All API failures now print HTTP status + raw body + parsed Cloudflare
+`errors[].code/message` and exit non-zero — no more silent JSONDecodeError.
+Post-deploy the script GETs `/health` and prints `version`, `push.enabled`,
+`push.tokenValid` (+`tokenUsername`), `push.noTokenReason`, subscriber count,
+`lastAttempt`, `delivered24h`; non-6.10.1 or `tokenValid:false` exits non-zero
+with the `wrangler secret put BOT_TOKEN --name fttotcv6` remediation.
+
+Verified locally against a mock Cloudflare API: happy path (upload + schedules
++ health verify → rc 0), 429 HTML (raw shown), 200-with-text-body (flagged
+non-JSON), `success:false` (code 10006 parsed + shown), missing/zero/wrong-size
+bundle (preflight), main_module mismatch (exact fix printed). The sandbox
+cannot reach api.cloudflare.com (SSL_ERROR_SYSCALL) — real deploy runs on
+Termux or via the GitHub Action on merge.
+
+---
+
+## 2026-08-12 — AUTO PUSH STILL SILENT AFTER v6.10 (v6.10.1)
+
+**Base:** `3df5f1a` (main, v6.10.0). Live `/health` at 06:47Z: `pushEnabled:true`,
+`botKvBound:true`, `subscriberCount:1`, `pushesLast24h:0`. Scanner is saving
+(ADA/USD `sig_1786517126427_n1xn9` SELL 85% B pending at 06:45:26, 26s after
+the `*/5` cron) but no `pushLog:*` exists for that pending row.
+
+### Evidence (not guesses)
+1. **BOT_TOKEN is SET** on fttotcv6 (`pushEnabled:true`). Candidate 1 from the
+   prompt (secret missing) is ruled out. The secret may still be the *wrong*
+   bot (getMe was never probed — `/health` only checked `!!BOT_TOKEN`).
+2. **`pushesLast24h` was a lie for resolved signals.** `pushResultToSubscribers`
+   deletes `pushLog:<id>` after the result DM, so a day of successful
+   push+resolve shows `0`. The ADA pending row is the exception that proves
+   the real failure: if that SELL had been delivered, its pushLog would still
+   be open and the counter would be ≥1.
+3. **Lock-on-failed-send (code bug).** `claimPushLock` ran BEFORE
+   `sendTelegramMessage`. A 401/403 (wrong worker token, or a chat that token
+   cannot write) left the 30-min lock held and wrote no pushLog. The next
+   scanner tick returned `skipped:'locked'`. Forever 0 DMs, forever 0 logs.
+4. **Nested waitUntil on the `*/5` scheduled handler.**
+   `scheduled(){ ctx.waitUntil(scheduledScan); return; }` +
+   `handleSignalRaw` → `ctx.waitUntil(saveAndPush)`. Save (fast KV) completed;
+   Telegram send (slower, + optional 8s FX self-fetch) could be frozen when
+   the scan promise resolved. Matches "history grows, pushLog=0".
+
+### Fix (v6.10.1)
+- Release the pushLock if Telegram send fails, so the next tick retries.
+- Persist `push:lastAttempt` on EVERY outcome (no-token / no-match /
+  telegram-fail / locked) with per-subscriber skip reasons.
+- Durable `push:delivered24h` counter that result-push does not delete.
+- `/health.push = {enabled, noTokenReason, tokenValid (getMe), lastAttempt,
+  subscribers[]}` so this class of failure is never silent again.
+- `await scheduledScan` + scanner `awaitPersist:true` so the scheduled
+  isolate cannot drop the push.
+- Harden `auto_users` (numbers / `u:` prefix / `{chatId}` objects) and
+  trim BOT_TOKEN (dashboard paste with a trailing newline → silent 401).
+
+### Tests
+fix_tests **302/0** (was 281; T43 pins lock-release + health + no-token +
+shape hardening) · phase10_integration 19/19 · phase10_smoke 71/0 ·
+phase7 68+36 · d2 39 · probe 34 · eh 7 · fx 20 · r71 **117P/0F**.
+
+### Deploy note
+Rebuild bundle + `bash redeploy.sh`. Then hit `/health` and read
+`push.lastAttempt` + `push.subscribers` + `push.tokenValid`. If
+`tokenValid:false`, set the **worker's** BOT_TOKEN to the same secret the
+bot worker uses (`wrangler secret put BOT_TOKEN --name fttotcv6`).
+
+---
+
 ## 2026-08-10 — RESTORE AUTO SIGNAL PUSH (worker = single source; v6.10.0)
 
 **Base:** `bad7140c` (main, incl. PR #15 edge features). 5 files: 4 modified +
