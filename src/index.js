@@ -1,5 +1,5 @@
 /**
- * FTT Signal Worker v6.10.0
+ * FTT Signal Worker v6.10.1
  * Cloudflare Worker Entry Point
  */
 
@@ -36,7 +36,11 @@ export default {
   async scheduled(event, env, ctx) {
     const cron = event && event.cron;
     if (cron === '*/5 * * * *') {
-      ctx.waitUntil(scheduledScan(env, ctx));
+      // Await the scan (do NOT wrap-and-return). Nested waitUntil(scan) →
+      // waitUntil(saveAndPush) can drop the inner push when the scan
+      // promise resolves. Awaiting keeps the scheduled handler live until
+      // every pair's save+push attempt has finished.
+      await scheduledScan(env, ctx);
       return;
     }
     // Self-calibration (C7): weekly refresh of the calibration tables
@@ -120,7 +124,7 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.10.0 — Forex + Crypto + OTC + History Tracking',
+          message: 'FTT Signal Worker v6.10.1 — Forex + Crypto + OTC + History Tracking',
           endpoints: {
             health:    '/',
             signal:    '/api/signal?pair=EUR/USD',

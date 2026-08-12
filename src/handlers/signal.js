@@ -263,8 +263,14 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
     cacheHits, entrySource, dataStatus,
   };
 
-  if (signalId)
-    ctx.waitUntil(saveAndPush(signal, pair, false, env, signalId, entrySource, result, noPush));
+  if (signalId) {
+    // Fetch path: waitUntil so the HTTP response is not blocked.
+    // Scanner path: also await (opts.awaitPersist) so a scheduled isolate
+    // cannot freeze after scanOnePair returns and kill the Telegram send.
+    const persist = saveAndPush(signal, pair, false, env, signalId, entrySource, result, noPush);
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(persist);
+    if (opts.awaitPersist) await persist;
+  }
 
   return result;
 }
@@ -349,8 +355,11 @@ async function handleSignalRawOTC(pair, env, ctx, opts = {}) {
     cacheHits, entrySource, dataStatus,
   };
 
-  if (signalId)
-    ctx.waitUntil(saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult, noPush));
+  if (signalId) {
+    const persist = saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult, noPush);
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(persist);
+    if (opts.awaitPersist) await persist;
+  }
 
   return otcResult;
 }

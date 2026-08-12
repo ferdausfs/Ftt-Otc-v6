@@ -44,8 +44,19 @@ const PUSH_LOG_TTL_S   = 24 * 3600;
  */
 const PUSH_LOCK_TTL_S  = 30 * 60;
 
+// Durable diagnostics — survive result-push deleting pushLog:<id>.
+const LAST_ATTEMPT_KEY   = 'push:lastAttempt';
+const DELIVERED_24H_KEY  = 'push:delivered24h';
+const TOKEN_CHECK_KEY    = 'push:tokenCheck';
+const TOKEN_CHECK_TTL_S  = 300;
+
 const TELEGRAM_API = 'https://api.telegram.org';
 const SELF_URL = 'https://fttotcv6.umuhammadiswa.workers.dev';
+
+/** Trim so a dashboard paste with trailing newline is not a silent 401. */
+export function botToken(env) {
+  return env && env.BOT_TOKEN ? String(env.BOT_TOKEN).trim() : '';
+}
 
 /** Bot stores pairs slash-less ("EURUSD"); normalise both sides before compare. */
 function normPair(p) {
@@ -54,6 +65,82 @@ function normPair(p) {
 
 function confPct(sig) {
   return parseInt(String((sig && sig.confidence) || '0%').replace('%', ''), 10) || 0;
+}
+
+/**
+ * Coerce the Bot's `auto_users` index into chat-id strings.
+ * Live shape is `["123456"]`, but a dashboard edit or an older writer can
+ * leave numbers, `u:<id>` keys, or `{chatId}` objects — all of which made
+ * `u:` + cid look up the wrong KV key and silently match nobody.
+ */
+export function normalizeAutoUsers(raw) {
+  if (!Array.isArray(raw)) return [];
+  const ids = [];
+  for (const entry of raw) {
+    if (entry == null) continue;
+    if (typeof entry === 'number' && isFinite(entry)) {
+      ids.push(String(Math.trunc(entry)));
+      continue;
+    }
+    if (typeof entry === 'string') {
+      const s = entry.trim();
+      if (!s) continue;
+      ids.push(s.startsWith('u:') ? s.slice(2) : s);
+      continue;
+    }
+    if (typeof entry === 'object') {
+      const v = entry.chatId ?? entry.id ?? entry.cid ?? entry.chat_id;
+      if (v == null) continue;
+      const s = String(v).trim();
+      if (s) ids.push(s.startsWith('u:') ? s.slice(2) : s);
+    }
+  }
+  return ids;
+}
+
+/** Accept boolean true plus the string/number forms a KV edit can leave. */
+export function isAutoEnabled(user) {
+  if (!user) return false;
+  return user.autoEnabled === true || user.autoEnabled === 1 || user.autoEnabled === 'true';
+}
+
+function lockKey(chatId, signal) {
+  return PUSH_LOCK_PREFIX + chatId + ':' + normPair(signal.pair)
+    + ':' + signal.signal.finalSignal;
+}
+
+async function releasePushLock(chatId, signal, env) {
+  if (!env || !env.SIGNAL_CACHE) return;
+  try { await env.SIGNAL_CACHE.delete(lockKey(chatId, signal)); }
+  catch (e) { console.warn('push: lock release failed: ' + e.message); }
+}
+
+async function recordPushAttempt(env, rec) {
+  if (!env || !env.SIGNAL_CACHE) return;
+  try {
+    await env.SIGNAL_CACHE.put(
+      LAST_ATTEMPT_KEY,
+      JSON.stringify({ ...rec, at: new Date().toISOString() }),
+      { expirationTtl: 7 * 24 * 3600 },
+    );
+  } catch (e) {
+    console.warn('push: lastAttempt write failed: ' + e.message);
+  }
+}
+
+async function recordDelivery(env, signalId, pair, n) {
+  if (!env || !env.SIGNAL_CACHE || !n) return;
+  try {
+    let arr = await env.SIGNAL_CACHE.get(DELIVERED_24H_KEY, 'json');
+    if (!Array.isArray(arr)) arr = [];
+    const now = Date.now();
+    arr = arr.filter(x => x && x.at && (now - new Date(x.at).getTime()) < 24 * 3600 * 1000);
+    arr.push({ id: signalId, pair, n, at: new Date().toISOString() });
+    if (arr.length > 500) arr = arr.slice(-500);
+    await env.SIGNAL_CACHE.put(DELIVERED_24H_KEY, JSON.stringify(arr), { expirationTtl: 48 * 3600 });
+  } catch (e) {
+    console.warn('push: delivered24h write failed: ' + e.message);
+  }
 }
 
 // ── filter helpers — mirrored from the Bot's own implementation ─────────
@@ -90,42 +177,84 @@ export function passAI(sig, aiOnly) {
 /**
  * Everyone who should receive this signal.
  * Returns [{ chatId, channelId }] — channelId mirrors the Bot's [F10] behaviour.
+ * Optional `diag.skips` is filled with per-subscriber skip reasons so /health
+ * can show WHY a live signal matched nobody (the previous silent `no-match`).
  */
-export async function getMatchingSubscribers(signal, env) {
-  if (!env || !env.BOT_KV) return [];
+export async function getMatchingSubscribers(signal, env, diag = null) {
+  if (diag && !Array.isArray(diag.skips)) diag.skips = [];
+  if (!env || !env.BOT_KV) {
+    if (diag) diag.skips.push({ reason: 'no-bot-kv' });
+    return [];
+  }
   const sig = signal && signal.signal;
-  if (!sig) return [];
+  if (!sig) {
+    if (diag) diag.skips.push({ reason: 'no-signal' });
+    return [];
+  }
 
   let autoUsers;
   try {
     autoUsers = await env.BOT_KV.get('auto_users', 'json');
   } catch (e) {
     console.warn('push: auto_users read failed: ' + e.message);
+    if (diag) diag.skips.push({ reason: 'auto-users-read-failed', error: e.message });
     return [];
   }
-  if (!Array.isArray(autoUsers) || autoUsers.length === 0) return [];
+  const ids = normalizeAutoUsers(autoUsers);
+  if (diag) {
+    diag.autoUsersRawType = Array.isArray(autoUsers) ? 'array' : typeof autoUsers;
+    diag.autoUsersCount = ids.length;
+  }
+  if (ids.length === 0) {
+    if (diag) diag.skips.push({ reason: 'auto-users-empty' });
+    return [];
+  }
 
   const want = normPair(signal.pair);
   const matches = [];
 
-  for (const cid of autoUsers) {
+  for (const cid of ids) {
     try {
       const user = await env.BOT_KV.get('u:' + cid, 'json');
-      if (!user || user.autoEnabled !== true) continue;
+      if (!user) {
+        if (diag) diag.skips.push({ chatId: String(cid), reason: 'no-user-record' });
+        continue;
+      }
+      if (!isAutoEnabled(user)) {
+        if (diag) diag.skips.push({ chatId: String(cid), reason: 'auto-disabled' });
+        continue;
+      }
 
       const watched = [user.pair, ...(Array.isArray(user.watchlist) ? user.watchlist : [])]
         .filter(Boolean)
         .map(normPair);
-      if (!watched.includes(want)) continue;
+      if (!watched.includes(want)) {
+        if (diag) diag.skips.push({
+          chatId: String(cid), reason: 'pair-not-watched',
+          want, pair: user.pair || null,
+          watchlist: Array.isArray(user.watchlist) ? user.watchlist : [],
+        });
+        continue;
+      }
 
       // Same three gates the Bot applies in autoScan.
-      if (!passConf(sig, user.minConfidence)) continue;
-      if (!passGrade(sig, user.gradeFilter)) continue;
-      if (!passAI(sig, user.aiOnlyMode)) continue;
+      if (!passConf(sig, user.minConfidence)) {
+        if (diag) diag.skips.push({ chatId: String(cid), reason: 'min-confidence', min: user.minConfidence });
+        continue;
+      }
+      if (!passGrade(sig, user.gradeFilter)) {
+        if (diag) diag.skips.push({ chatId: String(cid), reason: 'grade-filter', filter: user.gradeFilter });
+        continue;
+      }
+      if (!passAI(sig, user.aiOnlyMode)) {
+        if (diag) diag.skips.push({ chatId: String(cid), reason: 'ai-only' });
+        continue;
+      }
 
       matches.push({ chatId: String(cid), channelId: user.channelId || null, fxMode: user.fxMode || 'ftt' });
     } catch (e) {
       console.warn('push: user read failed for ' + cid + ': ' + e.message);
+      if (diag) diag.skips.push({ chatId: String(cid), reason: 'user-read-failed', error: e.message });
     }
   }
   return matches;
@@ -141,8 +270,7 @@ export async function getMatchingSubscribers(signal, env) {
  */
 async function claimPushLock(chatId, signal, env) {
   if (!env.SIGNAL_CACHE) return true;
-  const key = PUSH_LOCK_PREFIX + chatId + ':' + normPair(signal.pair)
-    + ':' + signal.signal.finalSignal;
+  const key = lockKey(chatId, signal);
   try {
     const held = await env.SIGNAL_CACHE.get(key);
     if (held) return false;
@@ -160,31 +288,43 @@ async function claimPushLock(chatId, signal, env) {
  * Call inside ctx.waitUntil() — never block the caller's response.
  */
 export async function pushSignalToSubscribers(signal, env) {
+  const diag = { skips: [] };
+  const out = await pushSignalToSubscribersInner(signal, env, diag);
+  await recordPushAttempt(env, {
+    signalId: signal && signal.id || null,
+    pair: signal && signal.pair || null,
+    dir: signal && signal.signal && signal.signal.finalSignal || null,
+    skipped: out.skipped || null,
+    pushed: out.pushed || 0,
+    matched: out.matched || 0,
+    error: out.error || null,
+    telegramError: out.telegramError || null,
+    skips: diag.skips,
+  });
+  return out;
+}
+
+async function pushSignalToSubscribersInner(signal, env, diag) {
   if (!signal || !signal.id) return { pushed: 0, skipped: 'no-id' };
   const sig = signal.signal;
   if (!sig || !['BUY', 'SELL'].includes(sig.finalSignal)) {
     return { pushed: 0, skipped: 'not-actionable' };
   }
-  if (!env || !env.BOT_TOKEN) {
-    // Not an error: push is opt-in via secret. Stay silent to avoid log spam
-    // on every single signal when the feature simply is not configured.
+  if (!env || !botToken(env)) {
     return { pushed: 0, skipped: 'no-token' };
   }
 
   try {
-    const subscribers = await getMatchingSubscribers(signal, env);
-    if (subscribers.length === 0) return { pushed: 0, skipped: 'no-match' };
+    const subscribers = await getMatchingSubscribers(signal, env, diag);
+    if (subscribers.length === 0) return { pushed: 0, skipped: 'no-match', matched: 0 };
 
-    // Idempotency: only push to subscribers not already notified about this
-    // pair+direction inside the lock window.
     const eligible = [];
     for (const sub of subscribers) {
       if (await claimPushLock(sub.chatId, signal, env)) eligible.push(sub);
+      else if (diag) diag.skips.push({ chatId: sub.chatId, reason: 'locked' });
     }
-    if (eligible.length === 0) return { pushed: 0, skipped: 'locked' };
+    if (eligible.length === 0) return { pushed: 0, skipped: 'locked', matched: subscribers.length };
 
-    // Per-subscriber message: FX-mode users get SL/TP levels (fetched with
-    // mode=fx&nopush=1 to avoid a push loop), others get FTT.
     const results = await Promise.allSettled(
       eligible.map(async (sub) => {
         let msgSignal = signal;
@@ -200,23 +340,28 @@ export async function pushSignalToSubscribers(signal, env) {
         }
         const fxOnly = sub.fxMode === 'fx';
         const message = formatSignalMessage(msgSignal, { fx: sub.fxMode === 'fx' || sub.fxMode === 'both', fxOnly });
-        await sendTelegramMessage(sub.chatId, message, env);
-        // F3-01 (BUG-011): carry the per-subscriber formatted message with the
-        // delivery record so the channel-mirror block below uses THIS
-        // subscriber's message instead of a block-scoped variable that no
-        // longer exists outside the map callback (ReferenceError before).
+        try {
+          await sendTelegramMessage(sub.chatId, message, env);
+        } catch (e) {
+          // Live 2026-08-12: lock was claimed BEFORE send. A 401/403 left the
+          // lock held for 30 min and wrote no pushLog — next tick was 'locked',
+          // /health.pushesLast24h stayed 0, user never got a retry.
+          await releasePushLock(sub.chatId, signal, env);
+          throw e;
+        }
         return { sub, message };
       }),
     );
 
     const delivered = [];
+    const telegramErrors = [];
     results.forEach((r) => {
       if (r.status === 'fulfilled' && r.value) delivered.push(r.value);
+      else if (r.status === 'rejected') {
+        telegramErrors.push(String((r.reason && r.reason.message) || r.reason || 'send-failed'));
+      }
     });
 
-    // Channel mirroring ([F10] parity) — best effort, never gates the DM.
-    // Each delivery record carries its own message, so a mirror failure can
-    // never throw out of this block and lose the pushLog write.
     await Promise.allSettled(
       delivered.filter(d => d.sub.channelId)
         .map(d => sendTelegramMessage(d.sub.channelId, d.message, env)),
@@ -229,12 +374,22 @@ export async function pushSignalToSubscribers(signal, env) {
         JSON.stringify(delivered.map(d => ({ chatId: d.sub.chatId, sentAt: now }))),
         { expirationTtl: PUSH_LOG_TTL_S },
       );
+      await recordDelivery(env, signal.id, signal.pair, delivered.length);
     }
 
     console.log('Phase 10 push: ' + signal.id + ' ' + signal.pair + ' '
       + sig.finalSignal + ' -> ' + delivered.length + '/' + eligible.length
-      + ' delivered (' + subscribers.length + ' matched)');
-    return { pushed: delivered.length, matched: subscribers.length };
+      + ' delivered (' + subscribers.length + ' matched)'
+      + (telegramErrors.length ? ' telegramErrors=' + telegramErrors[0] : ''));
+    const skipped = delivered.length === 0
+      ? (telegramErrors.length ? 'telegram-fail' : 'no-delivery')
+      : undefined;
+    return {
+      pushed: delivered.length,
+      matched: subscribers.length,
+      skipped,
+      telegramError: telegramErrors[0] || null,
+    };
   } catch (e) {
     console.warn('pushSignalToSubscribers error: ' + e.message);
     return { pushed: 0, error: e.message };
@@ -248,7 +403,7 @@ export async function pushSignalToSubscribers(signal, env) {
 export async function pushResultToSubscribers(record, winLoss, exitPrice, env) {
   if (!record || !record.id) return { pushed: 0 };
   if (!['WIN', 'LOSS'].includes(winLoss)) return { pushed: 0, skipped: 'undecided' };
-  if (!env || !env.BOT_TOKEN || !env.SIGNAL_CACHE) return { pushed: 0, skipped: 'not-configured' };
+  if (!env || !botToken(env) || !env.SIGNAL_CACHE) return { pushed: 0, skipped: 'not-configured' };
 
   try {
     const logKey = PUSH_LOG_PREFIX + record.id;
@@ -358,7 +513,8 @@ export function formatResultMessage(record, winLoss, exitPrice) {
  * the Bot's own Bug#1 comment.
  */
 export async function sendTelegramMessage(chatId, text, env) {
-  const url = TELEGRAM_API + '/bot' + env.BOT_TOKEN + '/sendMessage';
+  const token = botToken(env);
+  const url = TELEGRAM_API + '/bot' + token + '/sendMessage';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -372,37 +528,142 @@ export async function sendTelegramMessage(chatId, text, env) {
     const body = await res.text().catch(() => '');
     console.warn('Telegram sendMessage failed: chatId=' + chatId
       + ' status=' + res.status + ' body=' + body.slice(0, 200));
-    throw new Error('Telegram ' + res.status);
+    throw new Error('Telegram ' + res.status + (body ? ' ' + body.slice(0, 120) : ''));
   }
   return res.json().catch(() => ({}));
 }
 
-/** /health support (spec §2.5). */
-export async function getPushStats(env) {
-  const enabled = !!(env && env.BOT_TOKEN);
+export async function validateBotToken(env) {
+  if (!botToken(env)) return { ok: false, reason: 'missing', checkedAt: new Date().toISOString() };
+  if (env.SIGNAL_CACHE) {
+    try {
+      const cached = await env.SIGNAL_CACHE.get(TOKEN_CHECK_KEY, 'json');
+      if (cached && cached.checkedAt
+          && (Date.now() - new Date(cached.checkedAt).getTime()) < TOKEN_CHECK_TTL_S * 1000) {
+        return cached;
+      }
+    } catch (e) { /* fall through */ }
+  }
+  try {
+    const res = await fetch(TELEGRAM_API + '/bot' + botToken(env) + '/getMe', {
+      signal: AbortSignal.timeout(5000),
+    });
+    const body = await res.json().catch(() => ({}));
+    const result = (res.ok && body.ok)
+      ? { ok: true, reason: null, username: body.result && body.result.username, checkedAt: new Date().toISOString() }
+      : {
+          ok: false, reason: 'invalid', status: res.status,
+          description: body.description || null, checkedAt: new Date().toISOString(),
+        };
+    if (env.SIGNAL_CACHE) {
+      await env.SIGNAL_CACHE.put(TOKEN_CHECK_KEY, JSON.stringify(result), {
+        expirationTtl: TOKEN_CHECK_TTL_S,
+      }).catch(() => {});
+    }
+    return result;
+  } catch (e) {
+    return { ok: false, reason: 'error', error: e.message, checkedAt: new Date().toISOString() };
+  }
+}
+
+export async function getSubscriberSnapshot(env) {
+  const out = [];
+  if (!env || !env.BOT_KV) return out;
+  let autoUsers;
+  try { autoUsers = await env.BOT_KV.get('auto_users', 'json'); }
+  catch (e) { return [{ error: e.message }]; }
+  for (const cid of normalizeAutoUsers(autoUsers)) {
+    try {
+      const user = await env.BOT_KV.get('u:' + cid, 'json');
+      out.push({
+        chatId: String(cid),
+        found: !!user,
+        autoEnabled: isAutoEnabled(user),
+        pair: user && user.pair || null,
+        watchlist: user && Array.isArray(user.watchlist) ? user.watchlist : [],
+        gradeFilter: (user && user.gradeFilter) || 'ALL',
+        minConfidence: (user && user.minConfidence) || 0,
+        aiOnlyMode: !!(user && user.aiOnlyMode),
+        fxMode: (user && user.fxMode) || 'ftt',
+      });
+    } catch (e) {
+      out.push({ chatId: String(cid), found: false, error: e.message });
+    }
+  }
+  return out;
+}
+
+export async function getPushStats(env, opts = {}) {
+  const token = botToken(env);
+  const enabled = !!token;
   const stats = {
     pushEnabled: enabled,
     botKvBound: !!(env && env.BOT_KV),
+    noTokenReason: enabled ? null : (env && env.BOT_TOKEN ? 'empty' : 'missing'),
+    tokenValid: null,
+    tokenUsername: null,
     pushesLast24h: null,
+    pushLogsOpen: null,
     subscriberCount: null,
+    subscribers: [],
+    lastAttempt: null,
   };
-  if (!env || !env.SIGNAL_CACHE) return stats;
+  if (!env || !env.SIGNAL_CACHE) {
+    if (env && env.BOT_KV) {
+      try {
+        const autoUsers = await env.BOT_KV.get('auto_users', 'json');
+        const ids = normalizeAutoUsers(autoUsers);
+        stats.subscriberCount = ids.length;
+        stats.subscribers = await getSubscriberSnapshot(env);
+      } catch (e) { /* leave null */ }
+    }
+    return stats;
+  }
 
   try {
     const list = await env.SIGNAL_CACHE.list({ prefix: PUSH_LOG_PREFIX });
-    stats.pushesLast24h = ((list && list.keys) || []).length;
+    stats.pushLogsOpen = ((list && list.keys) || []).length;
+  } catch (e) { /* leave null */ }
+
+  try {
+    const arr = await env.SIGNAL_CACHE.get(DELIVERED_24H_KEY, 'json');
+    if (Array.isArray(arr)) {
+      const now = Date.now();
+      stats.pushesLast24h = arr.filter(x => x && x.at && (now - new Date(x.at).getTime()) < 24 * 3600 * 1000)
+        .reduce((n, x) => n + (x.n || 1), 0);
+    } else {
+      stats.pushesLast24h = stats.pushLogsOpen;
+    }
+  } catch (e) {
+    stats.pushesLast24h = stats.pushLogsOpen;
+  }
+
+  try {
+    stats.lastAttempt = await env.SIGNAL_CACHE.get(LAST_ATTEMPT_KEY, 'json');
   } catch (e) { /* leave null */ }
 
   if (env.BOT_KV) {
     try {
       const autoUsers = await env.BOT_KV.get('auto_users', 'json');
-      stats.subscriberCount = Array.isArray(autoUsers) ? autoUsers.length : 0;
+      const ids = normalizeAutoUsers(autoUsers);
+      stats.subscriberCount = ids.length;
+      stats.subscribers = await getSubscriberSnapshot(env);
     } catch (e) { /* leave null */ }
   }
+
+  if (opts.validateToken && enabled) {
+    const probe = await validateBotToken(env);
+    stats.tokenValid = !!probe.ok;
+    stats.tokenUsername = probe.username || null;
+    if (!probe.ok) stats.noTokenReason = probe.reason || 'invalid';
+  }
+
   return stats;
 }
 
 export const __pushTest = {
-  normPair, confPct, claimPushLock,
+  normPair, confPct, claimPushLock, releasePushLock, lockKey,
+  recordPushAttempt, recordDelivery, botToken,
   PUSH_LOG_PREFIX, PUSH_LOCK_PREFIX, PUSH_LOCK_TTL_S, PUSH_LOG_TTL_S,
+  LAST_ATTEMPT_KEY, DELIVERED_24H_KEY, TOKEN_CHECK_KEY,
 };
