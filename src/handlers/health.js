@@ -61,6 +61,10 @@ export async function handleHealth(env) {
       tokenUsername: phase10 ? phase10.tokenUsername : null,
       lastAttempt: phase10 ? phase10.lastAttempt : null,
       subscribers: phase10 ? phase10.subscribers : [],
+      // Durable 24h delivery counter (KV push:delivered24h). Result-push
+      // deletes pushLog:<id>, so this — not pushLogsOpen — is the number that
+      // must increment when a Telegram DM actually lands.
+      delivered24h: phase10 ? phase10.pushesLast24h : null,
     },
     history: {
       enabled: !!env.SIGNAL_CACHE, maxPerPair: HISTORY_CONFIG.MAX_SIGNALS_PER_PAIR,
