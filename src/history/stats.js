@@ -347,7 +347,7 @@ export async function scheduledTracker(env) {
 
         const exitPrice = fetchResult ? fetchResult.price : null;
         // Bugfix round 1 (BUG-008): exit == entry is a TIE, not a LOSS.
-        const winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
+        let winLoss = classifyOutcome(record.direction, record.entryPrice, exitPrice);
 
         // ── Entry-hit shadow (FIX-EH): a meaningful re-test requires an
         // INSTANT entry to be left in the signal's favour before price returns.
@@ -390,6 +390,22 @@ export async function scheduledTracker(env) {
         } else {
           record.entryHit = null;
           record.entryHitLegacy = null;
+        }
+
+        // ── FILL-CORRECTNESS (Phase F review 2026-08-14) ───────────────────
+        // A PENDING_ENTRY signal whose entry was never touched during
+        // [signal → expiry] (entryHit === false) was never actually filled, so
+        // grading it WIN/LOSS against the entry price is a mechanical artifact:
+        // an unfilled favourable limit (BUY entry below market / SELL entry
+        // above market) that the market never revisits is "in the money" by
+        // construction and always resolves WIN. Verified live: PENDING_ENTRY +
+        // entryHit=false = 100% WIN (n=43) before this fix. Reclassify as TIE
+        // so the row is stored but excluded from WR stats and result pushes
+        // (the existing TIE/UNKNOWN path). INSTANT rows are unaffected, and
+        // cbShadow rows keep their counterfactual WIN/LOSS resolution — D2
+        // shadow instrumentation semantics are deliberately unchanged.
+        if (!record.cbShadow && record.fillStatus === 'PENDING_ENTRY' && record.entryHit === false) {
+          winLoss = 'TIE';
         }
 
         await updateSignalResult(record, winLoss, exitPrice, env);

@@ -1817,13 +1817,75 @@ console.log('\n── T43: push lock released on Telegram fail + health status �
   ok('T43h: scheduled */5 awaits scheduledScan (does not wrap-and-return)',
     idx.includes('await scheduledScan(env, ctx)') && !idx.includes('ctx.waitUntil(scheduledScan'));
 
-  // Reviewer R1/R2: /health must carry version 6.10.1 and a push object whose
+  // Reviewer R1/R2: /health must carry version 6.10.2 and a push object whose
   // delivered24h field is the durable counter (not the deletable pushLog keys).
   const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
   ok('T43i: /health push block exposes durable delivered24h at top level',
     hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
-  ok('T43j: /health version bumped to 6.10.1',
-    hh.includes("version: '6.10.1'"));
+  ok('T43j: /health version bumped to 6.10.2',
+    hh.includes("version: '6.10.2'"));
+}
+
+console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Phase F 2026-08-14) ──');
+{
+  // Fixture helpers: build a pending record + history row and a fetch stub whose
+  // expiry candle sits on the favourable side of the entry (never touched).
+  const mkRow = (id, fillStatus, entryPrice, extra = {}) => ({
+    id, pair: 'BTC/USD', isOTC: false, direction: 'BUY',
+    entryPrice, expiryTime: new Date(Date.now() - 10 * 60000).toISOString(),
+    timestamp: new Date(Date.now() - 30 * 60000).toISOString(),
+    fillStatus, result: null, exitPrice: null, ...extra,
+  });
+
+  const run = async (record) => {
+    const expMin = new Date(record.expiryTime).toISOString().slice(0, 19).replace('T', ' ');
+    const kv = makeKV({
+      ['pending:' + record.id]: record,
+      ['sig:BTC_USD']: [record],
+    });
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+      values: [{ datetime: expMin, open: '100.5', high: '101.5', low: '100.5', close: '101' }],
+    }), text: async () => '' });
+    await scheduledTracker({ SIGNAL_CACHE: kv, TWELVEDATA_API_KEYS: '["k1"]' });
+    return kv;
+  };
+
+  // (a) PENDING_ENTRY + entry never touched (low 100.5 > entry 100) -> TIE, no stats.
+  {
+    const kv = await run(mkRow('sig_fill_a', 'PENDING_ENTRY', 100));
+    const row = (await kv.get('sig:BTC_USD', 'json'))[0];
+    eq('T44a: unfilled PENDING_ENTRY resolves TIE (not mechanical WIN)', row.result, 'TIE');
+    ok('T44a: entryHit recorded false (evidence of never-filled)', row.entryHit === false);
+    ok('T44a: TIE excluded from pair stats', kv._m.get('stats:BTC_USD') === undefined);
+  }
+
+  // (b) PENDING_ENTRY + entry touched (low below entry) -> still WIN/LOSS.
+  {
+    const rec = mkRow('sig_fill_b', 'PENDING_ENTRY', 100);
+    const expMin = new Date(rec.expiryTime).toISOString().slice(0, 19).replace('T', ' ');
+    const kv = makeKV({ 'pending:sig_fill_b': rec, 'sig:BTC_USD': [rec] });
+    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({
+      values: [{ datetime: expMin, open: '99.4', high: '100.4', low: '99.4', close: '101' }],
+    }), text: async () => '' });
+    await scheduledTracker({ SIGNAL_CACHE: kv, TWELVEDATA_API_KEYS: '["k1"]' });
+    const row = (await kv.get('sig:BTC_USD', 'json'))[0];
+    eq('T44b: filled PENDING_ENTRY still graded WIN', row.result, 'WIN');
+    ok('T44b: entryHit recorded true', row.entryHit === true);
+  }
+
+  // (c) INSTANT + no re-test return -> still WIN/LOSS (fix is PENDING_ENTRY-only).
+  {
+    const kv = await run(mkRow('sig_fill_c', 'INSTANT', 100));
+    const row = (await kv.get('sig:BTC_USD', 'json'))[0];
+    eq('T44c: INSTANT resolution untouched (still WIN)', row.result, 'WIN');
+  }
+
+  // (d) cbShadow row keeps its counterfactual WIN/LOSS resolution.
+  {
+    const kv = await run(mkRow('sig_fill_d', 'PENDING_ENTRY', 100, { cbShadow: true }));
+    const row = (await kv.get('sig:BTC_USD', 'json'))[0];
+    eq('T44d: cbShadow PENDING_ENTRY keeps counterfactual WIN', row.result, 'WIN');
+  }
 }
 
 console.log('\n───────────────────────────────────────────────────────────');
