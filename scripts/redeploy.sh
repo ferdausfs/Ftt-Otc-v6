@@ -45,7 +45,7 @@
 #   META            default $HOME/wmeta.json
 #   EXPECTED_BYTES  if set, bundle size must match exactly (v6.10.2 bundle
 #                   rebuild after merge; set to its exact byte size)
-#   CRONS           comma list, default "*/2 * * * *,*/5 * * * *,0 0 * * * 1"
+#   CRONS           comma list, default "*/2 * * * *,*/5 * * * *,0 0 * * 1"
 #   HEALTH_URL      default https://fttotcv6.umuhammadiswa.workers.dev/health
 #   SKIP_HEALTH=1   skip the post-deploy /health verification
 # Flags:
@@ -56,7 +56,7 @@ set -u -o pipefail
 SCRIPT_NAME="${SCRIPT_NAME:-fttotcv6}"
 META="${META:-$HOME/wmeta.json}"
 EXPECTED_BYTES="${EXPECTED_BYTES:-}"
-CRONS="${CRONS:-*/2 * * * *,*/5 * * * *,0 0 * * * 1}"
+CRONS="${CRONS:-*/2 * * * *,*/5 * * * *,0 0 * * 1}"
 HEALTH_URL="${HEALTH_URL:-https://fttotcv6.umuhammadiswa.workers.dev/health}"
 API="${CF_API_BASE:-https://api.cloudflare.com/client/v4}"   # overridable for tests
 FIX_METADATA=0
