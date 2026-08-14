@@ -44,7 +44,7 @@
 #   SCRIPT_NAME     default fttotcv6
 #   META            default $HOME/wmeta.json
 #   EXPECTED_BYTES  if set, bundle size must match exactly (v6.10.1 bundle
-#                   worker-v6101-20260812.js = 322007 bytes)
+#                   worker-v6101-20260812.js = 322283 bytes)
 #   CRONS           comma list, default "*/2 * * * *,*/5 * * * *,0 0 * * * 1"
 #   HEALTH_URL      default https://fttotcv6.umuhammadiswa.workers.dev/health
 #   SKIP_HEALTH=1   skip the post-deploy /health verification
@@ -233,7 +233,7 @@ cf_call PUT "$API/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$SCRIPT_NAME" 
 # ── 2) Cron triggers (separate endpoint — NOT part of the upload payload) ──
 say ""
 say "Setting cron triggers on $SCRIPT_NAME ..."
-SCHED="$(python3 -c 'import sys,json; print(json.dumps({"schedules":[{"cron":c.strip()} for c in sys.argv[1].split(",") if c.strip()]}))' "$CRONS")"
+SCHED="$(python3 -c 'import sys,json; print(json.dumps([{"cron":c.strip()} for c in sys.argv[1].split(",") if c.strip()]))' "$CRONS")"
 say "  schedules = $SCHED"
 cf_call PUT "$API/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$SCRIPT_NAME/schedules" --data-json "$SCHED" \
   || die "schedule update failed — see raw response above"
