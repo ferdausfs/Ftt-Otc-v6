@@ -43,7 +43,7 @@
 # Env overrides:
 #   SCRIPT_NAME     default fttotcv6
 #   META            default $HOME/wmeta.json
-#   EXPECTED_BYTES  if set, bundle size must match exactly (v6.10.2 bundle
+#   EXPECTED_BYTES  if set, bundle size must match exactly (v6.10.3 bundle
 #                   rebuild after merge; set to its exact byte size)
 #   CRONS           comma list, default "*/2 * * * *,*/5 * * * *,0 0 * * 1"
 #   HEALTH_URL      default https://fttotcv6.umuhammadiswa.workers.dev/health
@@ -160,15 +160,15 @@ print("  push.noTokenReason =", p.get("noTokenReason"))
 print("  push.subscribers   =", len(p.get("subscribers") or []), "subscriber(s)")
 print("  push.lastAttempt   =", json.dumps(p.get("lastAttempt"))[:300])
 print("  push.delivered24h  =", p.get("delivered24h"))
-if str(d.get("version")) != "6.10.2":
-    print("  ✗ version is not 6.10.2 — deploy did not take effect (or this is the old script).")
+if str(d.get("version")) != "6.10.3":
+    print("  ✗ version is not 6.10.3 — deploy did not take effect (or this is the old script).")
     sys.exit(2)
 if p.get("enabled") and p.get("tokenValid") is False:
     print("  ✗ BOT_TOKEN on fttotcv6 is NOT a valid live bot token.")
     print("    Fix: wrangler secret put BOT_TOKEN --name fttotcv6")
     print("    (use the SAME value the ftt-telegram-bot worker uses; then re-check /health)")
     sys.exit(3)
-print("  ✓ live worker is 6.10.2 with push diagnostics visible (R1)")
+print("  ✓ live worker is 6.10.3 with push diagnostics visible (R1)")
 PY
   local rc=$?
   rm -f "$hbody"

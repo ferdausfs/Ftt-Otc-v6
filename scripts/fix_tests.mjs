@@ -58,6 +58,7 @@ import { buildMultiTimeframeSignal } from '../src/signal/engine.js';
 import { buildMultiTimeframeSignalOTC } from '../src/signal/otcEngine.js';
 import { analyzeOTCPatterns } from '../src/analysis/otc.js';
 import { getSignalGrade } from '../src/analysis/grade.js';
+import { getCalibratedGradeAndConfidence, getCalibratedScore } from '../src/analysis/calibration.js';
 import { analyzeStructure } from '../src/indicators/structure.js';
 import { runDeterministicVoteAndFilters, decideTfDirection } from '../src/signal/voteFilters.js';
 import { getSessionWeightMultiplier } from '../src/analysis/filters.js';
@@ -1817,13 +1818,13 @@ console.log('\n── T43: push lock released on Telegram fail + health status �
   ok('T43h: scheduled */5 awaits scheduledScan (does not wrap-and-return)',
     idx.includes('await scheduledScan(env, ctx)') && !idx.includes('ctx.waitUntil(scheduledScan'));
 
-  // Reviewer R1/R2: /health must carry version 6.10.2 and a push object whose
+  // Reviewer R1/R2: /health must carry version 6.10.3 and a push object whose
   // delivered24h field is the durable counter (not the deletable pushLog keys).
   const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
   ok('T43i: /health push block exposes durable delivered24h at top level',
     hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
-  ok('T43j: /health version bumped to 6.10.2',
-    hh.includes("version: '6.10.2'"));
+  ok('T43j: /health version bumped to 6.10.3',
+    hh.includes("version: '6.10.3'"));
 }
 
 console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Phase F 2026-08-14) ──');
@@ -1886,6 +1887,48 @@ console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Ph
     const row = (await kv.get('sig:BTC_USD', 'json'))[0];
     eq('T44d: cbShadow PENDING_ENTRY keeps counterfactual WIN', row.result, 'WIN');
   }
+}
+
+console.log('\n── T45: regime-conditional calibration + RANGING/ALIGNED block (Phase F 2026-08-15) ──');
+{
+  // Regime-conditional structWR: RANGING mean-reversion vs TRENDING trend-following.
+  const conf88 = 88; // bucket '88+' → confBucketWR 0.4469…
+
+  const rangingAligned = getCalibratedGradeAndConfidence(conf88, 'ALIGNED', 'RANGING');
+  eq('T45a: RANGING + ALIGNED capped to C (worst cell 41.2%)', rangingAligned.grade.grade, 'C');
+
+  const trendingAligned = getCalibratedGradeAndConfidence(conf88, 'ALIGNED', 'TRENDING');
+  ok('T45b: TRENDING + ALIGNED NOT capped (best cell 51.4%)',
+    ['A+', 'A'].includes(trendingAligned.grade.grade), JSON.stringify(trendingAligned.grade.grade));
+
+  const rangingAgainst = getCalibratedGradeAndConfidence(conf88, 'AGAINST', 'RANGING');
+  eq('T45c: RANGING + AGAINST not capped (best 50.1%)', rangingAgainst.grade.grade, 'A+');
+
+  const sAligned = getCalibratedScore(conf88, 'ALIGNED', 'RANGING');
+  const sAgainst = getCalibratedScore(conf88, 'AGAINST', 'RANGING');
+  ok('T45d: RANGING AGAINST scores above ALIGNED (ranking corrected)',
+    sAgainst > sAligned, `against=${sAgainst} aligned=${sAligned}`);
+
+  const sTrendAligned = getCalibratedScore(conf88, 'ALIGNED', 'TRENDING');
+  ok('T45e: TRENDING ALIGNED scores above RANGING ALIGNED (regime-aware)',
+    sTrendAligned > sAligned, `trending=${sTrendAligned} ranging=${sAligned}`);
+
+  // No-regime callers (OTC / legacy) still work via pooled table.
+  const noRegime = getCalibratedGradeAndConfidence(conf88, 'ALIGNED');
+  eq('T45f: no-regime call falls back to pooled cap (ALIGNED→C)', noRegime.grade.grade, 'C');
+
+  // getSignalGrade passes regime through.
+  const gs = getSignalGrade(conf88, 0, '', 'ALIGNED', 'RANGING');
+  eq('T45g: getSignalGrade is regime-aware (RANGING ALIGNED→C)', gs.grade, 'C');
+
+  // Engine wiring: the new hard block + regime-aware calibration call exist.
+  const eng = fs.readFileSync(fileURLToPath(new URL('../src/signal/engine.js', import.meta.url)), 'utf8');
+  ok('T45h: engine has D2_RANGING_ALIGNED_BLOCK hard block',
+    eng.includes('D2_RANGING_ALIGNED_BLOCK (41.2% WR n=1639)') && eng.includes('buildStructureVerdict(tfResults, finalDirection).overall === \'ALIGNED\''));
+  ok('T45i: engine passes marketRegime into calibrated grade/confidence',
+    eng.includes('getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, marketRegime, activeCalib)'));
+  const cfg = fs.readFileSync(fileURLToPath(new URL('../src/config.js', import.meta.url)), 'utf8');
+  ok('T45j: D2_RANGING_ALIGNED_BLOCK_ENABLED flag present', cfg.includes('D2_RANGING_ALIGNED_BLOCK_ENABLED: true'));
 }
 
 console.log('\n───────────────────────────────────────────────────────────');

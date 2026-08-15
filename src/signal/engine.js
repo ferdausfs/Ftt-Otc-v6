@@ -182,6 +182,14 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_TRENDING_BLOCK (29.5% WR n=356)');
       d2Audit = { attribution: 'D2_TRENDING_BLOCKED' };
+    } else if (CONFIG.D2_RANGING_ALIGNED_BLOCK_ENABLED && marketRegime === 'RANGING' &&
+               buildStructureVerdict(tfResults, finalDirection).overall === 'ALIGNED') {
+      // Phase F 2026-08-15: RANGING + ALIGNED is the single biggest losing cell
+      // (41.2% WR n=1639, CI 38.9-43.6) — structure confirmation is inverted in
+      // ranging (mean-reversion), so an "aligned" setup is the worst in that regime.
+      finalDirection = 'NO_TRADE'; confidence = 0;
+      filtersApplied.push('D2_RANGING_ALIGNED_BLOCK (41.2% WR n=1639)');
+      d2Audit = { attribution: 'D2_RANGING_ALIGNED_BLOCKED' };
     } else if (CONFIG.D2_BAD_PAIR_BLOCK_ENABLED && ['USD/JPY', 'AUD/USD', 'DOT/USD'].includes(pair)) {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_BAD_PAIR_BLOCK (' + pair + ' <20% WR)');
@@ -375,7 +383,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   let calibratedConfForReport = confidence;
   let calibratedScoreForTrace = null;
   if (finalDirection !== 'NO_TRADE') {
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, activeCalib);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, marketRegime, activeCalib);
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;
   }
@@ -389,7 +397,7 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   } else {
     // getSignalGrade now itself uses calibrated scoring, but we also have calibrated
     // confidence from above. Use the calibrated grade directly to ensure consistency.
-    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, activeCalib);
+    const cal = getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, marketRegime, activeCalib);
     finalGrade = cal.grade;
     calibratedConfForReport = cal.calibratedConfidence;
     calibratedScoreForTrace = cal.score;

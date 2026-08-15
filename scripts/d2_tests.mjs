@@ -217,13 +217,26 @@ console.log('\n── [#9-10] Engine — TRENDING block audit + zero leak ──
   ok('[#9h] NO leak of would-be direction in public JSON',
     !json.includes('wouldBeDirection') && !json.includes('D2_TRENDING_BLOCKED'));
 
-  // non-D2 fixtures: no audit, no D2 filter
+  // Flat (RANGING) fixtures: only the NEW 2026-08-15 D2 branch may fire here.
+  // RANGING + structure-ALIGNED is now a hard block (41.2% WR n=1639, the
+  // single biggest losing cell). These fixtures are RANGING by construction,
+  // so an ALIGNED one correctly hits D2_RANGING_ALIGNED_BLOCK instead of
+  // passing clean; no OTHER D2 branch (TRENDING/BAD_PAIR/HIGHEST) may fire.
   for (const [name, prof] of [['flat', RANGING],
                                ['flat_v2', { basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 }]]) {
     const s = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(prof), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
-    ok('[#10] ' + name + ': no D2 audit + no D2_ filter',
-      getD2Audit(s) === null && !s.filtersApplied.some(f => f.startsWith('D2_')),
+    const d2 = s.filtersApplied.filter(f => f.startsWith('D2_'));
+    ok('[#10] ' + name + ': only allowed D2 branch is RANGING_ALIGNED',
+      d2.every(f => f.includes('D2_RANGING_ALIGNED_BLOCK')),
       'filters=' + JSON.stringify(s.filtersApplied));
+    if (d2.length === 0) {
+      ok('[#10] ' + name + ': no D2 audit', getD2Audit(s) === null);
+    } else {
+      const audit = getD2Audit(s);
+      ok('[#10] ' + name + ': D2 audit matches RANGING_ALIGNED block',
+        !!audit && audit.attribution === 'D2_RANGING_ALIGNED_BLOCKED',
+        JSON.stringify(audit && audit.attribution));
+    }
   }
 }
 
