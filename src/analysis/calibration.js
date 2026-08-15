@@ -55,6 +55,28 @@ export const CALIB = {
     UNKNOWN: 0.4175257731958763,
   },
 
+  // REGIME-CONDITIONAL structure WR (2026-08-15, Phase F forward 08-01..15).
+  // The pooled structWR above bakes in a RANGING bias (RANGING is ~75% of the
+  // window and in RANGING the structure verdict is INVERTED: ALIGNED 41.2% is
+  // the worst cell, AGAINST 50.1% the best — mean-reversion). In TRENDING the
+  // verdict flips back (ALIGNED 51.4% best). A single pooled table therefore
+  // mis-ranks trending signals. Cells with n < 50 are omitted → getStructWR
+  // falls back to the pooled table for them (no invented numbers).
+  // Source: reports/SCORING_INVERSION_AUDIT_2026-08-15.md.
+  structWRByRegime: {
+    RANGING: {
+      ALIGNED: 0.412,    // n=1639  CI 38.9-43.6
+      AGAINST: 0.501,    // n=752   CI 46.6-53.7
+      MIXED: 0.443,      // n=1247  CI 41.5-47.0
+      NEUTRAL: 0.422,    // n=135   CI 34.2-50.7
+    },
+    TRENDING: {
+      ALIGNED: 0.514,    // n=245   CI 45.2-57.6
+      MIXED: 0.420,      // n=100   CI 32.8-51.8
+      // AGAINST/NEUTRAL n<50 → fall back to pooled (no invented cells)
+    },
+  },
+
   // raw confidence bucket WR TRAIN
   confBucketWR: {
     '72-75': 0.4164904862579281,
@@ -116,7 +138,13 @@ function getConfBucket(confidence) {
   return '88+';
 }
 
-function getStructWR(overall, tables) {
+function getStructWR(overall, regime, tables) {
+  // Regime-conditional table first (n>=50 cells only), then any dynamic tables,
+  // then the pooled static table. Regime is optional (OTC / older callers).
+  if (regime && CALIB.structWRByRegime[regime]) {
+    const v = CALIB.structWRByRegime[regime][overall];
+    if (typeof v === 'number') return v;
+  }
   if (!overall) return (tables && tables.base) || CALIB.base;
   const v = (tables && tables.structWR && tables.structWR[overall]);
   if (typeof v === 'number') return v;
@@ -140,9 +168,9 @@ function getConfBucketWR(bucket, tables) {
  * CALIB values (TRAIN 08-01..06) are used — the refresh is a data change,
  * never a second calibration layer (R3).
  */
-export function getCalibratedScore(confidence, structureOverall, tables = null) {
+export function getCalibratedScore(confidence, structureOverall, regime = null, tables = null) {
   const bucket = getConfBucket(confidence);
-  const sWR = getStructWR(structureOverall, tables);
+  const sWR = getStructWR(structureOverall, regime, tables);
   const cWR = getConfBucketWR(bucket, tables);
   // simple average — stable, interpretable, evidence-backed
   // (could weight, but equal weight worked for TRAIN/VAL monotonic)
@@ -177,16 +205,18 @@ const GRADE_DEFS = {
   'F':  { grade: 'F',  label: 'AVOID',     description:'Very weak. Do NOT trade.' },
 };
 
-export function getCalibratedGradeAndConfidence(confidence, structureOverall, tables = null) {
-  const score = getCalibratedScore(confidence, structureOverall, tables);
+export function getCalibratedGradeAndConfidence(confidence, structureOverall, regime = null, tables = null) {
+  const score = getCalibratedScore(confidence, structureOverall, regime, tables);
   const calConf = scoreToCalibratedConfidence(score);
   const gradeLetter = scoreToGrade(score);
   const grade = { ...GRADE_DEFS[gradeLetter] };
 
-  // ── STRUCTURE OVERRIDE (evidence-based inversion) ──
-  // Previously capped AGAINST to C (but AGAINST has best WR 46.6% TRAIN).
-  // Now cap ALIGNED (worst 39.3%) to C, MIXED to B, AGAINST/NEUTRAL no cap.
-  // This keeps a cap mechanism (FIX-A stays) but corrects inversion.
+  // ── STRUCTURE OVERRIDE (evidence-based inversion, now REGIME-AWARE) ──
+  // RANGING (mean-reversion): ALIGNED is the WORST cell (41.2%) → cap C;
+  // MIXED 44.3% → cap B; AGAINST is the BEST (50.1%) → no cap.
+  // TRENDING (trend-following): ALIGNED is the BEST (51.4%) → NO cap
+  // (the old pooled cap wrongly crushed good trending signals); MIXED 42.0%
+  // → cap B. Other regimes keep the pooled behaviour (ALIGNED→C, MIXED→B).
   const order = ['F','D','C','B','A','A+'];
   const cap = (g, maxGrade) => {
     const gi = order.indexOf(g.grade);
@@ -199,12 +229,18 @@ export function getCalibratedGradeAndConfidence(confidence, structureOverall, ta
   };
 
   let finalGrade = grade;
-  if (structureOverall === 'ALIGNED') {
-    finalGrade = cap(finalGrade, 'C'); // ALIGNED worst 39.3% → max C
-  } else if (structureOverall === 'MIXED') {
-    finalGrade = cap(finalGrade, 'B'); // MIXED middle 42.1% → max B
+  if (regime === 'TRENDING') {
+    // Trend-following: ALIGNED confirms the trend and wins (51.4%) — do not cap.
+    if (structureOverall === 'MIXED') finalGrade = cap(finalGrade, 'B');
+  } else {
+    // RANGING (and any other / unknown regime): mean-reversion behaviour.
+    if (structureOverall === 'ALIGNED') {
+      finalGrade = cap(finalGrade, 'C'); // ALIGNED worst in RANGING 41.2% → max C
+    } else if (structureOverall === 'MIXED') {
+      finalGrade = cap(finalGrade, 'B'); // MIXED middle 44.3% → max B
+    }
+    // AGAINST and NEUTRAL best in RANGING → no cap, allow A+
   }
-  // AGAINST and NEUTRAL best → no cap, allow A+
 
   return {
     score,

@@ -10,15 +10,15 @@ const GRADE_DEFS = CALIB_GRADE_DEFS;
  * avgConf and alignment are kept in signature for compat but not used for scoring
  * (they were found to be non-predictive / inverted vs WR). StructureOverall is used.
  */
-export function getSignalGrade(confidence, avgConf, alignment, structureOverall) {
-  // Use calibrated scoring
-  const cal = getCalibratedGradeAndConfidence(confidence, structureOverall);
+export function getSignalGrade(confidence, avgConf, alignment, structureOverall, regime) {
+  // Use calibrated scoring (regime-conditional when the caller provides regime)
+  const cal = getCalibratedGradeAndConfidence(confidence, structureOverall, regime);
   return cal.grade;
 }
 
 // Expose helper for engine to get both calibrated confidence and grade in one call
-export function getCalibratedGradeAndConfidenceWrapper(confidence, structureOverall) {
-  return getCalibratedGradeAndConfidence(confidence, structureOverall);
+export function getCalibratedGradeAndConfidenceWrapper(confidence, structureOverall, regime) {
+  return getCalibratedGradeAndConfidence(confidence, structureOverall, regime);
 }
 
 export function resolveTieWithTolerance(details) {

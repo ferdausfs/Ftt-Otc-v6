@@ -144,6 +144,15 @@ export const CONFIG = {
   // behind this flag for a one-line re-enable after the window.
   D2_BAD_PAIR_BLOCK_ENABLED: false,
 
+  // Phase F (2026-08-15): RANGING + ALIGNED structure is the single biggest
+  // losing cell in the forward window (41.2% WR, n=1639, CI 38.9–43.6 — the CI
+  // upper bound is decisively below breakeven 55.6%). Blocking it (same D2 hard
+  // block mechanism as TRENDING) removes ~39% of signals but lifts pooled WR
+  // ~44.3% → ~46.3% (post-calibration era ~48.5% → ~50.4%). Data-backed;
+  // evidence: reports/SCORING_INVERSION_AUDIT_2026-08-15.md. Flagged for a
+  // one-line rollback (set false) without a redeploy of the branch logic.
+  D2_RANGING_ALIGNED_BLOCK_ENABLED: true,
+
   // Phase F (2026-08-04): Forex SELL probe instrumentation. Tracks every
   // forex SELL with its signal-time context (regime/session/HTF/RSI) in a
   // private KV namespace so the forward window can decide whether forex SELL
