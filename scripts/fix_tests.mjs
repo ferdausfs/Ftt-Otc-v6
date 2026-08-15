@@ -50,7 +50,7 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { classifyOutcome, fetchExpiryPrice, scheduledTracker, saveSignalToHistory, updatePairStats, getDynamicConfidenceAdjustment } from '../src/history/stats.js';
-import { passAI, passGrade, pushSignalToSubscribers } from '../src/handlers/pushToSubscribers.js';
+import { passAI, passGrade, pushSignalToSubscribers, getMatchingSubscribers } from '../src/handlers/pushToSubscribers.js';
 import { handleReport, handleHistory } from '../src/handlers/health.js';
 import { handleSignalRaw, handleSignal } from '../src/handlers/signal.js';
 import { __scanTest } from '../src/handlers/scheduledScan.js';
@@ -1929,6 +1929,42 @@ console.log('\n── T45: regime-conditional calibration + RANGING/ALIGNED bloc
     eng.includes('getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, marketRegime, activeCalib)'));
   const cfg = fs.readFileSync(fileURLToPath(new URL('../src/config.js', import.meta.url)), 'utf8');
   ok('T45j: D2_RANGING_ALIGNED_BLOCK_ENABLED flag present', cfg.includes('D2_RANGING_ALIGNED_BLOCK_ENABLED: true'));
+}
+
+console.log('\n── T46: Watch-ALL mode — pair/watchlist gate bypassed, other gates kept (v4.5.1) ──');
+{
+  const sigOf = (p) => ({
+    id: 'sig_t46', pair: p,
+    signal: { finalSignal: 'BUY', confidence: '85%', grade: { grade: 'A', label: 'STRONG' } },
+  });
+  const mk = (user) => {
+    const seed = { 'u:111': user, auto_users: ['111'] };
+    return { BOT_KV: makeKV(seed), SIGNAL_CACHE: makeKV() };
+  };
+
+  // (a) no watchAll, ETH/USD not watched -> no match
+  {
+    const env = mk({ pair: 'BTCUSD', watchlist: [], autoEnabled: true, gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false });
+    const m = await getMatchingSubscribers(sigOf('ETH/USD'), env);
+    eq('T46a: without watchAll, unwatched pair -> no match', m.length, 0);
+  }
+
+  // (b) watchAll: true -> matches ANY pair
+  {
+    const env = mk({ pair: 'BTCUSD', watchlist: [], autoEnabled: true, gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false, watchAll: true });
+    const m = await getMatchingSubscribers(sigOf('ETH/USD'), env);
+    eq('T46b: watchAll=true matches unwatched pair', m.length, 1);
+    eq('T46b: matched chatId correct', m[0].chatId, '111');
+  }
+
+  // (c) watchAll does NOT bypass autoEnabled or grade gate
+  {
+    const envOff = mk({ pair: 'BTCUSD', watchlist: [], autoEnabled: false, gradeFilter: 'ALL', minConfidence: 0, aiOnlyMode: false, watchAll: true });
+    eq('T46c: watchAll does NOT bypass autoEnabled', (await getMatchingSubscribers(sigOf('ETH/USD'), envOff)).length, 0);
+    const envG = mk({ pair: 'BTCUSD', watchlist: [], autoEnabled: true, gradeFilter: 'A', minConfidence: 0, aiOnlyMode: false, watchAll: true });
+    const sigC = { id: 'sig_t46c', pair: 'ETH/USD', signal: { finalSignal: 'BUY', confidence: '85%', grade: { grade: 'C', label: 'MODERATE' } } };
+    eq('T46c: watchAll does NOT bypass gradeFilter', (await getMatchingSubscribers(sigC, envG)).length, 0);
+  }
 }
 
 console.log('\n───────────────────────────────────────────────────────────');
