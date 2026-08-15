@@ -228,7 +228,11 @@ export async function getMatchingSubscribers(signal, env, diag = null) {
       const watched = [user.pair, ...(Array.isArray(user.watchlist) ? user.watchlist : [])]
         .filter(Boolean)
         .map(normPair);
-      if (!watched.includes(want)) {
+      // [v4.5.1] "Watch ALL" — user opted into every emitted signal, so the
+      // pair/watchlist gate is bypassed (the other gates — autoEnabled,
+      // confidence, grade, AI — still apply).
+      const watchAll = user.watchAll === true || user.watchAll === 1 || user.watchAll === 'true';
+      if (!watchAll && !watched.includes(want)) {
         if (diag) diag.skips.push({
           chatId: String(cid), reason: 'pair-not-watched',
           want, pair: user.pair || null,
