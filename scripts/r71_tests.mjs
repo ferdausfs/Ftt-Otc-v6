@@ -71,7 +71,7 @@ const ENV = {}; // deterministic: no AI keys, no SIGNAL_CACHE
 // to the approved tip ec6ed65 via the F3-20 mechanism (justification in the
 // PR: "r71 baseline refresh — divergence redaction update with
 // justification"). The guard now protects the edge-feature engine.
-const BASELINE_COMMIT = 'ec6ed65'; // Phase F round 2: approved engine tip (was e56cd33)
+const BASELINE_COMMIT = 'eef483c93d45bbb10e349ea9b6622e5e63f87d88'; // Phase F round 2: approved engine tip (was e56cd33)
 function bootstrapBaseline() {
   // The verify/baseline tree is gitignored and regenerated on demand. A marker
   // file records which commit it was built from, so changing BASELINE_COMMIT
