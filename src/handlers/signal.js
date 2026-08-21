@@ -8,6 +8,7 @@ import { buildMultiTimeframeSignalOTC } from '../signal/otcEngine.js';
 import { saveSignalToHistory } from '../history/stats.js';
 import { isTripped } from '../history/circuitBreaker.js';
 import { pushSignalToSubscribers } from './pushToSubscribers.js';
+import { evaluateSelectivityGate } from '../analysis/selectivity.js';
 import { detectCorrelationConflicts } from '../analysis/filters.js';
 import { readLatest, writeLatest, enrichAge, isStale } from '../history/latestCache.js';
 import {
@@ -96,7 +97,17 @@ async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, resp
     // Bugfix round 1 (BUG-001): `noPush` must come from the request options —
     // previously referenced an out-of-scope variable -> ReferenceError on every
     // signal, which killed ALL Telegram pushes silently.
-    if (!noPush) await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+    if (!noPush) {
+      // SELECTIVITY GATE (2026-08-21): announce only evidence-backed quality
+      // setups. History is already saved above, so research stays complete;
+      // this only silences the Telegram push for filtered signals.
+      const gate = evaluateSelectivityGate(signal, pair, isOTC ? ASSET_TYPE_OTC : getAssetType(pair));
+      if (gate.blocked) {
+        console.log('selectivityGate: push suppressed for ' + pair + ' — ' + gate.reason);
+      } else {
+        await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+      }
+    }
   } catch (e) {
     console.warn('saveAndPush: push failed for ' + pair + ': ' + e.message);
   }

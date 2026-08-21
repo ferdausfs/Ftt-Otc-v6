@@ -158,6 +158,23 @@ export const CONFIG = {
   // private KV namespace so the forward window can decide whether forex SELL
   // is systematically wrong — WITHOUT changing production behavior.
   FOREX_SELL_PROBE_ENABLED: true,
+
+  // ── SELECTIVITY GATE (2026-08-21) ──────────────────────────
+  // Quality-over-quantity Telegram push filter (evidence-backed, Phase F
+  // forward data ~6.3k decided). Controls ONLY the push; history + /api
+  // responses still record/return everything (see analysis/selectivity.js).
+  //   PENDING_ENTRY (entryDist>=0.05%): 57.9% WR (n=178)  vs INSTANT 46.9%
+  //   ATR pctile < 50:                   53.6% WR (n=289)
+  //   FOREX:                              34.0% WR (n=949)  vs CRYPTO 45.2%
+  //   TRENDING:                           38.8% WR (n=798)
+  SELECTIVITY_GATE: {
+    enabled: true,              // one-line kill switch
+    cryptoOnly: true,           // suppress forex pushes entirely
+    excludeTrending: true,      // suppress TRENDING-regime pushes
+    requirePendingEntry: true,  // only push wait-for-pullback (dist>=0.05%)
+    pendingEntryMinDistancePct: 0.05,
+    maxAtrPercentile: 50,       // suppress high-vol (>=50th pctile); null=off
+  },
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
   NEWS_BLACKOUT_MINUTES: 15,
