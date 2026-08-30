@@ -182,7 +182,10 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
   if (finalDirection !== 'NO_TRADE') {
     const d2PreDir = finalDirection;
     const d2PreConf = confidence;
-    if (marketRegime === 'TRENDING') {
+    // SHADOW WINDOW (2026-08-30, FIX-3): gated behind D2_TRENDING_BLOCK_ENABLED
+    // (undefined/true = block active, false = off). Default in config is false
+    // for the EC-V2 forward window — see config.js comment there.
+    if (CONFIG.D2_TRENDING_BLOCK_ENABLED !== false && marketRegime === 'TRENDING') {
       finalDirection = 'NO_TRADE'; confidence = 0;
       filtersApplied.push('D2_TRENDING_BLOCK (29.5% WR n=356)');
       d2Audit = { attribution: 'D2_TRENDING_BLOCKED' };

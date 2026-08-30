@@ -202,6 +202,12 @@ console.log('\n── [#8] Resolver — transient error retry then terminal UNKN
 // ════════════════════════════════════════════════════════════════════════
 console.log('\n── [#9-10] Engine — TRENDING block audit + zero leak ──');
 {
+  // SHADOW WINDOW (2026-08-30): shipped default is D2_TRENDING_BLOCK_ENABLED=false
+  // (EC-V2 forward window). This block tests the BLOCK-ACTIVE behavior, so the
+  // flag is forced true here and restored at the end. The default-off emission
+  // behavior is covered by [#9b2] below.
+  const __prevTrendFlag = CONFIG.D2_TRENDING_BLOCK_ENABLED;
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = true;
   const sig = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(P), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
   ok('[#9a] TRENDING fixture final = NO_TRADE', sig.finalSignal === 'NO_TRADE', sig.finalSignal);
   ok('[#9b] D2_TRENDING_BLOCK applied', sig.filtersApplied.some(f => f.includes('D2_TRENDING_BLOCK')));
@@ -237,6 +243,23 @@ console.log('\n── [#9-10] Engine — TRENDING block audit + zero leak ──
         !!audit && audit.attribution === 'D2_RANGING_ALIGNED_BLOCKED',
         JSON.stringify(audit && audit.attribution));
     }
+  }
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = __prevTrendFlag;
+}
+
+console.log('\n── [#9b2] Shadow window: TRENDING emits when D2_TRENDING_BLOCK_ENABLED=false ──');
+{
+  const prev = CONFIG.D2_TRENDING_BLOCK_ENABLED;
+  try {
+    CONFIG.D2_TRENDING_BLOCK_ENABLED = false;
+    const s = await buildMultiTimeframeSignal('BTC/USD', makeCandleData(P), 'CRYPTO', ENV, { session: FIXED_SESSION, newsBlock: null, edgeFeatures: false });
+    ok('[#9b2] no D2_TRENDING_BLOCK in filters',
+      !s.filtersApplied.some(f => f.includes('D2_TRENDING_BLOCK')), JSON.stringify(s.filtersApplied));
+    ok('[#9b2] TRENDING fixture emits BUY/SELL (not NO_TRADE)',
+      s.finalSignal === 'BUY' || s.finalSignal === 'SELL', s.finalSignal);
+    ok('[#9b2] no D2 audit attached when block off', getD2Audit(s) === null);
+  } finally {
+    CONFIG.D2_TRENDING_BLOCK_ENABLED = prev;
   }
 }
 

@@ -208,6 +208,20 @@ export const CONFIG = {
   // behind this flag for a one-line re-enable after the window.
   D2_BAD_PAIR_BLOCK_ENABLED: false,
 
+  // SHADOW WINDOW (2026-08-30, FIX-3 of the distortion audit): both remaining
+  // D2 emission blocks are OFF so the EC-V2 shadow (v6.13.0) gets an unbiased
+  // forward pool across ALL regime/structure cells. Rationale: the audit showed
+  // these blocks + the market regime shift collapsed history volume 175→21/day;
+  // at that rate the EC grade ladder (C/B/A/A+) would take months to validate.
+  // TRENDING (29.5% WR n=356) and RANGING+ALIGNED (41.2% WR n=1639) are exactly
+  // the slices whose forward data the EC structure/fill cells need. The D2
+  // counterfactual store (d2obs:) keeps judging the blocks independently — but
+  // it is capped at 30/pair/30d and carries no EC cells, so it cannot feed the
+  // ladder. Re-enable = flip the two flags back to true (one-line rollback).
+  // After the EC ladder validates and mode flips to 'decision', EC-V2 grade —
+  // measured per-slice, refreshed weekly — REPLACES these static blocks.
+  D2_TRENDING_BLOCK_ENABLED: false,
+
   // Phase F (2026-08-15): RANGING + ALIGNED structure is the single biggest
   // losing cell in the forward window (41.2% WR, n=1639, CI 38.9–43.6 — the CI
   // upper bound is decisively below breakeven 55.6%). Blocking it (same D2 hard
@@ -215,7 +229,8 @@ export const CONFIG = {
   // ~44.3% → ~46.3% (post-calibration era ~48.5% → ~50.4%). Data-backed;
   // evidence: reports/SCORING_INVERSION_AUDIT_2026-08-15.md. Flagged for a
   // one-line rollback (set false) without a redeploy of the branch logic.
-  D2_RANGING_ALIGNED_BLOCK_ENABLED: true,
+  // SHADOW WINDOW (2026-08-30): temporarily OFF — see D2_TRENDING_BLOCK_ENABLED.
+  D2_RANGING_ALIGNED_BLOCK_ENABLED: false,
 
   // Phase F (2026-08-04): Forex SELL probe instrumentation. Tracks every
   // forex SELL with its signal-time context (regime/session/HTF/RSI) in a
@@ -233,11 +248,17 @@ export const CONFIG = {
   //   TRENDING:                           38.8% WR (n=798)
   SELECTIVITY_GATE: {
     enabled: true,              // one-line kill switch
-    cryptoOnly: true,           // suppress forex pushes entirely
-    excludeTrending: true,      // suppress TRENDING-regime pushes
-    requirePendingEntry: true,  // only push wait-for-pullback (dist>=0.05%)
+    cryptoOnly: true,           // suppress forex pushes entirely (34% WR drag; EC is crypto-only)
+    // SHADOW WINDOW (2026-08-30): regime/entry push rules OFF so subscribers
+    // see the full pool again (~175/day era) during EC-V2 forward validation.
+    // The gate NEVER controlled history volume (only the push), so this does
+    // not affect shadow data — it restores push visibility. After the EC
+    // decision flip, push quality control moves to the EC grade (measured,
+    // weekly-refreshed) and these static rules retire or return as flags.
+    excludeTrending: false,     // suppress TRENDING-regime pushes (was true)
+    requirePendingEntry: false, // only push wait-for-pullback (was true)
     pendingEntryMinDistancePct: 0.05,
-    maxAtrPercentile: 50,       // suppress high-vol (>=50th pctile); null=off
+    maxAtrPercentile: null,     // suppress high-vol (was 50); null=off
   },
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
