@@ -305,6 +305,11 @@ console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ────�
 
 console.log('\n── T5: D2 TRENDING block not overridden by AI rescue (FIX-2) ─');
 {
+  // SHADOW WINDOW (2026-08-30): shipped default is D2_TRENDING_BLOCK_ENABLED=false;
+  // this regression covers the BLOCK-ACTIVE path, so the flag is forced true
+  // here and restored at the end of the block.
+  const __prevTrendFlag = CONFIG.D2_TRENDING_BLOCK_ENABLED;
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = true;
   const rev = (arr) => [...arr].reverse();
   const candleData = {
     '1min': rev(series(100, 90, 0.1)),
@@ -327,6 +332,7 @@ console.log('\n── T5: D2 TRENDING block not overridden by AI rescue (FIX-2) 
   ok('AI skipped for the D2 block (F3-15 renamed the note)', (sig.filtersApplied || []).some(f => f.includes('AI_SKIPPED (D2 hard block)') || f.includes('AI_RESCUE_SKIPPED')),
     JSON.stringify(sig.filtersApplied));
   ok('no AI_RESCUE revival', !(sig.filtersApplied || []).some(f => f.startsWith('AI_RESCUE:')));
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = __prevTrendFlag;
 }
 
 console.log('\n── T6: post-AI confidence floor (FIX-5) ─────────────────');
@@ -683,6 +689,10 @@ console.log('\n── T17: OTC fillStatus fields (F3-04) ───────�
 
 console.log('\n── T18: NO_TRADE grade is N/A (F3-05) ─────────────────');
 {
+  // SHADOW WINDOW (2026-08-30): block-active regression — flag forced true,
+  // restored after T18c (shipped default is false; see T5 note).
+  const __prevTrendFlag = CONFIG.D2_TRENDING_BLOCK_ENABLED;
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = true;
   const rev = (arr) => [...arr].reverse();
   const cd = {
     '1min': rev(series(100, 90, 0.1)),
@@ -695,6 +705,7 @@ console.log('\n── T18: NO_TRADE grade is N/A (F3-05) ───────�
   eq('T18a: TRENDING fixture blocked (NO_TRADE)', sig.finalSignal, 'NO_TRADE');
   eq('T18b: NO_TRADE grade N/A', sig.grade.grade, 'N/A');
   eq('T18c: NO_TRADE label', sig.grade.label, 'NO_TRADE');
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = __prevTrendFlag;
   // OTC: fully flat candles -> every TF dead-market -> NO_TRADE
   const flat = [];
   for (let i = 0; i < 100; i++) flat.push({ datetime: 'x', open: 90, high: 90, low: 90, close: 90, volume: 0 });
@@ -989,6 +1000,10 @@ console.log('\n── T27: scanner pushes fresh tradeable signals, deduped (F3-1
 
 console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ─────');
 {
+  // SHADOW WINDOW (2026-08-30): block-active regression — flag forced true,
+  // restored at block end (shipped default is false; see T5 note).
+  const __prevTrendFlag28 = CONFIG.D2_TRENDING_BLOCK_ENABLED;
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = true;
   let aiCalls = 0;
   globalThis.fetch = async (url) => {
     const u = String(url);
@@ -1010,6 +1025,7 @@ console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ───�
   eq('T28c: aiValidation stays SKIPPED', sig.aiValidation.status, 'SKIPPED');
   ok('T28d: AI_SKIPPED note present', (sig.filtersApplied || []).some(f => f.includes('AI_SKIPPED (D2 hard block)')),
     JSON.stringify(sig.filtersApplied));
+  CONFIG.D2_TRENDING_BLOCK_ENABLED = __prevTrendFlag28;
 }
 
 console.log('\n── T29: session injection is time-invariant (F3-16) ───');
@@ -1836,14 +1852,15 @@ console.log('\n── T43: push lock released on Telegram fail + health status �
 
   // Reviewer R1/R2: /health must carry the current release version and a push
   // object whose delivered24h field is the durable counter (not the deletable
-  // pushLog keys). Version expectation updated 2026-08-30 (2nd): health.js ships
-  // '6.12.0' since the distortion-fix release (PRs #29/#30 — EC-V2 shadow +
-  // RSI SELL-leg off); the 6.11.0 assertion went stale on main after the merges.
+  // pushLog keys). Version expectation updated 2026-08-30 (3rd): health.js ships
+  // '6.13.0' since the shadow-window data-unblock release (FIX-3 — D2 emission
+  // blocks + push rules off for the EC-V2 forward window); 6.12.0 went stale
+  // on main after FIX-3.
   const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
   ok('T43i: /health push block exposes durable delivered24h at top level',
     hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
-  ok('T43j: /health version bumped to 6.12.0',
-    hh.includes("version: '6.12.0'"));
+  ok('T43j: /health version bumped to 6.13.0',
+    hh.includes("version: '6.13.0'"));
 }
 
 console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Phase F 2026-08-14) ──');
@@ -1947,7 +1964,8 @@ console.log('\n── T45: regime-conditional calibration + RANGING/ALIGNED bloc
   ok('T45i: engine passes marketRegime into calibrated grade/confidence',
     eng.includes('getCalibratedGradeAndConfidence(confidence, structureVerdict.overall, marketRegime, activeCalib)'));
   const cfg = fs.readFileSync(fileURLToPath(new URL('../src/config.js', import.meta.url)), 'utf8');
-  ok('T45j: D2_RANGING_ALIGNED_BLOCK_ENABLED flag present', cfg.includes('D2_RANGING_ALIGNED_BLOCK_ENABLED: true'));
+  ok('T45j: D2_RANGING_ALIGNED_BLOCK_ENABLED flag present (value-agnostic — shadow window ships false, one-line re-enable path kept)',
+    cfg.includes('D2_RANGING_ALIGNED_BLOCK_ENABLED: true') || cfg.includes('D2_RANGING_ALIGNED_BLOCK_ENABLED: false'));
 }
 
 console.log('\n── T46: Watch-ALL mode — pair/watchlist gate bypassed, other gates kept (v4.5.1) ──');

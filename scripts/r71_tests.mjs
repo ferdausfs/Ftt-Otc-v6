@@ -78,7 +78,13 @@ const ENV = {}; // deterministic: no AI keys, no SIGNAL_CACHE
 // on the EUR/USD flat-family fixtures) → baseline refreshed to the FIX-2
 // commit via the same F3-20 mechanism. The guard continues to protect the
 // current approved behavior.
-const BASELINE_COMMIT = '7b6696a1c645c5ebfa58a867b4dfe975df843008'; // FIX-2 (2026-08-30): approved engine tip (was eef483c — Phase F round 2)
+// FIX-3 (2026-08-30): shadow-window data-unblock for the EC-V2 forward window.
+// D2_TRENDING_BLOCK now sits behind CONFIG.D2_TRENDING_BLOCK_ENABLED (default
+// false) and D2_RANGING_ALIGNED_BLOCK_ENABLED ships false — intentional output
+// change on TRENDING/RANGING+ALIGNED fixtures (they now emit instead of
+// NO_TRADE). Baseline refreshed to the FIX-3 commit via the same F3-20
+// mechanism; the guard continues to protect the current approved behavior.
+const BASELINE_COMMIT = '531ce60'; // FIX-3 shadow-window (2026-08-30): was 7b6696a — FIX-2
 function bootstrapBaseline() {
   // The verify/baseline tree is gitignored and regenerated on demand. A marker
   // file records which commit it was built from, so changing BASELINE_COMMIT
