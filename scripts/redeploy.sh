@@ -57,6 +57,7 @@ SCRIPT_NAME="${SCRIPT_NAME:-fttotcv6}"
 META="${META:-$HOME/wmeta.json}"
 EXPECTED_BYTES="${EXPECTED_BYTES:-}"
 CRONS="${CRONS:-*/2 * * * *,*/5 * * * *,0 0 * * 1}"
+EXPECTED_VERSION="${EXPECTED_VERSION:-6.12.0}"
 HEALTH_URL="${HEALTH_URL:-https://fttotcv6.umuhammadiswa.workers.dev/health}"
 API="${CF_API_BASE:-https://api.cloudflare.com/client/v4}"   # overridable for tests
 FIX_METADATA=0
@@ -149,7 +150,7 @@ verify_health() {
     say "  ✗ /health returned non-JSON:"; sed 's/^/  | /' "$hbody" | head -20
     rm -f "$hbody"; return 1
   fi
-  python3 - "$hbody" <<'PY'
+  python3 - "$hbody" "$EXPECTED_VERSION" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 p = d.get("push") or {}
@@ -160,15 +161,15 @@ print("  push.noTokenReason =", p.get("noTokenReason"))
 print("  push.subscribers   =", len(p.get("subscribers") or []), "subscriber(s)")
 print("  push.lastAttempt   =", json.dumps(p.get("lastAttempt"))[:300])
 print("  push.delivered24h  =", p.get("delivered24h"))
-if str(d.get("version")) != "6.10.4":
-    print("  ✗ version is not 6.10.4 — deploy did not take effect (or this is the old script).")
+if str(d.get("version")) != sys.argv[2]:
+    print("  ✗ version is not " + sys.argv[2] + " — deploy did not take effect (or this is the old script).")
     sys.exit(2)
 if p.get("enabled") and p.get("tokenValid") is False:
     print("  ✗ BOT_TOKEN on fttotcv6 is NOT a valid live bot token.")
     print("    Fix: wrangler secret put BOT_TOKEN --name fttotcv6")
     print("    (use the SAME value the ftt-telegram-bot worker uses; then re-check /health)")
     sys.exit(3)
-print("  ✓ live worker is 6.10.4 with push diagnostics visible (R1)")
+print("  ✓ live worker is " + sys.argv[2] + " with push diagnostics visible (R1)")
 PY
   local rc=$?
   rm -f "$hbody"
