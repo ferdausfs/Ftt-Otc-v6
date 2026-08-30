@@ -49,6 +49,7 @@
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { CONFIG } from '../src/config.js';
 import { classifyOutcome, fetchExpiryPrice, scheduledTracker, saveSignalToHistory, updatePairStats, getDynamicConfidenceAdjustment } from '../src/history/stats.js';
 import { passAI, passGrade, pushSignalToSubscribers, getMatchingSubscribers } from '../src/handlers/pushToSubscribers.js';
 import { handleReport, handleHistory } from '../src/handlers/health.js';
@@ -1491,20 +1492,35 @@ console.log('\n── T36: RSI × direction gate (B4) ────────�
   const s10 = await runEngine('BTC/USD', cd, 'CRYPTO', {}, { edgeFeatures: true, now: '2026-08-10T10:00:00Z' });
   eq('T36b: RSI x hour penalties block below floor', s10.finalSignal, 'NO_TRADE');
 
-  // SELL with RSI < 45 (fx fixture: SELL 73, RSI 37.87) -> penalty -> floor.
-  // Pin the wall-clock-dependent inputs like T29 does: session quality HIGH
-  // (not HIGHEST, which triggers the D2_HIGHEST_SESSION_BLOCK hard block) and
-  // newsBlock null (avoids the real weekly windows, e.g. Mon-Fri 12:00-13:45
-  // UTC US Economic Data Window) — detectTradingSession/checkNewsBlackout
-  // read the real clock even when opts.now is pinned.
+  // FIX-2 (2026-08-30): the SELL-side leg is DISABLED by default
+  // (sellPenaltyEnabled=false — measured non-discriminating: SELL RSI<45
+  // 45.7% vs SELL 45-55 44.6%; TRAIN 47.4% above pool. See config comment).
+  // Same fx fixture as before (SELL 73, RSI 37.87) — the signal now SURVIVES
+  // (previously the ×0.85 penalty pushed it through the floor to NO_TRADE).
+  // now pinned to a neutral hour (mult 1.0) so the assertion is
+  // time-independent (session/news still pinned like T29).
   const cdFx = eFix({ basePrice: 1.08, vol: 0.0012, trend: 0, seed: 55 });
   const sFx = await runEngine('EUR/USD', cdFx, 'FOREX', {}, {
-    edgeFeatures: true, newsBlock: null,
+    edgeFeatures: true, newsBlock: null, now: PIN14,
     session: { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 },
   });
-  eq('T36c: SELL+RSI<45 penalty blocks via floor', sFx.finalSignal, 'NO_TRADE');
-  ok('T36c: SELL-side gate recorded',
-    (sFx.filtersApplied || []).some(f => f.includes('RSI_DIRECTION_GATE_PENALTY x0.85 (SELL rsi=37.87 < 45)')), JSON.stringify(sFx.filtersApplied));
+  eq('T36c: SELL+RSI<45 no longer gated (FIX-2)', sFx.finalSignal, 'SELL');
+  ok('T36c: no SELL-side gate note',
+    !(sFx.filtersApplied || []).some(f => f.includes('RSI_DIRECTION_GATE_PENALTY')), JSON.stringify(sFx.filtersApplied));
+  // legacy symmetric behavior is one flag away (documented rollback path)
+  const prevSellLeg = CONFIG.EDGE_FEATURES.RSI_DIRECTION_GATE.sellPenaltyEnabled;
+  try {
+    CONFIG.EDGE_FEATURES.RSI_DIRECTION_GATE.sellPenaltyEnabled = true;
+    const sFx2 = await runEngine('EUR/USD', cdFx, 'FOREX', {}, {
+      edgeFeatures: true, newsBlock: null, now: PIN14,
+      session: { sessions: ['LONDON'], overlap: 'NONE', quality: 'HIGH', hour: 14 },
+    });
+    eq('T36c: flag=true restores legacy SELL block via floor', sFx2.finalSignal, 'NO_TRADE');
+    ok('T36c: legacy SELL-side gate recorded',
+      (sFx2.filtersApplied || []).some(f => f.includes('RSI_DIRECTION_GATE_PENALTY x0.85 (SELL rsi=37.87 < 45)')), JSON.stringify(sFx2.filtersApplied));
+  } finally {
+    CONFIG.EDGE_FEATURES.RSI_DIRECTION_GATE.sellPenaltyEnabled = prevSellLeg;
+  }
 
   // extreme mean-rev logic preserved: oversold BUY (RSI<30) and overbought
   // SELL (RSI>70) are OUTSIDE the gate's firing range (unit level)

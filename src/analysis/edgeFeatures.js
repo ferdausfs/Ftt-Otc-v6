@@ -246,11 +246,14 @@ export async function applyEdgeFeatures(ctx) {
   if (bb !== null) audit.bbBandwidth = round2(bb);
 
   // ── 1. RSI × direction gate ────────────────────────────────────────────
+  // FIX-2 (2026-08-30): the SELL-side leg is gated behind
+  // sellPenaltyEnabled (measured non-discriminating — see config comment);
+  // the BUY-side chase leg is forward-validated and stays always-on.
   const rsiCfg = cfg.RSI_DIRECTION_GATE || {};
   if (rsiCfg.enabled !== false && rsi !== null) {
     const chasing =
       (dir === 'BUY'  && rsi > (rsiCfg.buyMaxRsi  || 55)) ||
-      (dir === 'SELL' && rsi < (rsiCfg.sellMinRsi || 45));
+      (dir === 'SELL' && rsiCfg.sellPenaltyEnabled !== false && rsi < (rsiCfg.sellMinRsi || 45));
     if (chasing) {
       const mode = rsiCfg.mode === 'block' ? 'block' : 'penalty';
       const gateDir = dir; // keep the pre-block direction for the message
