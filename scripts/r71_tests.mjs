@@ -71,7 +71,14 @@ const ENV = {}; // deterministic: no AI keys, no SIGNAL_CACHE
 // to the approved tip ec6ed65 via the F3-20 mechanism (justification in the
 // PR: "r71 baseline refresh — divergence redaction update with
 // justification"). The guard now protects the edge-feature engine.
-const BASELINE_COMMIT = 'eef483c93d45bbb10e349ea9b6622e5e63f87d88'; // Phase F round 2: approved engine tip (was e56cd33)
+//
+// FIX-2 (2026-08-30): RSI_DIRECTION_GATE SELL-leg disabled
+// (sellPenaltyEnabled=false — measured non-discriminating, see config).
+// Intentional output change on SELL RSI<45 signals (confidence/filtersApplied
+// on the EUR/USD flat-family fixtures) → baseline refreshed to the FIX-2
+// commit via the same F3-20 mechanism. The guard continues to protect the
+// current approved behavior.
+const BASELINE_COMMIT = '7b6696a1c645c5ebfa58a867b4dfe975df843008'; // FIX-2 (2026-08-30): approved engine tip (was eef483c — Phase F round 2)
 function bootstrapBaseline() {
   // The verify/baseline tree is gitignored and regenerated on demand. A marker
   // file records which commit it was built from, so changing BASELINE_COMMIT

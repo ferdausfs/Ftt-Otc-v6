@@ -28,9 +28,10 @@ export const CONFIG = {
   //     the best hour) and the reviewer list REVERSES on HOLDOUT (52.1% vs
   //     45.1%). The train-derived map holds out-of-sample (see PR table).
   //   RSI_DIRECTION_GATE: reviewer instrumented evidence BUY+RSI>55 = 32.3%
-  //     (chasing). SELL+RSI<45 slice measured 47.4% (above pool) — flagged for
-  //     weekly refresh; shipped symmetric per spec with lighter net effect via
-  //     the confidence floor (mode=penalty ×0.85 blocks only sub-85 signals).
+  //     (chasing). SELL+RSI<45 slice measured 47.4% (above pool) — shipped
+  //     symmetric per spec initially; FIX-2 (2026-08-30) disabled the SELL
+  //     leg (sellPenaltyEnabled=false) after forward data confirmed it
+  //     discriminates nothing (SELL<45 45.7% vs SELL 45-55 44.6%).
   //     Extreme mean-rev logic (<30 / >70) is preserved BY CONSTRUCTION: those
   //     values fall outside the gate's firing range.
   //   VOL_STATE: reviewer instrumented evidence BB>0.8% = 54.3% vs BB 0.2-0.8%
@@ -72,6 +73,14 @@ export const CONFIG = {
       buyMaxRsi: 55,
       sellMinRsi: 45,
       penaltyMult: 0.85,
+      // FIX-2 (2026-08-30, Signal Distortion Audit): the SELL-side leg is
+      // measured NON-discriminating — TRAIN 08-01..06 SELL+RSI<45 = 47.4%
+      // (above pool), forward crypto 08-01..30 SELL RSI<45 = 45.7% vs SELL
+      // 45-55 = 44.6% (EDGE_DECAY_AUDIT / DISTORTION_AUDIT). The ×0.85
+      // penalty filters SELL volume without any WR benefit (asymmetric bug:
+      // the BUY-side chase leg IS validated — BUY RSI>55 = 43.3%). false =
+      // BUY-only gate. One-line rollback: set true.
+      sellPenaltyEnabled: false,
     },
 
     // B5 — volatility state via BB bandwidth % ((upper-lower)/mid × 100).
