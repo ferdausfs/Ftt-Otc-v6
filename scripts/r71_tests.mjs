@@ -106,7 +106,11 @@ console.log('\n── [#1] Baseline production equivalence ───────
   // excluded from byte-equality check with justification.
   bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
-  const STANDARD_CALIBRATION_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence']);
+  // EC-V2 (2026-08-30): shadow-mode additive instrumentation field on the
+  // signal — approved divergence (baseline snapshot predates the field).
+  // Decision-mode confidence/grade overrides are already covered by the
+  // 'grade'/'confidence' entries. See PR "EC-V2 shadow" justification.
+  const STANDARD_CALIBRATION_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence','empiricalConfidence']);
   // deep-strip time-dependent fields so two near-simultaneous runs compare equal
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));
@@ -891,7 +895,10 @@ console.log('\n── [#17] Production-equivalence fuzz (100 fixtures) ───
   // contract on all 100 fixtures.
   bootstrapBaseline();
   const baselineEngine = await import('../verify/baseline/src/signal/engine.js');
-  const CALIB_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence']);
+  // EC-V2 (2026-08-30): shadow-mode additive instrumentation field — approved
+  // divergence (see [#1] comment). Decision-mode overrides are covered by
+  // 'grade'/'confidence'.
+  const CALIB_DIVERGENT = new Set(['grade','confidence','calibration','coreConfidence','empiricalConfidence']);
   function stripTime(obj) {
     const clone = JSON.parse(JSON.stringify(obj));
     const kill = new Set(['generatedAt', 'expiryTime', 'nextCandleClose', 'humanReadable', 'nextRefresh', 'candleTime']);

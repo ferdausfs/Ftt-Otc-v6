@@ -116,6 +116,17 @@ export async function saveSignalToHistory(signal, pair, isOTC, env, signalId, en
       fillStatus:       signal.fillStatus || null,
       currentPrice:     signal.currentPrice || null,
       entryDistancePct: signal.entryDistancePct == null ? null : signal.entryDistancePct,
+      // ── EC-V2 (2026-08-30, FIX-1 of the distortion audit): bounded
+      // empirical-confidence shadow fields. Present on crypto decided rows;
+      // lets /api/history forward-validate the EC score against outcomes
+      // before the 'decision' flip (RULE 6). ~120 bytes/row. ──
+      empiricalConfidence: signal.empiricalConfidence ? {
+        score:      signal.empiricalConfidence.score,
+        confidence: signal.empiricalConfidence.confidence,
+        grade:      signal.empiricalConfidence.grade ? signal.empiricalConfidence.grade.grade : null,
+        cells:      signal.empiricalConfidence.cells || null,
+        version:    signal.empiricalConfidence.version || null,
+      } : null,
       timestamp: now, result: null, exitPrice: null, checkedAt: null,
     };
     // B2/§3.3: only present on shadow rows — keeps normal records lean

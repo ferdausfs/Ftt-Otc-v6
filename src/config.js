@@ -113,6 +113,61 @@ export const CONFIG = {
     MIN_TOTAL_MULT: 0.55,
   },
 
+  // ── EC-V2 EMPIRICAL CONFIDENCE (2026-08-30) — FIX-1 of the
+  // Signal Logic & Parameter Distortion Audit (reports/
+  // SIGNAL_LOGIC_DISTORTION_AUDIT_2026-08-30.md in Workplace-drive-). ──
+  //
+  // Why: the v1 decision variable (vote-share consensus confidence) has no
+  // predictive variance — 99.98% of surviving signals sit in ALL_* alignment
+  // (D2), correlated oscillators fake the confluence (D1), and the calibrated
+  // ladder is still non-monotone (D5). Meanwhile the features that DO hold
+  // forward (hour-of-day 11.3pp spread, RSI-zone×direction, structure
+  // inversion, fill-state) are marginalized into ±10% multipliers (D4).
+  //
+  // What: evidence-only score = weighted sum of MEASURED forward WR cells
+  // (crypto pool 08-01..30, n=4,626 — measured WRs from the 2026-08-30
+  // distortion + edge-decay audits). NO consensus/alignment/confluence inputs
+  // (D1-D3 removal). Unmeasured/missing cell → baseWr (no invented numbers).
+  //
+  // Rollout (RULE 6 shadow → forward → gate):
+  //   mode 'shadow'   → score emitted on signal.empiricalConfidence (+ the
+  //                     history record) but the decision output is unchanged.
+  //   mode 'decision' → report confidence + provisional grade come from
+  //                     EC-V2. Flip ONLY after forward shadow validation.
+  EMPIRICAL_CONFIDENCE: {
+    enabled: true,
+    mode: 'shadow',            // 'shadow' | 'decision' (one-line flip)
+    version: 'ec-v2-2026-08-30',
+    assets: ['CRYPTO'],        // v1 evidence pool is crypto-only (gate is cryptoOnly)
+    baseWr: 0.45,              // crypto pool WR (ALL_* pooled, n=4,626)
+    weights: { hour: 0.30, rsiDirection: 0.25, structure: 0.25, fillState: 0.20 },
+    // cells = MEASURED forward WR (08-30 audits, crypto pool):
+    //   hour        GOOD mult>=1.05 n=1520:49.3% / NEUTRAL n=2147:45.1% /
+    //               BAD mult<=0.90 n=959:38.0%
+    //   BUY  RSI    <=35 48.8% / 45-55 60.4% (n=101, CI 50.6-69.4) / >55 43.3%
+    //   SELL RSI    <45 45.7% / 45-55 44.6% / >=65 47.5%
+    //   structure   AGAINST 48.0% (n=927) / ALIGNED 44.6% (n=1929) /
+    //               NEUTRAL 40.2% (MIXED unmeasured → BASE)
+    //   fillState   PENDING_ENTRY 56.0% (n=200) / INSTANT 46.1% (n=1,570)
+    //               (pooled eras, EDGE_DECAY_AUDIT)
+    cells: {
+      hour: { GOOD: 0.493, NEUTRAL: 0.451, BAD: 0.380 },
+      rsiDirection: {
+        BUY:  { EXTREME_LOW: 0.488, MID: 0.604, CHASE: 0.433 },
+        SELL: { CHASE: 0.457, MID: 0.446, EXTREME_HIGH: 0.475 },
+      },
+      structure: { AGAINST: 0.480, ALIGNED: 0.446, NEUTRAL: 0.402 },
+      fillState: { PENDING_ENTRY: 0.560, INSTANT: 0.461 },
+    },
+    // Linear map [minScore..maxScore] → [minConf..maxConf]. Endpoints are the
+    // measured cell extremes (0.380 bad-hour, 0.604 BUY mid-zone) — the map
+    // range is data, not a design choice.
+    map: { minScore: 0.380, maxScore: 0.604, minConf: 72, maxConf: 92 },
+    // Provisional decision thresholds — RE-DERIVE from shadow-data quantiles
+    // (same method as calib-v1) before/when flipping to 'decision'.
+    gradeBands: { Aplus: 0.500, A: 0.480, B: 0.460 },
+  },
+
   // ── SELF-CALIBRATION (C7) — weekly refresh of the calibration tables. ────
   // Mechanism: the Monday 00:00 UTC cron recomputes WR tables from the last
   // WINDOW_DAYS of decided history in KV (sig:*), writes them to calib:latest.

@@ -1818,13 +1818,16 @@ console.log('\n── T43: push lock released on Telegram fail + health status �
   ok('T43h: scheduled */5 awaits scheduledScan (does not wrap-and-return)',
     idx.includes('await scheduledScan(env, ctx)') && !idx.includes('ctx.waitUntil(scheduledScan'));
 
-  // Reviewer R1/R2: /health must carry version 6.10.4 and a push object whose
-  // delivered24h field is the durable counter (not the deletable pushLog keys).
+  // Reviewer R1/R2: /health must carry the current release version and a push
+  // object whose delivered24h field is the durable counter (not the deletable
+  // pushLog keys). Version expectation updated 2026-08-30: health.js ships
+  // '6.11.0' since the selectivity-gate release (PR #28 / chore/version-6110);
+  // the old 6.10.4 assertion went stale on main (verified pre-existing fail).
   const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
   ok('T43i: /health push block exposes durable delivered24h at top level',
     hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
-  ok('T43j: /health version bumped to 6.10.4',
-    hh.includes("version: '6.10.4'"));
+  ok('T43j: /health version bumped to 6.11.0',
+    hh.includes("version: '6.11.0'"));
 }
 
 console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Phase F 2026-08-14) ──');

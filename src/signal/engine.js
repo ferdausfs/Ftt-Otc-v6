@@ -14,6 +14,10 @@ import { getCalibratedGradeAndConfidence } from '../analysis/calibration.js';
 // Edge features (Phase F round 2): input-side multipliers/gates (hour-of-day,
 // RSI×direction, vol-state, ATR-percentile, session-range, recent-form).
 import { applyEdgeFeatures } from '../analysis/edgeFeatures.js';
+// EC-V2 (2026-08-30, FIX-1 of the distortion audit): evidence-only confidence
+// shadow built from forward-validated cells (hour, RSI×direction, structure,
+// fill-state). Shadow-mode additive; 'decision' mode replaces report output.
+import { attachEmpiricalConfidence } from '../analysis/empiricalConfidence.js';
 // Self-calibration (C7): weekly-refreshed WR tables consumed by the calibrated
 // output layer and the hour multiplier.
 import { loadCalibration } from '../history/selfCalib.js';
@@ -533,6 +537,34 @@ export async function buildMultiTimeframeSignal(pair, candleData, assetType, env
       }
     } catch (e) {
       console.warn('fill status failed (production unaffected): ' + e.message);
+    }
+  }
+
+  // ── EC-V2 shadow (2026-08-30, FIX-1 of the distortion audit) ──
+  // Evidence-only confidence from forward-validated cells (hour, RSI×dir,
+  // structure, fill-state) — the consensus/confluence inputs are deliberately
+  // ABSENT (D1-D3). mode='shadow': additive instrumentation only — decision
+  // output is byte-unchanged (asserted by ec_v2_tests + the r71 divergent-set
+  // redaction). mode='decision': report confidence + provisional grade come
+  // from EC-V2 (flip only after forward shadow validation, RULE 6).
+  // Crypto-only in v1: the measured cells come from the crypto pool and the
+  // selectivity gate already pushes crypto-only.
+  if (CONFIG.EMPIRICAL_CONFIDENCE && CONFIG.EMPIRICAL_CONFIDENCE.enabled
+      && (finalDirection === 'BUY' || finalDirection === 'SELL')
+      && assetType === ASSET_TYPE.CRYPTO) {
+    try {
+      const ec = attachEmpiricalConfidence(__signal, {
+        direction: finalDirection,
+        hourMult: edgeAudit ? edgeAudit.hourMult : null,
+        rsi: edgeAudit ? edgeAudit.rsi : null,
+        structureOverall: structureVerdict.overall,
+        fillStatus: __signal.fillStatus || null,
+      });
+      if (CONFIG.EMPIRICAL_CONFIDENCE.mode === 'decision') {
+        filtersApplied.push('EC_V2_DECISION_OUTPUT (conf=' + ec.confidence + ' grade=' + ec.grade.grade + ')');
+      }
+    } catch (e) {
+      console.warn('EC-V2 attach failed (production unaffected): ' + e.message);
     }
   }
 
