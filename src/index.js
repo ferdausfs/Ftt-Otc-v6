@@ -1,5 +1,5 @@
 /**
- * FTT Signal Worker v6.14.0
+ * FTT Signal Worker Sig-v1.0.0 (playbook engine)
  * Cloudflare Worker Entry Point
  */
 
@@ -127,7 +127,7 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.14.0 — Forex + Crypto + OTC + History Tracking',
+          message: 'FTT Signal Worker Sig-v1.0.0 (playbook engine) — Forex + Crypto + OTC + History Tracking',
           endpoints: {
             health:    '/',
             signal:    '/api/signal?pair=EUR/USD',
