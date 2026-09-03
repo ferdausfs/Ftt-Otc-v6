@@ -220,7 +220,11 @@ export const CONFIG = {
   // ladder. Re-enable = flip the two flags back to true (one-line rollback).
   // After the EC ladder validates and mode flips to 'decision', EC-V2 grade —
   // measured per-slice, refreshed weekly — REPLACES these static blocks.
-  D2_TRENDING_BLOCK_ENABLED: false,
+  // 2026-09-03 RE-ENABLED (v6.14.0): the shadow window collected its full
+  // 4-day pool — TRENDING measured 35.4% WR (n=325, CI 30.1–41.1),
+  // TRENDING+BUY 20.5% (n=39). The block is evidence-backed again; rollback
+  // is still the same one-line flip (set false).
+  D2_TRENDING_BLOCK_ENABLED: true,
 
   // Phase F (2026-08-15): RANGING + ALIGNED structure is the single biggest
   // losing cell in the forward window (41.2% WR, n=1639, CI 38.9–43.6 — the CI
@@ -249,14 +253,18 @@ export const CONFIG = {
   SELECTIVITY_GATE: {
     enabled: true,              // one-line kill switch
     cryptoOnly: true,           // suppress forex pushes entirely (34% WR drag; EC is crypto-only)
-    // SHADOW WINDOW (2026-08-30): regime/entry push rules OFF so subscribers
-    // see the full pool again (~175/day era) during EC-V2 forward validation.
-    // The gate NEVER controlled history volume (only the push), so this does
-    // not affect shadow data — it restores push visibility. After the EC
-    // decision flip, push quality control moves to the EC grade (measured,
-    // weekly-refreshed) and these static rules retire or return as flags.
-    excludeTrending: false,     // suppress TRENDING-regime pushes (was true)
+    // SHADOW WINDOW ended 2026-09-03: the 4-day pool killed the EC flip idea
+    // (ladder non-monotone at all sample sizes) — so push quality control
+    // returns to these static measured rules instead of EC grades.
+    // excludeTrending back ON: TRENDING 35.4% WR (n=325) over the full window.
+    excludeTrending: true,      // suppress TRENDING-regime pushes
     requirePendingEntry: false, // only push wait-for-pullback (was true)
+    // excludeChase (NEW v6.14.0): BUY rsi>55 / SELL rsi<45 entries. The 4-day
+    // pool (630 decided): CHASE = 73% of push volume @ 37.2% WR — the single
+    // biggest drag. Non-CHASE measured 52.3% (n=44). Same thresholds as the
+    // RSI_DIRECTION_GATE / EC rsiCell so every slice speaks one language.
+    // Fail-open when edgeFeatures.rsi is missing. One-line rollback: false.
+    excludeChase: true,
     pendingEntryMinDistancePct: 0.05,
     maxAtrPercentile: null,     // suppress high-vol (was 50); null=off
   },
