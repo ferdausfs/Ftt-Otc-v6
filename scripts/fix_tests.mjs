@@ -1853,14 +1853,14 @@ console.log('\n── T43: push lock released on Telegram fail + health status �
   // Reviewer R1/R2: /health must carry the current release version and a push
   // object whose delivered24h field is the durable counter (not the deletable
   // pushLog keys). Version expectation updated 2026-08-30 (3rd): health.js ships
-  // '6.13.0' since the shadow-window data-unblock release (FIX-3 — D2 emission
+  // '6.14.0' since the shadow-window data-unblock release (FIX-3 — D2 emission
   // blocks + push rules off for the EC-V2 forward window); 6.12.0 went stale
   // on main after FIX-3.
   const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
   ok('T43i: /health push block exposes durable delivered24h at top level',
     hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
-  ok('T43j: /health version bumped to 6.13.0',
-    hh.includes("version: '6.13.0'"));
+  ok('T43j: /health version bumped to 6.14.0',
+    hh.includes("version: '6.14.0'"));
 }
 
 console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Phase F 2026-08-14) ──');

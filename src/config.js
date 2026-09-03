@@ -260,6 +260,34 @@ export const CONFIG = {
     pendingEntryMinDistancePct: 0.05,
     maxAtrPercentile: null,     // suppress high-vol (was 50); null=off
   },
+
+  // ── V7 SHADOW (2026-09-03) — next-generation engine prototype ──
+  // Paradigm: NO vote counting. Regime router + hard exclusion + rejection
+  // trigger, crypto RANGING mean-reversion only in v0.1. Runs as a pure
+  // counterfactual shadow (v7store.js): every crypto tick is evaluated, would-
+  // mints are stored and resolved forward with the production price path.
+  // NOTHING here touches the live signal until the shadow WR clears breakeven
+  // (55.6% @ 80% payout) — same RULE-6 gate that just cancelled the EC flip.
+  // Threshold sources: 4-day forward pool (630 decided): TRENDING 35.4%,
+  // counter-trend BUY 20.5%, CHASE 37.2% vs non-CHASE 52.3%; bad hours
+  // {01,02,03,11,14,19} all <=29.5% WR (n>=16 each); extremes/trigger are
+  // HYPOTHESES H1/H2 the shadow exists to test.
+  V7_SHADOW: {
+    enabled: true,
+    TF: '5min',                 // dominant TF (TF_WEIGHTS 5min=2.5)
+    MIN_CANDLES: 60,            // closed candles needed before evaluating
+    ATR_WINDOW: 100,            // ATR percentile rank window
+    // regime router (detectMarketRegime must return RANGING)
+    MIN_BB_WIDTH: 0.20,         // below VOL_STATE deadSqueezeBlock.CRYPTO -> dead
+    MAX_ATR_PCTILE: 85,         // ATR explosion veto
+    VETO_HOURS: [1, 2, 3, 11, 14, 19],   // measured bad UTC hours (<=29.5% WR)
+    // extremes + non-chase zone (H2)
+    BUY_MAX_PCTB: 0.15, BUY_MAX_RSI: 40,
+    SELL_MIN_PCTB: 0.85, SELL_MIN_RSI: 60,
+    // H1 trigger: closing rejection candle in trade direction
+    MIN_CLOSE_POS: 0.5,         // close in top/bottom half of its range
+    EXPIRY_MIN: 5,              // binary expiry for outcome resolution
+  },
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
   NEWS_BLACKOUT_MINUTES: 15,

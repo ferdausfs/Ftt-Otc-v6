@@ -1,5 +1,5 @@
 /**
- * FTT Signal Worker v6.13.0
+ * FTT Signal Worker v6.14.0
  * Cloudflare Worker Entry Point
  */
 
@@ -15,6 +15,7 @@ import { scheduledScan } from './handlers/scheduledScan.js';
 import { resolveShadowObservations } from './history/r71store.js';
 import { resolveD2ShadowObservations } from './history/d2store.js';
 import { resolveProbeObservations } from './history/probeStore.js';
+import { resolveV7ShadowObservations } from './history/v7store.js';
 // Self-calibration (C7): weekly recompute of the calibration tables.
 import { recomputeCalibration } from './history/selfCalib.js';
 import { CONFIG, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES } from './config.js';
@@ -63,6 +64,8 @@ export default {
     ctx.waitUntil(resolveD2ShadowObservations(env));
     // Forex SELL Probe: resolve private probe observations on the same tick.
     ctx.waitUntil(resolveProbeObservations(env));
+    // V7 Shadow: resolve next-gen counterfactuals on the same tick.
+    ctx.waitUntil(resolveV7ShadowObservations(env));
   },
 
   async fetch(request, env, ctx) {
@@ -124,7 +127,7 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker v6.13.0 — Forex + Crypto + OTC + History Tracking',
+          message: 'FTT Signal Worker v6.14.0 — Forex + Crypto + OTC + History Tracking',
           endpoints: {
             health:    '/',
             signal:    '/api/signal?pair=EUR/USD',

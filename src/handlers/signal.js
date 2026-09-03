@@ -19,6 +19,7 @@ import {
 import { getEngineAudit } from '../signal/r71shadow.js';
 import { maybeAdmitD2ShadowObservation } from '../signal/d2shadow.js';
 import { maybeAdmitForexSellProbe } from '../signal/probeShadow.js';
+import { maybeAdmitV7Observation } from '../signal/v7shadow.js';
 import { admitShadowObservation } from '../history/r71store.js';
 
 function generateSignalId() {
@@ -222,6 +223,9 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
     ctx.waitUntil(maybeAdmitD2ShadowObservation(signal, pair, assetType, env));
     // Forex SELL Probe: forward-evidence collector (instrumentation only).
     ctx.waitUntil(maybeAdmitForexSellProbe(signal, pair, assetType, env));
+    // V7 Shadow: next-gen engine prototype — counterfactual would-mint store
+    // (instrumentation only, crypto-only, zero effect on production output).
+    ctx.waitUntil(maybeAdmitV7Observation(signal, pair, assetType, candleData, env));
   }
 
   const dataStatus = {};
