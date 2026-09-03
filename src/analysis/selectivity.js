@@ -36,10 +36,28 @@ export function evaluateSelectivityGate(signal, pair, assetType) {
     return { blocked: true, reason: 'forex-suppressed (cryptoOnly)', rules: ['cryptoOnly'] };
   }
 
-  // 2) Skip TRENDING regime (38.8% WR). Belt-and-braces: the D2 block already
-  //    suppresses most of these pre-AI; this catches any that slip through.
+  // 2) Skip TRENDING regime (35.4% WR n=325 over the 4-day shadow pool).
+  //    Belt-and-braces: the D2 block already suppresses most of these pre-AI;
+  //    this catches any that slip through.
   if (g.excludeTrending && signal && signal.marketRegime === 'TRENDING') {
     return { blocked: true, reason: 'trending-suppressed', rules: ['excludeTrending'] };
+  }
+
+  // 2b) EXCLUDE CHASE (v6.14.0, 2026-09-03) — BUY with rsi>55 / SELL with
+  //     rsi<45. The 4-day forward pool: CHASE entries are 73% of push volume
+  //     at 37.2% WR; non-CHASE measured 52.3% (n=44). Thresholds mirror
+  //     RSI_DIRECTION_GATE (buyMaxRsi 55 / sellMinRsi 45) and the EC rsiCell
+  //     so every layer classifies identically. Reads signal.edgeFeatures.rsi
+  //     (the same number EC-V2 cells on); missing rsi → fail-open.
+  if (g.excludeChase && signal) {
+    const ef = signal.edgeFeatures || {};
+    const rsi = (typeof ef.rsi === 'number') ? ef.rsi : parseFloat(ef.rsi);
+    if (typeof rsi === 'number' && isFinite(rsi)) {
+      const dir = signal.direction;
+      if ((dir === 'BUY' && rsi > 55) || (dir === 'SELL' && rsi < 45)) {
+        return { blocked: true, reason: 'rsi-chase-suppressed (rsi=' + rsi + ' ' + dir + ')', rules: ['excludeChase'] };
+      }
+    }
   }
 
   // 3) Require a wait-for-pullback entry (entryDist >= threshold). Instant

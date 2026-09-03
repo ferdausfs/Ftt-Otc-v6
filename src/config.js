@@ -220,7 +220,11 @@ export const CONFIG = {
   // ladder. Re-enable = flip the two flags back to true (one-line rollback).
   // After the EC ladder validates and mode flips to 'decision', EC-V2 grade —
   // measured per-slice, refreshed weekly — REPLACES these static blocks.
-  D2_TRENDING_BLOCK_ENABLED: false,
+  // 2026-09-03 RE-ENABLED (v6.14.0): the shadow window collected its full
+  // 4-day pool — TRENDING measured 35.4% WR (n=325, CI 30.1–41.1),
+  // TRENDING+BUY 20.5% (n=39). The block is evidence-backed again; rollback
+  // is still the same one-line flip (set false).
+  D2_TRENDING_BLOCK_ENABLED: true,
 
   // Phase F (2026-08-15): RANGING + ALIGNED structure is the single biggest
   // losing cell in the forward window (41.2% WR, n=1639, CI 38.9–43.6 — the CI
@@ -249,16 +253,48 @@ export const CONFIG = {
   SELECTIVITY_GATE: {
     enabled: true,              // one-line kill switch
     cryptoOnly: true,           // suppress forex pushes entirely (34% WR drag; EC is crypto-only)
-    // SHADOW WINDOW (2026-08-30): regime/entry push rules OFF so subscribers
-    // see the full pool again (~175/day era) during EC-V2 forward validation.
-    // The gate NEVER controlled history volume (only the push), so this does
-    // not affect shadow data — it restores push visibility. After the EC
-    // decision flip, push quality control moves to the EC grade (measured,
-    // weekly-refreshed) and these static rules retire or return as flags.
-    excludeTrending: false,     // suppress TRENDING-regime pushes (was true)
+    // SHADOW WINDOW ended 2026-09-03: the 4-day pool killed the EC flip idea
+    // (ladder non-monotone at all sample sizes) — so push quality control
+    // returns to these static measured rules instead of EC grades.
+    // excludeTrending back ON: TRENDING 35.4% WR (n=325) over the full window.
+    excludeTrending: true,      // suppress TRENDING-regime pushes
     requirePendingEntry: false, // only push wait-for-pullback (was true)
+    // excludeChase (NEW v6.14.0): BUY rsi>55 / SELL rsi<45 entries. The 4-day
+    // pool (630 decided): CHASE = 73% of push volume @ 37.2% WR — the single
+    // biggest drag. Non-CHASE measured 52.3% (n=44). Same thresholds as the
+    // RSI_DIRECTION_GATE / EC rsiCell so every slice speaks one language.
+    // Fail-open when edgeFeatures.rsi is missing. One-line rollback: false.
+    excludeChase: true,
     pendingEntryMinDistancePct: 0.05,
     maxAtrPercentile: null,     // suppress high-vol (was 50); null=off
+  },
+
+  // ── V7 SHADOW (2026-09-03) — next-generation engine prototype ──
+  // Paradigm: NO vote counting. Regime router + hard exclusion + rejection
+  // trigger, crypto RANGING mean-reversion only in v0.1. Runs as a pure
+  // counterfactual shadow (v7store.js): every crypto tick is evaluated, would-
+  // mints are stored and resolved forward with the production price path.
+  // NOTHING here touches the live signal until the shadow WR clears breakeven
+  // (55.6% @ 80% payout) — same RULE-6 gate that just cancelled the EC flip.
+  // Threshold sources: 4-day forward pool (630 decided): TRENDING 35.4%,
+  // counter-trend BUY 20.5%, CHASE 37.2% vs non-CHASE 52.3%; bad hours
+  // {01,02,03,11,14,19} all <=29.5% WR (n>=16 each); extremes/trigger are
+  // HYPOTHESES H1/H2 the shadow exists to test.
+  V7_SHADOW: {
+    enabled: true,
+    TF: '5min',                 // dominant TF (TF_WEIGHTS 5min=2.5)
+    MIN_CANDLES: 60,            // closed candles needed before evaluating
+    ATR_WINDOW: 100,            // ATR percentile rank window
+    // regime router (detectMarketRegime must return RANGING)
+    MIN_BB_WIDTH: 0.20,         // below VOL_STATE deadSqueezeBlock.CRYPTO -> dead
+    MAX_ATR_PCTILE: 85,         // ATR explosion veto
+    VETO_HOURS: [1, 2, 3, 11, 14, 19],   // measured bad UTC hours (<=29.5% WR)
+    // extremes + non-chase zone (H2)
+    BUY_MAX_PCTB: 0.15, BUY_MAX_RSI: 40,
+    SELL_MIN_PCTB: 0.85, SELL_MIN_RSI: 60,
+    // H1 trigger: closing rejection candle in trade direction
+    MIN_CLOSE_POS: 0.5,         // close in top/bottom half of its range
+    EXPIRY_MIN: 5,              // binary expiry for outcome resolution
   },
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
