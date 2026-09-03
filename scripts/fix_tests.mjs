@@ -245,6 +245,10 @@ console.log('\n── T3: fillStatus uses an independent current price (FIX-3) �
 
 console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ───────────');
 {
+  // Legacy push contract: with SIG_V1 disabled, the selectivity-gate path
+  // pushes engine mints as before. (Sig-v1 push ownership: T27 + sigv1 tests.)
+  const __svSavedT4 = CONFIG.SIG_V1.enabled;
+  CONFIG.SIG_V1.enabled = false;
   let tg = [];
   const installNet = () => {
     tg = [];
@@ -301,6 +305,8 @@ console.log('\n── T4: push fires; nopush=1 suppresses (FIX-1) ────�
   await drain(sink3); q3();
   ok('T4c: handleSignal forwards nopush (response ok)', body3 && !body3.error && body3.signal, '');
   eq('T4c: nopush via handleSignal suppresses the push', tg.length, 0);
+
+  CONFIG.SIG_V1.enabled = __svSavedT4;
 }
 
 console.log('\n── T5: D2 TRENDING block not overridden by AI rescue (FIX-2) ─');
@@ -913,6 +919,11 @@ console.log('\n── T26: crypto skips forex session weights (F3-13) ───�
 
 console.log('\n── T27: scanner pushes fresh tradeable signals, deduped (F3-14 revert) ─');
 {
+  // SIG-V1 (Sig-v1.0.0) owns the push layer when enabled; this block proves
+  // the LEGACY selectivity-gate contract survives a SIG_V1 kill-switch.
+  // The Sig-v1 push contract itself is covered in T27v below.
+  const __svSaved = CONFIG.SIG_V1.enabled;
+  CONFIG.SIG_V1.enabled = false;
   // Real pipeline: scanOnePair -> handleSignalRaw -> saveAndPush -> Telegram,
   // network stubbed (same pattern as T4 / phase10_integration). Subscriber
   // 111 watches BTCUSD with every filter open. This proves the auto-push
@@ -996,6 +1007,8 @@ console.log('\n── T27: scanner pushes fresh tradeable signals, deduped (F3-1
     !ss.includes('noPush: true') && ss.includes('handleSignalRaw(pair, env, ctx'));
   ok('T27e: scanner awaits persist so scheduled isolate cannot drop the push',
     ss.includes('awaitPersist: true'));
+
+  CONFIG.SIG_V1.enabled = __svSaved;
 }
 
 console.log('\n── T28: no AI calls on D2-blocked signals (F3-15) ─────');
@@ -1859,8 +1872,8 @@ console.log('\n── T43: push lock released on Telegram fail + health status �
   const hh = fs.readFileSync(fileURLToPath(new URL('../src/handlers/health.js', import.meta.url)), 'utf8');
   ok('T43i: /health push block exposes durable delivered24h at top level',
     hh.includes('delivered24h') && hh.includes('phase10.pushesLast24h'));
-  ok('T43j: /health version bumped to 6.14.0',
-    hh.includes("version: '6.14.0'"));
+  ok('T43j: /health version is the Sig-v1.0.0 engine line',
+    hh.includes("version: 'Sig-v1.0.0'"));
 }
 
 console.log('\n── T44: PENDING_ENTRY unfilled -> TIE, not mechanical WIN (Phase F 2026-08-14) ──');

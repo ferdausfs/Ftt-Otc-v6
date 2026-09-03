@@ -296,6 +296,45 @@ export const CONFIG = {
     MIN_CLOSE_POS: 0.5,         // close in top/bottom half of its range
     EXPIRY_MIN: 5,              // binary expiry for outcome resolution
   },
+  // ── SIG-V1 (2026-09-03) — strategy-playbook engine, NEW version line ──
+  // User directive: NOT indicator voting. The ROUTER reads the market state
+  // and ONE assigned strategy decides (or stays silent). All markets open.
+  // Push layer: playbook owns pushes (router-assigned strategy only).
+  // Evidence bases: S1 = v0.1 measured core (non-CHASE 52.3%); S2 fixes the
+  // measured trend-fighting wound (TRENDING+BUY 20.5% n=39); S3 = squeeze
+  // expansion hypothesis. Every emit is strategy-tagged in v7obs: and
+  // forward-resolved — per-strategy WR gates decide any future scale-up.
+  SIG_V1: {
+    enabled: true,
+    VERSION: 'Sig-v1.0.0',
+    TF: '5min', MIN_CANDLES: 60, ATR_WINDOW: 100,
+    MARKETS: { CRYPTO: true, FOREX: true, FOREX_OTC: true },   // user: open ALL pairs
+    ROUTER: {
+      ADX_TREND: 22, CONF_MIN: 0.6,
+      SQUEEZE_PCTILE: 25,        // bw percentile at/below this = coiling
+      EMA_FAST: 20, EMA_SLOW: 50,
+    },
+    S1_RANGE_FADE: {             // RANGING mean-reversion (measured v0.1 core)
+      enabled: true,
+      BUY_MAX_PCTB: 0.15, BUY_MAX_RSI: 40,
+      SELL_MIN_PCTB: 0.85, SELL_MIN_RSI: 60,
+      MIN_CLOSE_POS: 0.5,
+    },
+    S2_TREND_PULLBACK: {         // with-trend; never chase (rsi veto)
+      enabled: true,
+      RETRACE_MIN: 0.38, RETRACE_MAX: 0.61,
+      CHASE_RSI_BUY: 55, CHASE_RSI_SELL: 45,
+      PULLBACK_LOOKBACK: 3, SWING_LOOKBACK: 60,
+      MIN_CLOSE_POS: 0.5,
+    },
+    S3_BREAKOUT_RETEST: {        // squeeze -> fresh break -> retest hold only
+      enabled: true,
+      RANGE_LOOKBACK: 20, RETEST_TOL: 0.0015,
+    },
+    VETO_HOURS: [1, 2, 3, 11, 14, 19],   // measured bad UTC hours (<=29.5% WR)
+    MAX_ATR_PCTILE: 85,
+    EXPIRY_MIN: 5,
+  },
   VOLUME_SPIKE_FILTER_MULTIPLIER: 2.8,
 
   NEWS_BLACKOUT_MINUTES: 15,
@@ -343,6 +382,8 @@ export const SCAN_PAIRS = [
   'DOGE/USD', 'AVAX/USD', 'DOT/USD', 'LINK/USD',
   // Forex majors — market-hours gated
   'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
+  // OTC — 24/7 synthetic (Sig-v1.0.0: ALL pairs open per user)
+  'EURUSDOTC', 'GBPUSDOTC', 'USDJPYOTC', 'AUDUSDOTC',
 ];
 
 export const SCAN_CONFIG = {

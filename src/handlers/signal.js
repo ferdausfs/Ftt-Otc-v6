@@ -20,6 +20,7 @@ import { getEngineAudit } from '../signal/r71shadow.js';
 import { maybeAdmitD2ShadowObservation } from '../signal/d2shadow.js';
 import { maybeAdmitForexSellProbe } from '../signal/probeShadow.js';
 import { maybeAdmitV7Observation } from '../signal/v7shadow.js';
+import { evaluateSigV1, maybeAdmitSigV1Observation } from '../signal/sigv1.js';
 import { admitShadowObservation } from '../history/r71store.js';
 
 function generateSignalId() {
@@ -85,7 +86,7 @@ function classifyEntrySource(cacheHits) {
  * Chaining the push behind the save result means subscribers are notified
  * exactly when a new row lands in history.
  */
-async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response, noPush) {
+async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, response, noPush, sigv1Res) {
   let saveResult = null;
   try {
     saveResult = await saveSignalToHistory(signal, pair, isOTC, env, signalId, entrySource);
@@ -99,14 +100,37 @@ async function saveAndPush(signal, pair, isOTC, env, signalId, entrySource, resp
     // previously referenced an out-of-scope variable -> ReferenceError on every
     // signal, which killed ALL Telegram pushes silently.
     if (!noPush) {
-      // SELECTIVITY GATE (2026-08-21): announce only evidence-backed quality
-      // setups. History is already saved above, so research stays complete;
-      // this only silences the Telegram push for filtered signals.
-      const gate = evaluateSelectivityGate(signal, pair, isOTC ? ASSET_TYPE_OTC : getAssetType(pair));
-      if (gate.blocked) {
-        console.log('selectivityGate: push suppressed for ' + pair + ' — ' + gate.reason);
+      const sv = CONFIG.SIG_V1;
+      if (sv && sv.enabled) {
+        // SIG-V1.0.0: the playbook OWNS the push layer. Only the router-
+        // assigned strategy's output goes out; everything else is silent.
+        if (sigv1Res && sigv1Res.want) {
+          const strat = String(sigv1Res.strategy || '').replace('SIGV1_', '');
+          const playSignal = {
+            ...signal,
+            finalSignal: sigv1Res.want,
+            confidence: Math.round((sigv1Res.router.conf || 0.6) * 100) + '%',
+            grade: { grade: 'S1', label: '' },
+            entryReason: 'Sig-v1 ' + strat + ' | state=' + sigv1Res.router.state
+              + ' | rsi=' + (typeof sigv1Res.features.rsi === 'number' ? Math.round(sigv1Res.features.rsi) : '?')
+              + ' | ' + pair,
+            sigv1: {
+              version: sv.VERSION, strategy: sigv1Res.strategy, state: sigv1Res.router.state,
+              want: sigv1Res.want, entryPrice: sigv1Res.entry.price, expiryMin: sigv1Res.entry.expiryMin,
+            },
+          };
+          await pushSignalToSubscribers({ ...response, id: signalId, pair, signal: playSignal }, env);
+        } else {
+          console.log('sigv1: silent for ' + pair + ' (state=' + ((sigv1Res && sigv1Res.router && sigv1Res.router.state) || '?') + ', skip=' + (sigv1Res && sigv1Res.skip) + ')');
+        }
       } else {
-        await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+        // LEGACY v6 path (SIG_V1 disabled): selectivity gate as before.
+        const gate = evaluateSelectivityGate(signal, pair, isOTC ? ASSET_TYPE_OTC : getAssetType(pair));
+        if (gate.blocked) {
+          console.log('selectivityGate: push suppressed for ' + pair + ' — ' + gate.reason);
+        } else {
+          await pushSignalToSubscribers({ ...response, id: signalId, pair, signal }, env);
+        }
       }
     }
   } catch (e) {
@@ -226,6 +250,9 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
     // V7 Shadow: next-gen engine prototype — counterfactual would-mint store
     // (instrumentation only, crypto-only, zero effect on production output).
     ctx.waitUntil(maybeAdmitV7Observation(signal, pair, assetType, candleData, env));
+    // SIG-V1: strategy-playbook engine — strategy-tagged would-signal store,
+    // ALL markets (crypto/forex/OTC). Push ownership depends on SIG_V1.enabled.
+    ctx.waitUntil(maybeAdmitSigV1Observation(signal, pair, assetType, candleData, env));
   }
 
   const dataStatus = {};
@@ -282,7 +309,10 @@ export async function handleSignalRaw(pair, env, ctx, opts = {}) {
     // Fetch path: waitUntil so the HTTP response is not blocked.
     // Scanner path: also await (opts.awaitPersist) so a scheduled isolate
     // cannot freeze after scanOnePair returns and kill the Telegram send.
-    const persist = saveAndPush(signal, pair, false, env, signalId, entrySource, result, noPush);
+    const sigv1Res = (CONFIG.SIG_V1 && CONFIG.SIG_V1.enabled)
+      ? evaluateSigV1(candleData, new Date(), assetType)
+      : null;
+    const persist = saveAndPush(signal, pair, false, env, signalId, entrySource, result, noPush, sigv1Res);
     if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(persist);
     if (opts.awaitPersist) await persist;
   }
@@ -315,6 +345,11 @@ async function handleSignalRawOTC(pair, env, ctx, opts = {}) {
     now: opts.now,
   });
   if (exotic) signal.exoticWarning = 'Exotic OTC pair. Very high spreads. Confidence heavily reduced.';
+
+  // SIG-V1: strategy-tagged would-signal store for OTC too (all markets open).
+  if (ctx && env && env.SIGNAL_CACHE && CONFIG.SIG_V1 && CONFIG.SIG_V1.enabled) {
+    ctx.waitUntil(maybeAdmitSigV1Observation(signal, pair, ASSET_TYPE_OTC, candleData, env));
+  }
 
   const dataStatus = {};
   for (const tf of timeframes)
@@ -371,7 +406,10 @@ async function handleSignalRawOTC(pair, env, ctx, opts = {}) {
   };
 
   if (signalId) {
-    const persist = saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult, noPush);
+    const sigv1Res = (CONFIG.SIG_V1 && CONFIG.SIG_V1.enabled)
+      ? evaluateSigV1(candleData, new Date(), ASSET_TYPE_OTC)
+      : null;
+    const persist = saveAndPush(signal, pair, true, env, signalId, entrySource, otcResult, noPush, sigv1Res);
     if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(persist);
     if (opts.awaitPersist) await persist;
   }
