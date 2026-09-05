@@ -14,7 +14,7 @@
 import { CONFIG, SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
 import { sanitizePair, getAssetType } from '../utils/pairs.js';
 import { isForexMarketOpen } from '../utils/session.js';
-import { fetchCandlesWithCache } from '../fetch/candles.js';
+import { fetchCandlesWithCache, fetchCandles } from '../fetch/candles.js';
 import { evaluateSignal, precompute, lastClosedIndex, MS_1M } from '../strategy/engine.mjs';
 import { writeLatest } from '../history/latestCache.js';
 import { saveSignal, computeStats } from '../history/store.js';
@@ -35,7 +35,16 @@ function toEngineCandles(rows) {
   })).filter(k => Number.isFinite(k.t));
 }
 
-async function fetchWindow(pair, tf, env, ctx, assetType) {
+async function fetchWindow(pair, tf, env, ctx, assetType, noCache = false) {
+  if (noCache) {
+    // Retry path: a cached window would pin the same stale candle set for the
+    // whole TTL (50s for 1min) — longer than the lag-retry loop itself.
+    const res = await fetchCandles(pair, tf, CONFIG.FETCH_LIMITS[tf], env, assetType);
+    if (!res || res.error) throw new Error((res && res.error) || ('fetch failed ' + tf));
+    const candles = toEngineCandles(res);
+    if (candles.length === 0) throw new Error('empty window ' + tf);
+    return candles;
+  }
   const res = await fetchCandlesWithCache(pair, tf, CONFIG.FETCH_LIMITS[tf], env, ctx, assetType);
   if (!res || res.error) throw new Error((res && res.error) || ('fetch failed ' + tf));
   const candles = toEngineCandles(res.candles);
@@ -75,7 +84,11 @@ export async function evaluatePair(pair, env, ctx, now = Date.now()) {
 
   let attempt = 0;
   while (true) {
-    const [c15, c5, c1] = await Promise.all(TIMEFRAMES.map(tf => fetchWindow(pair, tf, env, ctx, assetType)));
+    // Attempt 0 uses the KV cache (cheap for manual calls); every lag retry
+    // fetches direct — a cached 1min window outlives the retry interval.
+    const [c15, c5, c1] = await Promise.all(
+      TIMEFRAMES.map(tf => fetchWindow(pair, tf, env, ctx, assetType, attempt > 0)),
+    );
     const i = lastClosedIndex(c1, now);
     if (i < 0) throw new Error('no closed 1m candle');
 
