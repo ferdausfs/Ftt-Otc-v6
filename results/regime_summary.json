@@ -1,0 +1,98 @@
+{
+  "engine": "FTT3-R regime-adaptive (ADX14@15m: >=25 TRENDING -> A: C1/C2/C3; <20 RANGING -> B: D1/D2/D3; 20-25 TRANSITION -> NO_TRADE; expiry tiers 75/25 -> 5/7/10m)",
+  "startedAt": "2026-09-05T12:36:31.873Z",
+  "splitDate": "2026-09-05T00:00:00Z",
+  "oldWindowTouched": false,
+  "payoutAssumption": 0.8,
+  "breakevenWr": 55.5556,
+  "minBucket": 30,
+  "dataEnds": [
+    {
+      "pair": "BTC/USD",
+      "last": "2026-09-05T01:00:00.000Z"
+    },
+    {
+      "pair": "ETH/USD",
+      "last": "2026-09-05T01:00:00.000Z"
+    },
+    {
+      "pair": "XRP/USD",
+      "last": "2026-09-05T01:00:00.000Z"
+    },
+    {
+      "pair": "SOL/USD",
+      "last": "2026-09-05T01:00:00.000Z"
+    },
+    {
+      "pair": "EUR/USD",
+      "last": "2026-09-04T21:29:00.000Z"
+    },
+    {
+      "pair": "GBP/USD",
+      "last": "2026-09-04T21:29:00.000Z"
+    },
+    {
+      "pair": "USD/JPY",
+      "last": "2026-09-04T20:59:00.000Z"
+    },
+    {
+      "pair": "AUD/USD",
+      "last": "2026-09-04T21:30:00.000Z"
+    }
+  ],
+  "freshRows": 52,
+  "freshSignals": 0,
+  "freshTies": 0,
+  "freshExpiryGaps": 0,
+  "funnel": {
+    "D1_NO_EXTENSION": 38,
+    "D2_NO_EXHAUSTION": 1,
+    "REGIME_TRANSITION": 13
+  },
+  "rates": {
+    "overall": {
+      "label": "fresh overall",
+      "wins": 0,
+      "losses": 0,
+      "ties": 0,
+      "wr": null,
+      "wilsonLo": null,
+      "wilsonHi": null,
+      "conservativeWr": null,
+      "sufficient": false,
+      "note": "INSUFFICIENT (n=0 < 30)"
+    },
+    "byMarket": [],
+    "byPair": [],
+    "byStrategy": [],
+    "byRegime": [],
+    "byTier": [],
+    "byDirection": []
+  },
+  "noSkillBaselineUpRate": [
+    {
+      "minutes": 5,
+      "valid": 48,
+      "up": 19,
+      "down": 27,
+      "tie": 2,
+      "upRate": 0.3958
+    },
+    {
+      "minutes": 7,
+      "valid": 44,
+      "up": 24,
+      "down": 20,
+      "tie": 0,
+      "upRate": 0.5455
+    },
+    {
+      "minutes": 10,
+      "valid": 44,
+      "up": 18,
+      "down": 26,
+      "tie": 0,
+      "upRate": 0.4091
+    }
+  ]
+}

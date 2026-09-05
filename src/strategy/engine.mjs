@@ -41,9 +41,27 @@
  *                    the no-lookahead property by mutating future candles.
  *
  * Candle shape everywhere: { t, o, h, l, c } — t = OPEN time in ms UTC.
+ *
+ * ── Regime-adaptive dispatch (FTT3-R, branch-only addition) ─────────────────
+ * evaluateRegimeSignal() computes the market regime FIRST (ADX(14) on the
+ * last closed 15m candle — see regime.mjs), then dispatches:
+ *   TRENDING   -> evaluateSignal above, byte-for-byte unchanged (Strategy A)
+ *   RANGING    -> evaluateMeanReversion (meanReversion.mjs, Strategy B)
+ *   TRANSITION -> NO_TRADE (deliberate; neither strategy fires)
+ * Every result's audit carries `regime` (adx value + classification) and
+ * `strategy` ('TREND' | 'MEANREV' | null) in addition to the existing audit
+ * fields. evaluateSignal itself is NOT modified — Strategy A is reused
+ * exactly as audited in the FTT3 OOS run.
  */
 
-import { ema, macd as macdCalc, atr as atrCalc, median, percentileRank } from './indicators.mjs';
+import {
+  ema, macd as macdCalc, atr as atrCalc, median, percentileRank,
+  adx as adxCalc, bollinger as bollingerCalc, rsi as rsiCalc,
+} from './indicators.mjs';
+import { computeRegime, ADX_PERIOD } from './regime.mjs';
+import {
+  evaluateMeanReversion, BB_PERIOD, BB_MULT, RSI_PERIOD,
+} from './meanReversion.mjs';
 
 export const MS_1M = 60_000;
 export const MS_5M = 300_000;
@@ -198,12 +216,20 @@ export function precompute(windows) {
   const closes15 = windows.c15.map(k => k.c);
   const closes5 = windows.c5.map(k => k.c);
   const m5 = macdCalc(closes5, MACD_FAST, MACD_SLOW, MACD_SIGNAL);
+  const bb5 = bollingerCalc(closes5, BB_PERIOD, BB_MULT);
   return {
     ema20_15: ema(closes15, EMA_FAST),
     ema50_15: ema(closes15, EMA_SLOW),
     macdLine5: m5.line,
     macdSig5: m5.signal,
     atr1: atrCalc(windows.c1, ATR_PERIOD),
+    // ── regime-adaptive additions (causal series; evaluateSignal ignores
+    // them, so the FTT3 fast path is unchanged) ──
+    adx15: adxCalc(windows.c15, ADX_PERIOD).adx,
+    bbBasis5: bb5.basis,
+    bbUpper5: bb5.upper,
+    bbLower5: bb5.lower,
+    rsi5: rsiCalc(closes5, RSI_PERIOD),
   };
 }
 
@@ -213,4 +239,84 @@ export function lastClosedIndex(c1, nowMs) {
     if (c1[k].t + MS_1M <= nowMs) return k;
   }
   return -1;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Regime-adaptive dispatch (FTT3-R). PRE-REGISTERED: the regime thresholds,
+// both strategies' parameters and the fresh-window split date are frozen in
+// the pre-registration commit BEFORE this engine ever runs on fresh data.
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Regime-first dispatcher: compute the market regime from the last closed
+ * 15m candle (ADX(14), thresholds 25/20 — identical for every pair), then
+ * run Strategy A (TRENDING: evaluateSignal, unchanged) or Strategy B
+ * (RANGING: mean-reversion D1->D3). TRANSITION is a deliberate NO_TRADE so
+ * the engine never flip-flops strategies on small ADX wobbles.
+ *
+ * The result's audit always carries:
+ *   regime   — { adx, regime, i15 } (raw ADX + classification; i15 = index of
+ *              the last closed 15m candle used)
+ *   strategy — 'TREND' | 'MEANREV' | null (null when the regime itself
+ *              blocks: TRANSITION or insufficient 15m history)
+ * plus the existing audit fields of whichever strategy path ran.
+ *
+ * @param {Array} c15 full 15m candles ascending (may include future candles)
+ * @param {Array} c5  full 5m candles ascending
+ * @param {Array} c1  full 1m candles ascending
+ * @param {number} i  index into c1 of the entry (last closed 1m) candle
+ * @param {object} [pre] optional fast-path series (see precompute)
+ */
+export function evaluateRegimeSignal(c15, c5, c1, i, pre) {
+  const audit = {
+    regime: null, strategy: null,
+    c1: null, c2: null, c3: null,
+    d1: null, d2: null, d3: null,
+    expiry: null,
+  };
+  const noTrade = (stage, reason) => ({ decision: 'NO_TRADE', stage, reason, audit });
+
+  if (!Number.isInteger(i) || i < 0 || i >= c1.length)
+    return noTrade('INPUT', 'REGIME_INVALID_ENTRY_INDEX');
+
+  const entryCloseT = c1[i].t + MS_1M;
+
+  // Last CLOSED 15m candle — same lookup as C1 uses (strictly closed before
+  // the entry candle's close time; future candles are never read).
+  let i15 = -1;
+  for (let k = c15.length - 1; k >= 0; k--) {
+    if (c15[k].t + MS_15M <= entryCloseT) { i15 = k; break; }
+  }
+  if (i15 < 0) {
+    audit.regime = { adx: null, regime: null, i15 };
+    return noTrade('REGIME', 'REGIME_INSUFFICIENT_15M');
+  }
+
+  // ── Regime first, identical for every pair ────────────────────────────────
+  const { adx: adxVal, regime } = computeRegime(c15, i15, pre);
+  audit.regime = { adx: adxVal, regime: regime ?? null, i15 };
+  if (regime === undefined) return noTrade('REGIME', 'REGIME_INSUFFICIENT_15M');
+  if (regime === 'TRANSITION') return noTrade('REGIME', 'REGIME_TRANSITION');
+
+  if (regime === 'TRENDING') {
+    // Strategy A — evaluateSignal reused byte-for-byte; only the audit is
+    // enriched with regime/strategy tags.
+    audit.strategy = 'TREND';
+    const r = evaluateSignal(c15, c5, c1, i, pre);
+    return { decision: r.decision, stage: r.stage, reason: r.reason, audit: { ...audit, ...r.audit } };
+  }
+
+  // ── RANGING: Strategy B — mean-reversion D1 -> D2 -> D3 ───────────────────
+  audit.strategy = 'MEANREV';
+  // Same 5m-boundary gate as Strategy A: the D2 entry trigger IS a 5m close,
+  // so a signal can only exist when the last closed 5m candle closes exactly
+  // at the entry candle's close time.
+  let i5 = -1;
+  for (let k = c5.length - 1; k >= 0; k--) {
+    if (c5[k].t + MS_5M <= entryCloseT) { i5 = k; break; }
+  }
+  if (i5 === -1 || c5[i5].t + MS_5M !== entryCloseT)
+    return noTrade('C0', 'NOT_5M_BOUNDARY');
+
+  return evaluateMeanReversion(c5, c1, i, i5, pre, audit);
 }

@@ -100,3 +100,33 @@ not add filters to rescue the number — that is what this repo's history taught
 Crons: `*/5` signal scanner (aligned to 5m closes), `*/2` result checker
 (resolves expiries against the 1m feed; ties are stored as TIE, missing candles
 as EXPIRY_GAP — both excluded from win/loss stats).
+
+---
+
+# FTT3-R — regime-adaptive engine (branch `feature/regime-adaptive` — NOT deployed)
+
+Status: **branch-only**. `main` keeps running the audited FTT3 engine; nothing on
+this branch is merged or deployed. The branch exists so the merge decision can be
+made after the fresh-window backtest actually runs.
+
+Idea: a market-CONDITION detector applied uniformly to every pair. The strategy
+that fires depends on what the market is doing, never on which symbol it is —
+there are no pair-specific parameters anywhere.
+
+- Regime: ADX(14) on the last closed 15m candle. >= 25 TRENDING -> Strategy A
+  (FTT3's C1->C2->C3, reused byte-for-byte); < 20 RANGING -> Strategy B
+  (mean-reversion D1->D3: BB(20,2σ) 5m extension, RSI(14) exhaustion + snap-back
+  inside, same 1m ATR gate as C3); 20-25 TRANSITION -> NO_TRADE (deliberate).
+- Expiry: the same ATR-percentile ladder (5/7/10 min) for both strategies.
+- Audit rows now carry `regime` (raw ADX + classification) and `strategy`
+  (TREND / MEANREV / null) on every row.
+
+Every threshold and the fresh-window split date (**2026-09-05T00:00:00Z** — the
+FTT3 OOS window is burned and is never re-sliced) are frozen in
+**PRE_REGISTRATION.md** and in the pre-registration commit. The 25/20 ADX cutoffs
+are the standard textbook values, not tuned on any FTT dataset.
+
+Tests: `node scripts/regime_tests.mjs` — 89 checks including hand-computed
+ADX/RSI/BB fixtures, both-value-path equivalence, no-lookahead mutation proofs
+for the new code, and the pair-agnostic proof. Fresh-window harness (deferred
+until enough post-2026-09-05 data exists): `node backtest/harness_regime.mjs`.
