@@ -46,7 +46,7 @@ export const SCAN_CONFIG = {
   LATEST_TTL_SECONDS: 600,        // 10 min = 2x cron interval
   BATCH_SIZE: 4,                  // parallel pairs per batch
   BATCH_DELAY_MS: 400,
-  MAX_SCAN_DURATION_MS: 25000,    // hard stop per cron tick
+  MAX_SCAN_DURATION_MS: 55000,    // hard stop per cron tick
   SCAN_INTERVAL_SECONDS: 300,     // mirrors the */5 cron
 };
 

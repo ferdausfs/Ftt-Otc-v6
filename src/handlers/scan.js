@@ -57,18 +57,38 @@ export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketO
 /**
  * Evaluate one pair right now. Returns the response object also written to
  * the latest: cache. Never throws — failures come back as { error }.
+ *
+ * Boundary-lag retries: the */5 cron fires exactly on the boundary, but the
+ * just-closed 1m candle usually reaches TwelveData's feed 1-3s later. When the
+ * fetched window's last closed candle is NOT the boundary candle we sleep and
+ * re-fetch a few times before giving up — otherwise every cron tick would
+ * systematically miss its own boundary.
  */
+const LAG_RETRIES = 3;
+const LAG_SLEEP_MS = 5000;
+
 export async function evaluatePair(pair, env, ctx, now = Date.now()) {
   const assetType = getAssetType(pair);
   if (assetType === ASSET_TYPE.FOREX && !isForexMarketOpen()) {
     return { pair, marketStatus: 'CLOSED', signal: null, generatedAt: new Date().toISOString() };
   }
 
-  const [c15, c5, c1] = await Promise.all(TIMEFRAMES.map(tf => fetchWindow(pair, tf, env, ctx, assetType)));
-  const i = lastClosedIndex(c1, now);
-  if (i < 0) throw new Error('no closed 1m candle');
+  let attempt = 0;
+  while (true) {
+    const [c15, c5, c1] = await Promise.all(TIMEFRAMES.map(tf => fetchWindow(pair, tf, env, ctx, assetType)));
+    const i = lastClosedIndex(c1, now);
+    if (i < 0) throw new Error('no closed 1m candle');
 
-  const r = evaluateSignal(c15, c5, c1, i, precompute({ c15, c5, c1 }));
+    const r = evaluateSignal(c15, c5, c1, i, precompute({ c15, c5, c1 }));
+    if (r.reason !== 'NOT_5M_BOUNDARY' || attempt >= LAG_RETRIES) {
+      return buildResult(pair, assetType, c15, c5, c1, i, r);
+    }
+    attempt++;
+    await new Promise(res => setTimeout(res, LAG_SLEEP_MS));
+  }
+}
+
+function buildResult(pair, assetType, c15, c5, c1, i, r) {
   const entryCloseT = c1[i].t + MS_1M;
 
   const signal = {
@@ -97,6 +117,7 @@ export async function evaluatePair(pair, env, ctx, now = Date.now()) {
     source: 'FTT3',
     generatedAt: new Date().toISOString(),
   };
+  return result;
 }
 
 /** Full scan of one pair: evaluate -> latest: cache -> history -> push. */
