@@ -58,7 +58,7 @@ export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketO
  * Evaluate one pair right now. Returns the response object also written to
  * the latest: cache. Never throws — failures come back as { error }.
  *
- * Boundary-lag retries: the */5 cron fires exactly on the boundary, but the
+ * Boundary-lag retries: the every-5-minutes cron fires exactly on the boundary, but the
  * just-closed 1m candle usually reaches TwelveData's feed 1-3s later. When the
  * fetched window's last closed candle is NOT the boundary candle we sleep and
  * re-fetch a few times before giving up — otherwise every cron tick would
