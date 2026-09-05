@@ -65,10 +65,10 @@ function rateRow(label, w, l, t) {
   const cons = wilson(w, decided + t);
   return {
     label, wins: w, losses: l, ties: t,
-    wr: decided ? +pct(ci.wr) : null,
-    wilsonLo: decided ? +pct(ci.lo) : null,
-    wilsonHi: decided ? +pct(ci.hi) : null,
-    conservativeWr: (decided + t) ? +pct(cons.wr) : null,
+    wr: decided ? ci.wr : null,              // fractions 0..1; formatted on print
+    wilsonLo: decided ? ci.lo : null,
+    wilsonHi: decided ? ci.hi : null,
+    conservativeWr: (decided + t) ? cons.wr : null,
     sufficient: decided >= MIN_BUCKET,
     note: decided >= MIN_BUCKET ? null : `INSUFFICIENT (n=${decided} < ${MIN_BUCKET})`,
   };
@@ -234,7 +234,8 @@ function main() {
   console.log('\n══ OOS HEADLINE (split ' + SPLIT_DATE + ', touched once) ══');
   console.log(`candidates=${oosRows.length} signals=${oosSignals.length} ties=${ties} expiryGaps=${gaps}`);
   for (const r of [overall, ...byMarket, ...byPair, ...byTier]) {
-    console.log(`${r.label.padEnd(22)} W=${r.wins} L=${r.losses} T=${r.ties}  WR=${r.wr ?? '-'}  CI=[${r.wilsonLo ?? '-'}, ${r.wilsonHi ?? '-'}]  ${r.note ?? ''}`);
+    const f = (x) => x == null ? '-' : (100 * x).toFixed(1) + '%';
+    console.log(`${r.label.padEnd(22)} W=${r.wins} L=${r.losses} T=${r.ties}  WR=${f(r.wr)}  CI=[${f(r.wilsonLo)}, ${f(r.wilsonHi)}]  ${r.note ?? ''}`);
   }
   console.log('\nNo-skill baseline up-rate (OOS):');
   for (const b of baselines) console.log(`  ${b.minutes}m window: n=${b.valid} up=${b.up} down=${b.down} tie=${b.tie} upRate=${b.upRate}`);

@@ -1,0 +1,300 @@
+{
+  "engine": "FTT3 (C1 EMA20/50@15m bias, C2 MACD 12/26/9@5m cross, C3 ATR14@1m >= trailing-100 median; expiry tiers 75/25 -> 5/7/10m)",
+  "startedAt": "2026-09-05T09:45:18.558Z",
+  "splitDate": "2026-08-16T00:00:00Z",
+  "payoutAssumption": 0.8,
+  "breakevenWr": 55.5556,
+  "minBucket": 30,
+  "data": [
+    {
+      "pair": "BTC/USD",
+      "market": "crypto",
+      "rows": 17846,
+      "is": 12073,
+      "oos": 5773
+    },
+    {
+      "pair": "ETH/USD",
+      "market": "crypto",
+      "rows": 17846,
+      "is": 12073,
+      "oos": 5773
+    },
+    {
+      "pair": "XRP/USD",
+      "market": "crypto",
+      "rows": 17846,
+      "is": 12073,
+      "oos": 5773
+    },
+    {
+      "pair": "SOL/USD",
+      "market": "crypto",
+      "rows": 17846,
+      "is": 12073,
+      "oos": 5773
+    },
+    {
+      "pair": "EUR/USD",
+      "market": "forex",
+      "rows": 5791,
+      "is": 1539,
+      "oos": 4252
+    },
+    {
+      "pair": "GBP/USD",
+      "market": "forex",
+      "rows": 5790,
+      "is": 1538,
+      "oos": 4252
+    },
+    {
+      "pair": "USD/JPY",
+      "market": "forex",
+      "rows": 5760,
+      "is": 1526,
+      "oos": 4234
+    },
+    {
+      "pair": "AUD/USD",
+      "market": "forex",
+      "rows": 2895,
+      "is": 767,
+      "oos": 2128
+    }
+  ],
+  "isFunnel": {
+    "total": 53662,
+    "c1Pass": 53154,
+    "c2Pass": 53154,
+    "c3Pass": 921,
+    "signals": 921,
+    "reasons": {
+      "C1_INSUFFICIENT_15M": 508,
+      "C2_NO_CROSS": 48900,
+      "C1_C2_C3_ALL_PASS": 921,
+      "C2_WRONG_DIRECTION": 2238,
+      "C3_LOW_VOLATILITY": 1095
+    }
+  },
+  "oosFunnel": {
+    "total": 37958,
+    "c1Pass": 37958,
+    "c2Pass": 37958,
+    "c3Pass": 746,
+    "signals": 746,
+    "reasons": {
+      "C2_NO_CROSS": 34814,
+      "C1_C2_C3_ALL_PASS": 746,
+      "C2_WRONG_DIRECTION": 1642,
+      "C3_LOW_VOLATILITY": 756
+    }
+  },
+  "oosSignals": 746,
+  "oosTies": 49,
+  "oosExpiryGaps": 55,
+  "rates": {
+    "overall": {
+      "label": "OOS overall",
+      "wins": 324,
+      "losses": 318,
+      "ties": 49,
+      "wr": 0.5046728971962616,
+      "wilsonLo": 0.46608516894979224,
+      "wilsonHi": 0.5432050367470349,
+      "conservativeWr": 0.46888567293777134,
+      "sufficient": true,
+      "note": null
+    },
+    "byMarket": [
+      {
+        "label": "OOS crypto",
+        "wins": 190,
+        "losses": 204,
+        "ties": 12,
+        "wr": 0.48223350253807107,
+        "wilsonLo": 0.4333039330033024,
+        "wilsonHi": 0.5315061698918655,
+        "conservativeWr": 0.46798029556650245,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS forex",
+        "wins": 134,
+        "losses": 114,
+        "ties": 37,
+        "wr": 0.5403225806451613,
+        "wilsonLo": 0.47815309242546544,
+        "wilsonHi": 0.6012619494564845,
+        "conservativeWr": 0.47017543859649125,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byPair": [
+      {
+        "label": "OOS BTC/USD",
+        "wins": 38,
+        "losses": 53,
+        "ties": 1,
+        "wr": 0.4175824175824176,
+        "wilsonLo": 0.3216129811867251,
+        "wilsonHi": 0.5202283381452177,
+        "conservativeWr": 0.41304347826086957,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS ETH/USD",
+        "wins": 52,
+        "losses": 47,
+        "ties": 0,
+        "wr": 0.5252525252525253,
+        "wilsonLo": 0.4277930823555661,
+        "wilsonHi": 0.6208254422866207,
+        "conservativeWr": 0.5252525252525253,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS XRP/USD",
+        "wins": 45,
+        "losses": 57,
+        "ties": 5,
+        "wr": 0.4411764705882353,
+        "wilsonLo": 0.3486933262219423,
+        "wilsonHi": 0.5379295516795729,
+        "conservativeWr": 0.4205607476635514,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS SOL/USD",
+        "wins": 55,
+        "losses": 47,
+        "ties": 6,
+        "wr": 0.5392156862745098,
+        "wilsonLo": 0.44281961376907303,
+        "wilsonHi": 0.6327651342965835,
+        "conservativeWr": 0.5092592592592593,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS EUR/USD",
+        "wins": 35,
+        "losses": 39,
+        "ties": 34,
+        "wr": 0.47297297297297297,
+        "wilsonLo": 0.3633870691843268,
+        "wilsonHi": 0.5852264324058573,
+        "conservativeWr": 0.32407407407407407,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS GBP/USD",
+        "wins": 53,
+        "losses": 50,
+        "ties": 0,
+        "wr": 0.5145631067961165,
+        "wilsonLo": 0.4192695708407086,
+        "wilsonHi": 0.6088094167832259,
+        "conservativeWr": 0.5145631067961165,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS USD/JPY",
+        "wins": 46,
+        "losses": 25,
+        "ties": 3,
+        "wr": 0.647887323943662,
+        "wilsonLo": 0.5318206220883968,
+        "wilsonHi": 0.748772518804355,
+        "conservativeWr": 0.6216216216216216,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byTier": [
+      {
+        "label": "OOS expiry7",
+        "wins": 143,
+        "losses": 113,
+        "ties": 15,
+        "wr": 0.55859375,
+        "wilsonLo": 0.4973457384842358,
+        "wilsonHi": 0.6181092783400562,
+        "conservativeWr": 0.5276752767527675,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS expiry5",
+        "wins": 181,
+        "losses": 205,
+        "ties": 34,
+        "wr": 0.4689119170984456,
+        "wilsonLo": 0.41967993341254073,
+        "wilsonHi": 0.5187565785159464,
+        "conservativeWr": 0.430952380952381,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byDirection": [
+      {
+        "label": "OOS CALL",
+        "wins": 190,
+        "losses": 177,
+        "ties": 17,
+        "wr": 0.5177111716621253,
+        "wilsonLo": 0.46667030674418597,
+        "wilsonHi": 0.5683851049168451,
+        "conservativeWr": 0.4947916666666667,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "OOS PUT",
+        "wins": 134,
+        "losses": 141,
+        "ties": 32,
+        "wr": 0.48727272727272725,
+        "wilsonLo": 0.42878015422473525,
+        "wilsonHi": 0.546115974817338,
+        "conservativeWr": 0.4364820846905538,
+        "sufficient": true,
+        "note": null
+      }
+    ]
+  },
+  "noSkillBaselineUpRate": [
+    {
+      "minutes": 5,
+      "valid": 30411,
+      "up": 14415,
+      "down": 14511,
+      "tie": 1485,
+      "upRate": 0.474
+    },
+    {
+      "minutes": 7,
+      "valid": 30388,
+      "up": 14547,
+      "down": 14489,
+      "tie": 1352,
+      "upRate": 0.4787
+    },
+    {
+      "minutes": 10,
+      "valid": 30358,
+      "up": 14626,
+      "down": 14631,
+      "tie": 1101,
+      "upRate": 0.4818
+    }
+  ]
+}
