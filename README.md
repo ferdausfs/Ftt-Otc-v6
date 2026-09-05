@@ -1,94 +1,102 @@
-# FTT Signal Worker v6.9.1
+# FTT Signal Worker — FTT3 engine
 
-Cloudflare Workers-based multi-timeframe binary options signal engine.
-Supports Forex, Crypto, and OTC (Olymp Trade) pairs.
+Binary-options signal worker (Cloudflare Worker + Telegram push). **FTT3** is a
+complete rewrite: three conditions, three timeframes, standard-default
+indicators, and an ATR-percentile expiry ladder. There are no other filters —
+no grading, no confidence scores, no AI validation, no session filter, no
+hidden veto. The entire decision logic is `src/strategy/engine.mjs` and is
+readable in one sitting.
 
-## Repo Structure
+> **Verdict up front:** the walk-forward backtest (out-of-sample touched once,
+> split date committed before the run) returned **FAIL** — OOS win rate 50.5%
+> (Wilson 95% CI [46.6%, 54.3%]) vs the 55.6% breakeven at a 0.80 payout.
+> See `results/FTT3_BACKTEST_REPORT.md`. The engine is deployed as an audited
+> data collector, not as a proven-profitable signal source.
+
+## The three conditions
+
+Evaluated strictly in order C1 → C2 → C3. The first failing condition stops
+the chain and is logged with its raw indicator values. Nothing else can block.
+
+| # | Timeframe | Check | Pass means |
+|---|---|---|---|
+| C1 | 15m | EMA(20) vs EMA(50) on the last **closed** candle | EMA20 > EMA50 → only **CALL** allowed; EMA20 < EMA50 → only **PUT**; equal/undefined → NO_TRADE |
+| C2 | 5m | MACD(12,26,9) line crosses its signal line on the last **closed** candle | Bullish cross required for CALL, bearish for PUT; no cross or wrong direction → NO_TRADE |
+| C3 | 1m | ATR(14, Wilder) at/above its own trailing **median over the last 100 closed candles** | Below the median (market too quiet) → NO_TRADE |
+
+A signal can only fire when the entry 1m candle closes exactly on a 5m
+boundary (that is when C2's "last closed 5m candle" exists). The worker scans
+every 5 minutes for exactly this reason.
+
+## Dynamic expiry (fixed before any backtest — never tuned after results)
+
+Chosen at entry time from the percentile rank of the current 1m ATR(14) within
+its trailing 100 closed candles:
+
+| ATR percentile | Expiry |
+|---|---|
+| ≥ 75th | 5 minutes |
+| 25th – 75th | 7 minutes |
+| < 25th | 10 minutes |
+
+Every signal logs the chosen expiry and the percentile value.
+
+## No-lookahead
+
+A signal for 1m index `i` may only use candles fully closed before `i`'s close
+time. The engine enforces this itself (it slices its own inputs) and
+`scripts/strategy_tests.mjs` proves it by mutating future candles and asserting
+the decision, audit and expiry are unchanged — on both the reference path and
+the precomputed fast path.
+
+## Scope
+
+- **Pairs:** exactly the 8 pairs the backtest covered — BTC/USD, ETH/USD,
+  XRP/USD, SOL/USD (Bybit spot as the /USD proxy) and EUR/USD, GBP/USD,
+  USD/JPY, AUD/USD (Yahoo). Real markets only.
+- **No OTC pairs** — there is no legitimate historical data source for broker
+  synthetic feeds, so they are out of scope entirely.
+
+## Layout
 
 ```
-src/
-├── index.js                  ← Main entry point (router + scheduled)
-├── config.js                 ← All constants & configuration
-│
-├── utils/
-│   ├── helpers.js            ← safeLastValue, fmt, r2, jsonResponse, etc.
-│   ├── cors.js               ← CORS headers & applyCors
-│   ├── pairs.js              ← sanitizePair, getAssetType, isExoticPair
-│   └── session.js            ← detectTradingSession, checkNewsBlackout
-│
-├── indicators/
-│   ├── math.js               ← EMA, RSI, MACD, ATR, BB, Stoch, ADX, CCI, MFI, Pivots, Camarilla
-│   ├── patterns.js           ← Candlestick pattern detection
-│   ├── divergence.js         ← RSI & MACD divergence
-│   ├── sr.js                 ← Support/Resistance + FVG detection
-│   ├── regime.js             ← Market regime detection (TRENDING/RANGING/BREAKOUT/VOLATILE)
-│   └── index.js              ← calculateAllIndicators (aggregator)
-│
-├── analysis/
-│   ├── filters.js            ← Volume spike, candle consistency, session weight, correlation
-│   ├── grade.js              ← Signal grade (A+/A/B/C/D/F) + tie resolution
-│   ├── duration.js           ← ATR-based expiry calculation (Forex & OTC)
-│   └── otc.js                ← OTC-specific patterns (consecutive candles, wick rejection, round numbers)
-│
-├── ai/
-│   ├── cerebras.js           ← Cerebras AI validation (Forex + OTC)
-│   ├── groq.js               ← Groq AI validation (Forex)
-│   └── combine.js            ← Dual-AI result combiner + indicator snapshot builder
-│
-├── fetch/
-│   ├── keys.js               ← API key extraction (JSON array / individual vars)
-│   └── candles.js            ← TwelveData candle fetch with KV cache
-│
-├── signal/
-│   ├── timeframe.js          ← analyzeTimeframe (all 11 categories)
-│   ├── engine.js             ← buildMultiTimeframeSignal (Forex/Crypto)
-│   └── otcEngine.js          ← buildMultiTimeframeSignalOTC
-│
-├── history/
-│   └── stats.js              ← Save signals, WIN/LOSS tracking, pair stats, dynamic confidence
-│
-├── middleware/
-│   └── rateLimit.js          ← Rate limiting (RATE_LIMITER binding or KV fallback)
-│
-└── handlers/
-    ├── signal.js             ← handleSignal, handleSignalRaw, handleBatch, handleSignalRawOTC
-    └── health.js             ← handleHealth, handlePairs, handleHistory, handleStats, handleReport
+src/strategy/indicators.mjs   EMA / MACD / Wilder ATR / median / percentile
+src/strategy/engine.mjs       THE strategy: C1→C2→C3 + expiry tiers
+src/handlers/scan.js          */5 scanner + on-demand /api/signal
+src/history/store.js          history save (30-min dedup) + expiry result checker
+src/handlers/push.js          Telegram subscriber push (plain text, push-lock)
+src/fetch/candles.js          TwelveData fetch + KV cache + key rotation
+backtest/fetch_data.mjs       real-historical-data fetcher (fails loudly on gaps)
+backtest/harness.mjs          walk-forward harness (split committed pre-run)
+results/FTT3_BACKTEST_REPORT.md   verdict + full tables
+results/audit_signals.jsonl       every OOS decision with raw indicator values
 ```
 
-## Secrets Required
+## Tests
 
-In Cloudflare dashboard → Workers → fttotcv6 → Settings → Variables:
+```bash
+node scripts/strategy_tests.mjs   # 42 assertions + no-lookahead mutation proof
+node scripts/engine_smoke.mjs     # live path end-to-end on stubbed feeds (33)
+node scripts/verify_audit.mjs     # re-derives every report number from the audit (72)
+```
 
-| Secret | Required | Description |
-|--------|----------|-------------|
-| `TWELVEDATA_API_KEY` | ✅ | Single key **or** JSON array `["key1","key2"]` |
-| `TWELVEDATA_API_KEYS` | optional | JSON array of keys (takes priority) |
-| `CEREBRAS_API_KEY` | ✅ | AI validation layer |
-| `GROQ_API_KEY` | optional | Second AI validation (Forex only) |
+## Reproduce the backtest
 
-## KV Namespace
+```bash
+node backtest/fetch_data.mjs      # real candles -> backtest/data/ (gitignored)
+node backtest/harness.mjs         # single pass -> results/ + audit JSONLs
+```
 
-Binding: `SIGNAL_CACHE`  
-ID: `f553a3f10915478fa1b8165dd58ff6ea`
+The split date lives in `backtest/harness.mjs` (`SPLIT_DATE`) and was committed
+before the first run. Per the honesty rule: if OOS fails, report FAIL and do
+not add filters to rescue the number — that is what this repo's history taught.
 
-## GitHub Secrets
+## API
 
-- `CLOUDFLARE_API_TOKEN`
-- `CLOUDFLARE_ACCOUNT_ID`
+`/health` · `/api/signal?pair=BTC/USD` · `/api/signals/latest` ·
+`/api/batch?pairs=...` · `/api/pairs` · `/api/history?pair=...` ·
+`/api/stats` · `/api/report?id=...&result=WIN|LOSS|TIE|UNKNOWN`
 
-## API Endpoints
-
-| Endpoint | Description |
-|----------|-------------|
-| `GET /` | Health check |
-| `GET /api/signal?pair=EUR/USD` | Forex/Crypto signal |
-| `GET /api/signal?pair=EURUSD-OTC` | OTC signal |
-| `GET /api/batch?pairs=EUR/USD,GBP/JPY` | Batch signals (max 3) |
-| `GET /api/pairs` | List supported pairs |
-| `GET /api/history?pair=EUR/USD&limit=20` | Signal history |
-| `GET /api/stats?pair=EUR/USD` | Win rate stats |
-| `GET /api/report?id=ID&result=WIN` | Manual result report |
-
-## Deploy
-
-Push to `main` branch → GitHub Actions deploys automatically via `wrangler-action@v3`.
+Crons: `*/5` signal scanner (aligned to 5m closes), `*/2` result checker
+(resolves expiries against the 1m feed; ties are stored as TIE, missing candles
+as EXPIRY_GAP — both excluded from win/loss stats).
