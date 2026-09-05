@@ -2,3 +2,8 @@
 # scripts/r71_tests.mjs from the baseline commit (git archive e56cd33 src —
 # F3-20 refresh; marker file verify/baseline/.commit records the built SHA).
 verify/baseline/
+
+# FTT3 backtest: raw candle data (fetched, never committed) + in-sample audit
+backtest/data/
+results/audit_in_sample.jsonl
+node_modules/
