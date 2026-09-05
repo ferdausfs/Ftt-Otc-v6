@@ -1,0 +1,12 @@
+{
+  "name": "ftt-engine-v2",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "FTT Signal Engine v2 — simplified 4-condition rebuild with walk-forward validation",
+  "scripts": {
+    "test": "node --test tests/",
+    "fetch": "node backtest/fetch_data.mjs",
+    "backtest": "node backtest/harness.mjs",
+    "report": "node backtest/report.mjs"
+  }
+}

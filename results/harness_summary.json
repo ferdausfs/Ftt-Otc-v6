@@ -1,0 +1,790 @@
+{
+  "meta": {
+    "generatedAt": "2026-09-05T06:15:10.495Z",
+    "analysisWindow": {
+      "start": "2026-07-09T00:00:00.000Z",
+      "end": "2026-09-04T23:59:00.000Z"
+    },
+    "splitX": "2026-08-15T00:00:00.000Z",
+    "splitRule": "committed before first run; OOS never used for tuning",
+    "minBucketN": 30,
+    "assumedPayout": 0.8,
+    "breakevenWR": 55.6,
+    "pairs": [
+      {
+        "pair": "BTC/USD",
+        "market": "crypto",
+        "file": "BTCUSD"
+      },
+      {
+        "pair": "ETH/USD",
+        "market": "crypto",
+        "file": "ETHUSD"
+      },
+      {
+        "pair": "XRP/USD",
+        "market": "crypto",
+        "file": "XRPUSD"
+      },
+      {
+        "pair": "SOL/USD",
+        "market": "crypto",
+        "file": "SOLUSD"
+      },
+      {
+        "pair": "EUR/USD",
+        "market": "forex",
+        "file": "EURUSD"
+      },
+      {
+        "pair": "GBP/USD",
+        "market": "forex",
+        "file": "GBPUSD"
+      },
+      {
+        "pair": "USD/JPY",
+        "market": "forex",
+        "file": "USDJPY"
+      },
+      {
+        "pair": "AUD/USD",
+        "market": "forex",
+        "file": "AUDUSD"
+      }
+    ],
+    "strategyParams": {
+      "EMA_FAST": 50,
+      "EMA_SLOW": 200,
+      "RSI_PERIOD": 14,
+      "RSI_CALL_MIN": 25,
+      "RSI_CALL_MAX": 45,
+      "RSI_PUT_MIN": 55,
+      "RSI_PUT_MAX": 75,
+      "WICK_TO_BODY_MIN": 1.5,
+      "WICK_TO_RANGE_MIN": 0.4,
+      "CLOSE_POS_MIN": 0.6,
+      "SESSION_MIN_QUALITY": 2,
+      "NEWS_BLACKOUT": true,
+      "ENTRY_TF_MINUTES": 5,
+      "EXPIRY_CANDLES": 1
+    }
+  },
+  "headline": {
+    "in_sample": {
+      "wins": 711,
+      "losses": 667,
+      "ties": 75,
+      "decided": 1378,
+      "wr": 51.6,
+      "wilsonLo": 49,
+      "sufficient": true
+    },
+    "out_of_sample": {
+      "wins": 348,
+      "losses": 379,
+      "ties": 47,
+      "decided": 727,
+      "wr": 47.9,
+      "wilsonLo": 44.3,
+      "sufficient": true
+    },
+    "all": {
+      "wins": 1059,
+      "losses": 1046,
+      "ties": 122,
+      "decided": 2105,
+      "wr": 50.3,
+      "wilsonLo": 48.2,
+      "sufficient": true
+    }
+  },
+  "byMarket": {
+    "in_sample": {
+      "crypto": {
+        "wins": 544,
+        "losses": 471,
+        "ties": 34,
+        "decided": 1015,
+        "wr": 53.6,
+        "wilsonLo": 50.5,
+        "sufficient": true
+      },
+      "forex": {
+        "wins": 167,
+        "losses": 196,
+        "ties": 41,
+        "decided": 363,
+        "wr": 46,
+        "wilsonLo": 40.9,
+        "sufficient": true
+      }
+    },
+    "out_of_sample": {
+      "crypto": {
+        "wins": 238,
+        "losses": 256,
+        "ties": 17,
+        "decided": 494,
+        "wr": 48.2,
+        "wilsonLo": 43.8,
+        "sufficient": true
+      },
+      "forex": {
+        "wins": 110,
+        "losses": 123,
+        "ties": 30,
+        "decided": 233,
+        "wr": 47.2,
+        "wilsonLo": 40.9,
+        "sufficient": true
+      }
+    }
+  },
+  "byPair": {
+    "in_sample": {
+      "BTC/USD": {
+        "wins": 119,
+        "losses": 121,
+        "ties": 1,
+        "decided": 240,
+        "wr": 49.6,
+        "wilsonLo": 43.3,
+        "sufficient": true
+      },
+      "ETH/USD": {
+        "wins": 157,
+        "losses": 133,
+        "ties": 0,
+        "decided": 290,
+        "wr": 54.1,
+        "wilsonLo": 48.4,
+        "sufficient": true
+      },
+      "XRP/USD": {
+        "wins": 118,
+        "losses": 105,
+        "ties": 21,
+        "decided": 223,
+        "wr": 52.9,
+        "wilsonLo": 46.4,
+        "sufficient": true
+      },
+      "SOL/USD": {
+        "wins": 150,
+        "losses": 112,
+        "ties": 12,
+        "decided": 262,
+        "wr": 57.3,
+        "wilsonLo": 51.2,
+        "sufficient": true
+      },
+      "EUR/USD": {
+        "wins": 26,
+        "losses": 34,
+        "ties": 26,
+        "decided": 60,
+        "wr": 43.3,
+        "wilsonLo": 31.6,
+        "sufficient": true
+      },
+      "GBP/USD": {
+        "wins": 50,
+        "losses": 70,
+        "ties": 3,
+        "decided": 120,
+        "wr": 41.7,
+        "wilsonLo": 33.2,
+        "sufficient": true
+      },
+      "USD/JPY": {
+        "wins": 74,
+        "losses": 67,
+        "ties": 1,
+        "decided": 141,
+        "wr": 52.5,
+        "wilsonLo": 44.3,
+        "sufficient": true
+      },
+      "AUD/USD": {
+        "wins": 17,
+        "losses": 25,
+        "ties": 11,
+        "decided": 42,
+        "wr": 40.5,
+        "wilsonLo": 27,
+        "sufficient": true
+      }
+    },
+    "out_of_sample": {
+      "BTC/USD": {
+        "wins": 61,
+        "losses": 68,
+        "ties": 2,
+        "decided": 129,
+        "wr": 47.3,
+        "wilsonLo": 38.9,
+        "sufficient": true
+      },
+      "ETH/USD": {
+        "wins": 45,
+        "losses": 54,
+        "ties": 0,
+        "decided": 99,
+        "wr": 45.5,
+        "wilsonLo": 36,
+        "sufficient": true
+      },
+      "XRP/USD": {
+        "wins": 76,
+        "losses": 83,
+        "ties": 7,
+        "decided": 159,
+        "wr": 47.8,
+        "wilsonLo": 40.2,
+        "sufficient": true
+      },
+      "SOL/USD": {
+        "wins": 56,
+        "losses": 51,
+        "ties": 8,
+        "decided": 107,
+        "wr": 52.3,
+        "wilsonLo": 43,
+        "sufficient": true
+      },
+      "EUR/USD": {
+        "wins": 18,
+        "losses": 30,
+        "ties": 22,
+        "decided": 48,
+        "wr": 37.5,
+        "wilsonLo": 25.2,
+        "sufficient": true
+      },
+      "GBP/USD": {
+        "wins": 36,
+        "losses": 35,
+        "ties": 1,
+        "decided": 71,
+        "wr": 50.7,
+        "wilsonLo": 39.3,
+        "sufficient": true
+      },
+      "USD/JPY": {
+        "wins": 50,
+        "losses": 41,
+        "ties": 0,
+        "decided": 91,
+        "wr": 54.9,
+        "wilsonLo": 44.7,
+        "sufficient": true
+      },
+      "AUD/USD": {
+        "wins": 6,
+        "losses": 17,
+        "ties": 7,
+        "decided": 23,
+        "wr": 26.1,
+        "wilsonLo": 12.5,
+        "sufficient": false
+      }
+    }
+  },
+  "bySession": {
+    "in_sample": {
+      "LONDON": {
+        "wins": 254,
+        "losses": 230,
+        "ties": 32,
+        "decided": 484,
+        "wr": 52.5,
+        "wilsonLo": 48,
+        "sufficient": true
+      },
+      "LONDON_NY": {
+        "wins": 200,
+        "losses": 181,
+        "ties": 17,
+        "decided": 381,
+        "wr": 52.5,
+        "wilsonLo": 47.5,
+        "sufficient": true
+      },
+      "NEW_YORK": {
+        "wins": 257,
+        "losses": 256,
+        "ties": 26,
+        "decided": 513,
+        "wr": 50.1,
+        "wilsonLo": 45.8,
+        "sufficient": true
+      }
+    },
+    "out_of_sample": {
+      "LONDON_NY": {
+        "wins": 92,
+        "losses": 135,
+        "ties": 9,
+        "decided": 227,
+        "wr": 40.5,
+        "wilsonLo": 34.4,
+        "sufficient": true
+      },
+      "NEW_YORK": {
+        "wins": 112,
+        "losses": 131,
+        "ties": 18,
+        "decided": 243,
+        "wr": 46.1,
+        "wilsonLo": 39.9,
+        "sufficient": true
+      },
+      "LONDON": {
+        "wins": 144,
+        "losses": 113,
+        "ties": 20,
+        "decided": 257,
+        "wr": 56,
+        "wilsonLo": 49.9,
+        "sufficient": true
+      }
+    }
+  },
+  "byDirection": {
+    "in_sample": {
+      "CALL": {
+        "wins": 337,
+        "losses": 312,
+        "ties": 41,
+        "decided": 649,
+        "wr": 51.9,
+        "wilsonLo": 48.1,
+        "sufficient": true
+      },
+      "PUT": {
+        "wins": 374,
+        "losses": 355,
+        "ties": 34,
+        "decided": 729,
+        "wr": 51.3,
+        "wilsonLo": 47.7,
+        "sufficient": true
+      }
+    },
+    "out_of_sample": {
+      "PUT": {
+        "wins": 98,
+        "losses": 120,
+        "ties": 14,
+        "decided": 218,
+        "wr": 45,
+        "wilsonLo": 38.5,
+        "sufficient": true
+      },
+      "CALL": {
+        "wins": 250,
+        "losses": 259,
+        "ties": 33,
+        "decided": 509,
+        "wr": 49.1,
+        "wilsonLo": 44.8,
+        "sufficient": true
+      }
+    }
+  },
+  "baselines": {
+    "BTC/USD": {
+      "up": 8222,
+      "down": 8393,
+      "tie": 88,
+      "n": 16615,
+      "upRate": 49.5
+    },
+    "ETH/USD": {
+      "up": 8307,
+      "down": 8338,
+      "tie": 58,
+      "n": 16645,
+      "upRate": 49.9
+    },
+    "XRP/USD": {
+      "up": 7901,
+      "down": 8059,
+      "tie": 743,
+      "n": 15960,
+      "upRate": 49.5
+    },
+    "SOL/USD": {
+      "up": 7827,
+      "down": 7952,
+      "tie": 924,
+      "n": 15779,
+      "upRate": 49.6
+    },
+    "EUR/USD": {
+      "up": 3829,
+      "down": 3852,
+      "tie": 4232,
+      "n": 7681,
+      "upRate": 49.9
+    },
+    "GBP/USD": {
+      "up": 5670,
+      "down": 5700,
+      "tie": 543,
+      "n": 11370,
+      "upRate": 49.9
+    },
+    "USD/JPY": {
+      "up": 5975,
+      "down": 5636,
+      "tie": 250,
+      "n": 11611,
+      "upRate": 51.5
+    },
+    "AUD/USD": {
+      "up": 4919,
+      "down": 4853,
+      "tie": 2143,
+      "n": 9772,
+      "upRate": 50.3
+    }
+  },
+  "perPair": {
+    "BTC/USD": {
+      "pair": "BTC/USD",
+      "market": "crypto",
+      "file": "BTCUSD",
+      "funnel": {
+        "candles": 16703,
+        "passC1": 16703,
+        "passC12": 5387,
+        "passC123": 732,
+        "signals": 372,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 11316,
+        "C3_NO_REJECTION_CANDLE": 4655,
+        "C4_LOW_LIQUIDITY": 360,
+        "C4_NEWS_BLACKOUT": 0,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 372
+    },
+    "ETH/USD": {
+      "pair": "ETH/USD",
+      "market": "crypto",
+      "file": "ETHUSD",
+      "funnel": {
+        "candles": 16703,
+        "passC1": 16703,
+        "passC12": 5003,
+        "passC123": 691,
+        "signals": 389,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 11700,
+        "C3_NO_REJECTION_CANDLE": 4312,
+        "C4_LOW_LIQUIDITY": 302,
+        "C4_NEWS_BLACKOUT": 0,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 389
+    },
+    "XRP/USD": {
+      "pair": "XRP/USD",
+      "market": "crypto",
+      "file": "XRPUSD",
+      "funnel": {
+        "candles": 16703,
+        "passC1": 16703,
+        "passC12": 5337,
+        "passC123": 704,
+        "signals": 410,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 11366,
+        "C3_NO_REJECTION_CANDLE": 4633,
+        "C4_LOW_LIQUIDITY": 294,
+        "C4_NEWS_BLACKOUT": 0,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 410
+    },
+    "SOL/USD": {
+      "pair": "SOL/USD",
+      "market": "crypto",
+      "file": "SOLUSD",
+      "funnel": {
+        "candles": 16703,
+        "passC1": 16703,
+        "passC12": 5220,
+        "passC123": 704,
+        "signals": 389,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 11483,
+        "C3_NO_REJECTION_CANDLE": 4516,
+        "C4_LOW_LIQUIDITY": 315,
+        "C4_NEWS_BLACKOUT": 0,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 389
+    },
+    "EUR/USD": {
+      "pair": "EUR/USD",
+      "market": "forex",
+      "file": "EURUSD",
+      "funnel": {
+        "candles": 11921,
+        "passC1": 11921,
+        "passC12": 3720,
+        "passC123": 324,
+        "signals": 156,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 8201,
+        "C3_NO_REJECTION_CANDLE": 3396,
+        "C4_LOW_LIQUIDITY": 133,
+        "C4_NEWS_BLACKOUT": 35,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 156
+    },
+    "GBP/USD": {
+      "pair": "GBP/USD",
+      "market": "forex",
+      "file": "GBPUSD",
+      "funnel": {
+        "candles": 11921,
+        "passC1": 11921,
+        "passC12": 3629,
+        "passC123": 377,
+        "signals": 195,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 8292,
+        "C3_NO_REJECTION_CANDLE": 3252,
+        "C4_LOW_LIQUIDITY": 146,
+        "C4_NEWS_BLACKOUT": 36,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 195
+    },
+    "USD/JPY": {
+      "pair": "USD/JPY",
+      "market": "forex",
+      "file": "USDJPY",
+      "funnel": {
+        "candles": 11870,
+        "passC1": 11870,
+        "passC12": 3851,
+        "passC123": 518,
+        "signals": 233,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 8019,
+        "C3_NO_REJECTION_CANDLE": 3333,
+        "C4_LOW_LIQUIDITY": 240,
+        "C4_NEWS_BLACKOUT": 45,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 233
+    },
+    "AUD/USD": {
+      "pair": "AUD/USD",
+      "market": "forex",
+      "file": "AUDUSD",
+      "funnel": {
+        "candles": 11923,
+        "passC1": 11923,
+        "passC12": 3699,
+        "passC123": 139,
+        "signals": 83,
+        "unresolvedGap": 0,
+        "unresolvedCutoff": 0
+      },
+      "notrade": {
+        "C1_NO_HTF_TREND": 0,
+        "C2_RSI_OUT_OF_ZONE": 8224,
+        "C3_NO_REJECTION_CANDLE": 3560,
+        "C4_LOW_LIQUIDITY": 42,
+        "C4_NEWS_BLACKOUT": 14,
+        "C4_MARKET_CLOSED": 0
+      },
+      "count": 83
+    }
+  },
+  "oneOut": {
+    "C2_in_sample_crypto": {
+      "wins": 1550,
+      "losses": 1518,
+      "ties": 105,
+      "decided": 3068,
+      "wr": 50.5,
+      "wilsonLo": 48.8,
+      "sufficient": true
+    },
+    "C2_out_of_sample_crypto": {
+      "wins": 863,
+      "losses": 844,
+      "ties": 39,
+      "decided": 1707,
+      "wr": 50.6,
+      "wilsonLo": 48.2,
+      "sufficient": true
+    },
+    "C3_in_sample_crypto": {
+      "wins": 4051,
+      "losses": 3723,
+      "ties": 208,
+      "decided": 7774,
+      "wr": 52.1,
+      "wilsonLo": 51,
+      "sufficient": true
+    },
+    "C3_out_of_sample_crypto": {
+      "wins": 2028,
+      "losses": 1828,
+      "ties": 89,
+      "decided": 3856,
+      "wr": 52.6,
+      "wilsonLo": 51,
+      "sufficient": true
+    },
+    "C4_in_sample_crypto": {
+      "wins": 968,
+      "losses": 869,
+      "ties": 66,
+      "decided": 1837,
+      "wr": 52.7,
+      "wilsonLo": 50.4,
+      "sufficient": true
+    },
+    "C4_out_of_sample_crypto": {
+      "wins": 458,
+      "losses": 442,
+      "ties": 28,
+      "decided": 900,
+      "wr": 50.9,
+      "wilsonLo": 47.6,
+      "sufficient": true
+    },
+    "FLIP_C1_in_sample_crypto": {
+      "wins": 471,
+      "losses": 544,
+      "ties": 34,
+      "decided": 1015,
+      "wr": 46.4,
+      "wilsonLo": 43.4,
+      "sufficient": true
+    },
+    "FLIP_C1_out_of_sample_crypto": {
+      "wins": 256,
+      "losses": 238,
+      "ties": 17,
+      "decided": 494,
+      "wr": 51.8,
+      "wilsonLo": 47.4,
+      "sufficient": true
+    },
+    "C2_in_sample_forex": {
+      "wins": 565,
+      "losses": 582,
+      "ties": 137,
+      "decided": 1147,
+      "wr": 49.3,
+      "wilsonLo": 46.4,
+      "sufficient": true
+    },
+    "C2_out_of_sample_forex": {
+      "wins": 296,
+      "losses": 365,
+      "ties": 102,
+      "decided": 661,
+      "wr": 44.8,
+      "wilsonLo": 41,
+      "sufficient": true
+    },
+    "C3_in_sample_forex": {
+      "wins": 2044,
+      "losses": 1985,
+      "ties": 607,
+      "decided": 4029,
+      "wr": 50.7,
+      "wilsonLo": 49.2,
+      "sufficient": true
+    },
+    "C3_out_of_sample_forex": {
+      "wins": 1144,
+      "losses": 1018,
+      "ties": 334,
+      "decided": 2162,
+      "wr": 52.9,
+      "wilsonLo": 50.8,
+      "sufficient": true
+    },
+    "C4_in_sample_forex": {
+      "wins": 349,
+      "losses": 390,
+      "ties": 93,
+      "decided": 739,
+      "wr": 47.2,
+      "wilsonLo": 43.7,
+      "sufficient": true
+    },
+    "C4_out_of_sample_forex": {
+      "wins": 213,
+      "losses": 261,
+      "ties": 51,
+      "decided": 474,
+      "wr": 44.9,
+      "wilsonLo": 40.5,
+      "sufficient": true
+    },
+    "FLIP_C1_in_sample_forex": {
+      "wins": 196,
+      "losses": 167,
+      "ties": 41,
+      "decided": 363,
+      "wr": 54,
+      "wilsonLo": 48.9,
+      "sufficient": true
+    },
+    "FLIP_C1_out_of_sample_forex": {
+      "wins": 123,
+      "losses": 110,
+      "ties": 30,
+      "decided": 233,
+      "wr": 52.8,
+      "wilsonLo": 46.4,
+      "sufficient": true
+    }
+  },
+  "noLookaheadSelfCheck": {
+    "auditRowsMatchHeadline": true,
+    "tiePolicy": "TIE excluded from WR, reported per bucket",
+    "unresolvedPolicy": "signals whose exit candle is missing are dropped and counted, never guessed"
+  }
+}
