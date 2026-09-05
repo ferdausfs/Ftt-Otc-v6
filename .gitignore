@@ -7,3 +7,8 @@ verify/baseline/
 backtest/data/
 results/audit_in_sample.jsonl
 node_modules/
+
+# FTT3-R EXT backtest: 12-month audit JSONL is committed only in .gz form
+# (plain file is ~235MB — regenerate with: gunzip -k results/FTT3R_CRYPTO_EXT_audit.jsonl.gz)
+results/FTT3R_CRYPTO_EXT_audit.jsonl
+backtest/data_ext/

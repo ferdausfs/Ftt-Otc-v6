@@ -1,0 +1,192 @@
+{
+  "engine": "FTT3-R regime-adaptive (ADX14@15m: >=25 TRENDING -> A: C1/C2/C3; <20 RANGING -> B: D1/D2/D3; 20-25 TRANSITION -> NO_TRADE; expiry tiers 75/25 -> 5/7/10m)",
+  "startedAt": "2026-09-05T18:53:30.507Z",
+  "window": {
+    "start": "2025-07-05T00:00:00Z",
+    "end": "2026-07-05T00:00:00Z",
+    "singleBlock": true,
+    "walkForward": false
+  },
+  "burnedWindowTouched": false,
+  "payoutAssumption": 0.8,
+  "breakevenWr": 55.5556,
+  "minBucket": 30,
+  "pairs": [
+    {
+      "pair": "BTC/USD",
+      "rows": 105120,
+      "signals": 1221,
+      "expiryGaps": 0,
+      "dataStart": "2025-06-21T00:00:00.000Z",
+      "dataEnd": "2026-07-05T00:00:00.000Z",
+      "skipped": {
+        "preWindow": 20159,
+        "postWindow": 2,
+        "warmup": 0
+      }
+    },
+    {
+      "pair": "ETH/USD",
+      "rows": 105120,
+      "signals": 1273,
+      "expiryGaps": 0,
+      "dataStart": "2025-06-21T00:00:00.000Z",
+      "dataEnd": "2026-07-05T00:00:00.000Z",
+      "skipped": {
+        "preWindow": 20159,
+        "postWindow": 2,
+        "warmup": 0
+      }
+    },
+    {
+      "pair": "XRP/USD",
+      "rows": 105120,
+      "signals": 1252,
+      "expiryGaps": 0,
+      "dataStart": "2025-06-21T00:00:00.000Z",
+      "dataEnd": "2026-07-05T00:00:00.000Z",
+      "skipped": {
+        "preWindow": 20159,
+        "postWindow": 2,
+        "warmup": 0
+      }
+    },
+    {
+      "pair": "SOL/USD",
+      "rows": 105120,
+      "signals": 1287,
+      "expiryGaps": 0,
+      "dataStart": "2025-06-21T00:00:00.000Z",
+      "dataEnd": "2026-07-05T00:00:00.000Z",
+      "skipped": {
+        "preWindow": 20159,
+        "postWindow": 2,
+        "warmup": 0
+      }
+    }
+  ],
+  "totalRows": 420480,
+  "totalSignals": 5033,
+  "ties": 41,
+  "expiryGaps": 0,
+  "funnel": {
+    "REGIME_TRANSITION": 84654,
+    "D1_NO_EXTENSION": 123873,
+    "D2_NO_EXHAUSTION": 12739,
+    "D1_D2_D3_ALL_PASS": 1909,
+    "D2_NO_SNAPBACK": 2538,
+    "C2_NO_CROSS": 179914,
+    "C2_WRONG_DIRECTION": 7878,
+    "C3_LOW_VOLATILITY": 3715,
+    "D3_LOW_VOLATILITY": 136,
+    "C1_C2_C3_ALL_PASS": 3124
+  },
+  "buckets": {
+    "OVERALL": {
+      "w": 2396,
+      "l": 2596,
+      "t": 41
+    },
+    "pair:BTC/USD": {
+      "w": 581,
+      "l": 640,
+      "t": 0
+    },
+    "strategy:MEANREV": {
+      "w": 952,
+      "l": 940,
+      "t": 17
+    },
+    "pairstrat:BTC/USD|MEANREV": {
+      "w": 245,
+      "l": 245,
+      "t": 0
+    },
+    "regime:RANGING": {
+      "w": 952,
+      "l": 940,
+      "t": 17
+    },
+    "tier:5m": {
+      "w": 1651,
+      "l": 1835,
+      "t": 26
+    },
+    "dir:CALL": {
+      "w": 1172,
+      "l": 1214,
+      "t": 20
+    },
+    "dir:PUT": {
+      "w": 1224,
+      "l": 1382,
+      "t": 21
+    },
+    "tier:7m": {
+      "w": 745,
+      "l": 761,
+      "t": 15
+    },
+    "strategy:TREND": {
+      "w": 1444,
+      "l": 1656,
+      "t": 24
+    },
+    "pairstrat:BTC/USD|TREND": {
+      "w": 336,
+      "l": 395,
+      "t": 0
+    },
+    "regime:TRENDING": {
+      "w": 1444,
+      "l": 1656,
+      "t": 24
+    },
+    "pair:ETH/USD": {
+      "w": 616,
+      "l": 656,
+      "t": 1
+    },
+    "pairstrat:ETH/USD|MEANREV": {
+      "w": 238,
+      "l": 230,
+      "t": 0
+    },
+    "pairstrat:ETH/USD|TREND": {
+      "w": 378,
+      "l": 426,
+      "t": 1
+    },
+    "pair:XRP/USD": {
+      "w": 596,
+      "l": 640,
+      "t": 16
+    },
+    "pairstrat:XRP/USD|MEANREV": {
+      "w": 242,
+      "l": 236,
+      "t": 8
+    },
+    "pairstrat:XRP/USD|TREND": {
+      "w": 354,
+      "l": 404,
+      "t": 8
+    },
+    "pair:SOL/USD": {
+      "w": 603,
+      "l": 660,
+      "t": 24
+    },
+    "pairstrat:SOL/USD|MEANREV": {
+      "w": 227,
+      "l": 229,
+      "t": 9
+    },
+    "pairstrat:SOL/USD|TREND": {
+      "w": 376,
+      "l": 431,
+      "t": 15
+    }
+  },
+  "auditFile": "results/FTT3R_CRYPTO_EXT_audit.jsonl"
+}
