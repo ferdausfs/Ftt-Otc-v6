@@ -1,0 +1,275 @@
+{
+  "engine": "Daily Liquidity-Sweep Bias (FX) — D-2/D-1 sweep classifier, entry at D open, expiry at D close; standalone module src/strategy/dailyBiasFx.mjs",
+  "startedAt": "2026-09-06T11:33:19.591Z",
+  "mode": "full available history, one block, one pass (no split — daily resolution never touched before)",
+  "payoutAssumption": 0.8,
+  "breakevenWr": 55.5556,
+  "minBucket": 30,
+  "data": [
+    {
+      "pair": "EUR/USD",
+      "first": "2003-12-01",
+      "last": "2026-09-04",
+      "candles": 5778,
+      "droppedAtSource": 162,
+      "droppedPartialTail": 1,
+      "maxGapDays": 18,
+      "gapsOver5Days": 3
+    },
+    {
+      "pair": "GBP/USD",
+      "first": "2003-12-01",
+      "last": "2026-09-04",
+      "candles": 5815,
+      "droppedAtSource": 125,
+      "droppedPartialTail": 1,
+      "maxGapDays": 6,
+      "gapsOver5Days": 1
+    },
+    {
+      "pair": "USD/JPY",
+      "first": "1996-10-30",
+      "last": "2026-09-04",
+      "candles": 7464,
+      "droppedAtSource": 324,
+      "droppedPartialTail": 1,
+      "maxGapDays": 18,
+      "gapsOver5Days": 5
+    },
+    {
+      "pair": "AUD/USD",
+      "first": "2006-05-16",
+      "last": "2026-09-04",
+      "candles": 5136,
+      "droppedAtSource": 163,
+      "droppedPartialTail": 1,
+      "maxGapDays": 5,
+      "gapsOver5Days": 0
+    }
+  ],
+  "funnel": {
+    "candlesPerPair": {
+      "EUR/USD": 5778,
+      "GBP/USD": 5815,
+      "USD/JPY": 7464,
+      "AUD/USD": 5136
+    },
+    "warmupDays": {
+      "EUR/USD": 2,
+      "GBP/USD": 2,
+      "USD/JPY": 2,
+      "AUD/USD": 2
+    },
+    "evaluatedDays": 24185,
+    "tradedDays": 5443,
+    "avoidedDays": 18742,
+    "avoidedByReason": {
+      "UNCLASSIFIED": 12988,
+      "SWEEP_BOTH": 2361,
+      "CONSOLIDATION": 3393
+    },
+    "perPairTraded": {
+      "EUR/USD": 1323,
+      "GBP/USD": 1303,
+      "USD/JPY": 1553,
+      "AUD/USD": 1264
+    }
+  },
+  "tradedTotal": 5443,
+  "rates": {
+    "overall": {
+      "label": "overall",
+      "wins": 1973,
+      "losses": 2406,
+      "ties": 1064,
+      "wr": 0.4505594884676867,
+      "wilsonLo": 0.43587262683964223,
+      "wilsonHi": 0.46533301701763496,
+      "conservativeWr": 0.36248392430644866,
+      "sufficient": true,
+      "note": null
+    },
+    "byPair": [
+      {
+        "label": "AUD/USD",
+        "wins": 448,
+        "losses": 535,
+        "ties": 281,
+        "wr": 0.4557477110885046,
+        "wilsonLo": 0.42484623658159343,
+        "wilsonHi": 0.48699370566829053,
+        "conservativeWr": 0.35443037974683544,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "EUR/USD",
+        "wins": 404,
+        "losses": 565,
+        "ties": 354,
+        "wr": 0.4169246646026832,
+        "wilsonLo": 0.38626834438437246,
+        "wilsonHi": 0.4482370639327542,
+        "conservativeWr": 0.30536659108087677,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "GBP/USD",
+        "wins": 517,
+        "losses": 653,
+        "ties": 133,
+        "wr": 0.44188034188034186,
+        "wilsonLo": 0.41366068098669173,
+        "wilsonHi": 0.4704804021401351,
+        "conservativeWr": 0.3967766692248657,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "USD/JPY",
+        "wins": 604,
+        "losses": 653,
+        "ties": 296,
+        "wr": 0.4805091487669053,
+        "wilsonLo": 0.45299079445713875,
+        "wilsonHi": 0.5081462702728226,
+        "conservativeWr": 0.38892466194462333,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byClassification": [
+      {
+        "label": "BULLISH",
+        "wins": 0,
+        "losses": 0,
+        "ties": 0,
+        "wr": null,
+        "wilsonLo": null,
+        "wilsonHi": null,
+        "conservativeWr": null,
+        "sufficient": false,
+        "note": "INSUFFICIENT (n=0 < 30)"
+      },
+      {
+        "label": "BEARISH",
+        "wins": 1973,
+        "losses": 2406,
+        "ties": 1064,
+        "wr": 0.4505594884676867,
+        "wilsonLo": 0.43587262683964223,
+        "wilsonHi": 0.46533301701763496,
+        "conservativeWr": 0.36248392430644866,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "VERY_BEARISH",
+        "wins": 0,
+        "losses": 0,
+        "ties": 0,
+        "wr": null,
+        "wilsonLo": null,
+        "wilsonHi": null,
+        "conservativeWr": null,
+        "sufficient": false,
+        "note": "INSUFFICIENT (n=0 < 30)"
+      }
+    ],
+    "byDirection": [
+      {
+        "label": "PUT",
+        "wins": 1973,
+        "losses": 2406,
+        "ties": 1064,
+        "wr": 0.4505594884676867,
+        "wilsonLo": 0.43587262683964223,
+        "wilsonHi": 0.46533301701763496,
+        "conservativeWr": 0.36248392430644866,
+        "sufficient": true,
+        "note": null
+      }
+    ]
+  },
+  "noSkillBaselineFullHistory": [
+    {
+      "pair": "EUR/USD",
+      "up": 2384,
+      "down": 2066,
+      "tie": 1328,
+      "upRate": 0.5357,
+      "downRate": 0.4643
+    },
+    {
+      "pair": "GBP/USD",
+      "up": 2805,
+      "down": 2511,
+      "tie": 499,
+      "upRate": 0.5277,
+      "downRate": 0.4723
+    },
+    {
+      "pair": "USD/JPY",
+      "up": 3207,
+      "down": 3214,
+      "tie": 1043,
+      "upRate": 0.4995,
+      "downRate": 0.5005
+    },
+    {
+      "pair": "AUD/USD",
+      "up": 2234,
+      "down": 1899,
+      "tie": 1003,
+      "upRate": 0.5405,
+      "downRate": 0.4595
+    }
+  ],
+  "noSkillBaselinePooled": {
+    "up": 10630,
+    "down": 9690,
+    "tie": 3873,
+    "n": 20320,
+    "upRate": 0.5231
+  },
+  "diagnosticUpRateOnTradedDaysOnly": [
+    {
+      "pair": "EUR/USD",
+      "up": 565,
+      "down": 404,
+      "tie": 354,
+      "upRate": 0.5831
+    },
+    {
+      "pair": "GBP/USD",
+      "up": 653,
+      "down": 517,
+      "tie": 133,
+      "upRate": 0.5581
+    },
+    {
+      "pair": "USD/JPY",
+      "up": 653,
+      "down": 604,
+      "tie": 296,
+      "upRate": 0.5195
+    },
+    {
+      "pair": "AUD/USD",
+      "up": 535,
+      "down": 448,
+      "tie": 281,
+      "upRate": 0.5443
+    }
+  ],
+  "gate": {
+    "breakeven": 55.5556,
+    "payout": 0.8,
+    "overallLoClears": false,
+    "marginPp": -11.97,
+    "consistentAcrossPairs": false,
+    "pass": false
+  },
+  "specNote": "Under the mandated evaluation order (sweep-both first) with valid OHLC candles, BULLISH and VERY_BEARISH are mathematically unreachable: see scripts/daily_bias_tests.mjs header note 6 and the report. The literal spec trades BEARISH (PUT) days only."
+}
