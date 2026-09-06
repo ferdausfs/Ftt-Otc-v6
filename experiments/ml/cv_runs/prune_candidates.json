@@ -1,0 +1,1 @@
+{"zero_gain_features": [], "rule": "adopt pruned iff mean fold AUC >= full - 2e-4 (same folds, validation only)", "frozen_hp": {"learning_rate": 0.1, "num_leaves": 127}}
