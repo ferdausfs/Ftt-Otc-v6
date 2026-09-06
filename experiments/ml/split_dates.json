@@ -1,0 +1,78 @@
+{
+ "task": "Task 24 \u2014 ML feasibility (gradient-boosted trees), frozen split",
+ "grid": "1m candle-open minutes; decision at each candle close",
+ "T0": "2021-11-01T00:00:00Z",
+ "T1": "2026-09-05T00:00:00Z",
+ "minutes_total": 2547360,
+ "days_total": 1769.0,
+ "train": {
+  "start": "2021-11-01T00:00:00Z",
+  "end": "2025-03-23T07:12:00Z",
+  "minutes": 1783152,
+  "frac": 0.7
+ },
+ "validation": {
+  "start": "2025-03-23T07:12:00Z",
+  "end": "2025-12-13T15:36:00Z",
+  "minutes": 382104,
+  "frac": 0.15
+ },
+ "test": {
+  "start": "2025-12-13T15:36:00Z",
+  "end": "2026-09-05T00:00:00Z",
+  "minutes": 382104,
+  "frac": 0.15
+ },
+ "purge_minutes_between_folds": 60,
+ "label_windows_minutes": [
+  5,
+  7,
+  10
+ ],
+ "walk_forward_folds_within_trainval": [
+  {
+   "fold": 1,
+   "val_start": "2021-11-01T00:00:00Z",
+   "val_end": "2022-08-28T17:31:00Z"
+  },
+  {
+   "fold": 2,
+   "val_start": "2022-08-28T17:31:00Z",
+   "val_end": "2023-06-25T11:02:00Z"
+  },
+  {
+   "fold": 3,
+   "val_start": "2023-06-25T11:02:00Z",
+   "val_end": "2024-04-21T04:33:00Z"
+  },
+  {
+   "fold": 4,
+   "val_start": "2024-04-21T04:33:00Z",
+   "val_end": "2025-02-15T22:04:00Z"
+  },
+  {
+   "fold": 5,
+   "val_start": "2025-02-15T22:04:00Z",
+   "val_end": "2025-12-13T15:36:00Z"
+  }
+ ],
+ "pairs": [
+  "BTC/USD",
+  "ETH/USD",
+  "XRP/USD",
+  "SOL/USD"
+ ],
+ "source": {
+  "candles": "Bybit spot v5 klines 1m+15m (USDT quote, project-wide proxy)",
+  "funding": "Bybit v5 funding/history category=linear (perp funding, market-state feature)"
+ },
+ "label_convention": "label_H = 1 if close[t+H] > close[t]; 0 if <; 2 (tie) excluded from training and WR, counted in funnel; entry/exit at fixed-time candle closes, same convention as every prior test in this project",
+ "payout_assumption": {
+  "payout": 0.8,
+  "breakeven_wr": 0.5556,
+  "note": "identical to all prior project reports"
+ },
+ "gate": "PASS iff some horizon H has Wilson95_lower_bound(WR_H) > 55.56% AND WR_H > up-rate_H AND WR_H > down-rate_H (no-skill both directions); per-pair buckets < 30 decided -> INSUFFICIENT",
+ "frozen_before": "any feature or model code (this file is the freeze artifact)",
+ "committed_at_commit": "see git log for this file's commit \u2014 it MUST precede feature-builder commits"
+}
