@@ -166,3 +166,35 @@ indicators never see.
   excluded, documented, and nothing more.
 - main is untouched; all work on `feature/ml-feasibility`; no merge, no
   deploy, no live wiring in this phase.
+
+## 6.1 Runtime adaptations (AMENDED pre-results — zero CV runs had completed)
+
+The sandbox provides 2 CPU cores and kills background processes between tool
+calls, which makes the declared compute budget infeasible as-written (benchmark:
+~1.0 s/round incl. per-round early-stop eval at fold-1 size; 35 protocol runs
+would need 12-20 h, and single large-fold runs cannot finish inside any single
+10-minute foreground call). The following adaptations were committed BEFORE the
+first completed CV run, driven purely by hardware timing measurements — no CV
+result (fold AUC, importances, or anything downstream) had been observed:
+
+- **A1 — train-row stride 2.** Training materializes every 2nd decision minute
+  of the frozen grid (`(t−T0)/60000 % 2 == 0`, identical pattern for all pairs).
+  Validation folds remain FULL. With 5/7/10-minute overlapping labels, adjacent
+  training rows are heavily redundant; stride-2 keeps several times the
+  effective independent sample size. Final models train on the same stride-2
+  basis (consistent with CV); Test evaluation runs on ALL rows.
+- **A2 — early-stop eval subsample 25%.** Early-stopping AUC is evaluated
+  per-round on a fixed 25% subsample of the validation fold
+  (`(t−T0)/60000 % 4 == 0`). The best round is selected on that subsample;
+  reported fold AUC/accuracy are recomputed on the FULL validation fold at the
+  chosen round — reported numbers are exact full-fold metrics.
+- **A3 — HP grid lr=0.10 only.** The declared 2×2 grid is restricted to
+  learning_rate 0.10 × num_leaves {63, 127} (2 configs × 5 folds on the 10m
+  horizon, as before). lr=0.05 was dropped solely for runtime.
+- **A4 — checkpointed boosting.** Runs proceed in 150-round chunks that persist
+  booster state to disk, so a run survives the sandbox's 10-minute foreground
+  limit across repeated invocations. Early-stopping semantics remain EXACT:
+  per-round validation AUC is recorded every round (evals_result), the global
+  best round is tracked, and a run stops when the last 200 rounds show no
+  improvement or 2000 rounds are reached. Final metrics always come from the
+  best-round snapshot on the full fold.
