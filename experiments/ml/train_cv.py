@@ -125,16 +125,19 @@ def run_tag(phase, cfg_idx, fold, horizon):
 
 
 def importances_at(best_path, params, best_round, names):
-    """Gain importances summed over trees < best_round (exact)."""
+    """Gain importances summed over trees < best_round (exact). Remaps
+    LightGBM's auto 'Column_i' keys onto the frozen feature names."""
+    import re
     import lightgbm as lgb
     b = lgb.Booster(params=params, model_file=best_path)
-    df = b.trees_to_df()
+    df = b.trees_to_dataframe()
     df = df[df["tree_index"] < best_round]
     out = {n: 0.0 for n in names}
     for idx, val in df.groupby("split_feature")["split_gain"].sum().items():
-        key = idx if isinstance(idx, str) else names[int(idx)]
-        out[key] = float(val)
-    return out
+        m = re.fullmatch(r"Column_(\d+)", str(idx))
+        key = names[int(m.group(1))] if m else str(idx)
+        out[key] = out.get(key, 0.0) + float(val)
+    return {k: v for k, v in out.items()}
 
 
 def chunked_train(phase, cfg_idx, fold, horizon, params, ts_hi, vs, ve, names, t_start, budget,
@@ -151,6 +154,10 @@ def chunked_train(phase, cfg_idx, fold, horizon, params, ts_hi, vs, ve, names, t
     assert ts_hi < vs, "purge violated"
     assert val_end_guard is None or ve <= val_end_guard, "test unreachable guard violated"
 
+    if time.time() - t_start > budget:
+        log(f"{tag}: budget reached before materialize — re-invoke to resume")
+        return None
+
     state_path = os.path.join(RUNS, tag + ".state.json")
     model_path = os.path.join(RUNS, tag + ".model.txt")
     best_path = os.path.join(RUNS, tag + ".best.txt")
@@ -159,8 +166,8 @@ def chunked_train(phase, cfg_idx, fold, horizon, params, ts_hi, vs, ve, names, t
 
     Xtr, ytr = materialize(0, ts_hi, horizon, stride=2, stride_phase=0, keep_idx=keep_idx)      # A1
     Xev, yev = materialize(vs, ve, horizon, stride=4, stride_phase=0, keep_idx=keep_idx)        # A2
-    dtrain = lgb.Dataset(Xtr, label=ytr, params=params, free_raw_data=True)
-    deval = lgb.Dataset(Xev, label=yev, params=params, free_raw_data=True)
+    dtrain = lgb.Dataset(Xtr, label=ytr, params=params, free_raw_data=False, feature_name=names)
+    deval = lgb.Dataset(Xev, label=yev, params=params, free_raw_data=False, feature_name=names)
     log(f"{tag}: train={Xtr.shape[0]} (stride2) evalSub={Xev.shape[0]} rounds_done={st['rounds_done']}")
 
     while st["rounds_done"] < MAX_ROUNDS:
@@ -170,10 +177,12 @@ def chunked_train(phase, cfg_idx, fold, horizon, params, ts_hi, vs, ve, names, t
             return None
         n_chunk = min(CHUNK, MAX_ROUNDS - st["rounds_done"])
         init = model_path if st["rounds_done"] > 0 else None
+        evres = {}
         booster = lgb.train(params, dtrain, num_boost_round=n_chunk, init_model=init,
-                            valid_sets=[deval], callbacks=[lgb.log_evaluation(0)])
+                            valid_sets=[deval],
+                            callbacks=[lgb.log_evaluation(0), lgb.callback.record_evaluation(evres)])
         st["rounds_done"] += n_chunk
-        per_round = list(list(booster.evals_result().values())[0].values())[0]  # this chunk's per-round AUCs
+        per_round = list(list(evres.values())[0].values())[0]  # this chunk's per-round AUCs
         for j, a in enumerate(per_round):
             r = st["rounds_done"] - n_chunk + j + 1
             if a > st["best_auc"]:
@@ -184,6 +193,7 @@ def chunked_train(phase, cfg_idx, fold, horizon, params, ts_hi, vs, ve, names, t
             booster.save_model(best_path, num_iteration=st["best_round"])
         if st["rounds_done"] - st["best_round"] >= PATIENCE:
             break
+    json.dump(st, open(state_path, "w"))  # persist before finalize (crash-safe)
 
     # finalize: FULL-val metrics at the exact best round
     del Xtr, ytr, Xev, yev, dtrain, deval
