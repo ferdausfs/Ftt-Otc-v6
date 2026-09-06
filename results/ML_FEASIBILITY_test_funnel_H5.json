@@ -1,0 +1,61 @@
+{
+ "horizon": 5,
+ "test_start": "2025-12-13T15:36:00Z",
+ "test_end": "2026-09-05T00:00:00Z",
+ "expected_minutes_per_pair": 382104,
+ "pairs": {
+  "BTC/USD": {
+   "expected_minutes": 382104,
+   "rows_written": 382104,
+   "excluded_stale15m": 0,
+   "decided": 381299,
+   "up_outcomes": 190069,
+   "down_outcomes": 191230,
+   "ties": 805,
+   "missing_target": 0,
+   "predicted": 381299,
+   "predicted_CALL": 188666,
+   "predicted_PUT": 192633
+  },
+  "ETH/USD": {
+   "expected_minutes": 382104,
+   "rows_written": 382104,
+   "excluded_stale15m": 0,
+   "decided": 381265,
+   "up_outcomes": 190397,
+   "down_outcomes": 190868,
+   "ties": 839,
+   "missing_target": 0,
+   "predicted": 381265,
+   "predicted_CALL": 194200,
+   "predicted_PUT": 187065
+  },
+  "XRP/USD": {
+   "expected_minutes": 382104,
+   "rows_written": 382104,
+   "excluded_stale15m": 0,
+   "decided": 370830,
+   "up_outcomes": 183268,
+   "down_outcomes": 187562,
+   "ties": 11274,
+   "missing_target": 0,
+   "predicted": 370830,
+   "predicted_CALL": 207660,
+   "predicted_PUT": 163170
+  },
+  "SOL/USD": {
+   "expected_minutes": 382104,
+   "rows_written": 382104,
+   "excluded_stale15m": 0,
+   "decided": 367140,
+   "up_outcomes": 183211,
+   "down_outcomes": 183929,
+   "ties": 14964,
+   "missing_target": 0,
+   "predicted": 367140,
+   "predicted_CALL": 181540,
+   "predicted_PUT": 185600
+  }
+ },
+ "predicted_total": 1500534
+}
