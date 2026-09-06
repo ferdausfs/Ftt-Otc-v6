@@ -1,0 +1,446 @@
+{
+  "engine": "Market Structure BOS/CHoCH — pivot L=5 (confirmation lag enforced), 15m trend-state bias (C1), 1m BOS/CHoCH trigger in bias direction (C2), ATR(14)-1m trailing-100 percentile expiry ladder 75/25 -> 5/7/10m; standalone module src/strategy/marketStructure.mjs",
+  "startedAt": "2026-09-06T17:19:21.806Z",
+  "auditFile": "results/MARKET_STRUCTURE_audit.jsonl.gz",
+  "mode": "single 12-month block 2023-07-05..2024-07-05, one pass, no split (parameters are frozen textbook defaults)",
+  "window": {
+    "start": "2023-07-05T00:00:00.000Z",
+    "end": "2024-07-05T00:00:00.000Z",
+    "inclusiveEnd": true
+  },
+  "payoutAssumption": 0.8,
+  "breakevenWr": 55.5556,
+  "minBucket": 30,
+  "data": [
+    {
+      "pair": "BTC/USD",
+      "source": "bybit",
+      "symbol": "BTCUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "warmupBars": 20160,
+      "windowBars": 527040,
+      "tailBars": 61,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "s15Rows": 35137,
+      "triggers": 13406
+    },
+    {
+      "pair": "ETH/USD",
+      "source": "bybit",
+      "symbol": "ETHUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "warmupBars": 20160,
+      "windowBars": 527040,
+      "tailBars": 61,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "s15Rows": 35137,
+      "triggers": 13136
+    },
+    {
+      "pair": "XRP/USD",
+      "source": "bybit",
+      "symbol": "XRPUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "warmupBars": 20160,
+      "windowBars": 527040,
+      "tailBars": 61,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "s15Rows": 35137,
+      "triggers": 13481
+    },
+    {
+      "pair": "SOL/USD",
+      "source": "bybit",
+      "symbol": "SOLUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "warmupBars": 20160,
+      "windowBars": 527040,
+      "tailBars": 61,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "s15Rows": 35137,
+      "triggers": 13313
+    }
+  ],
+  "funnel": {
+    "evaluatedBars": 2108164,
+    "s15Rows": 140548,
+    "events": {
+      "NONE": 1998699,
+      "BOS_BEAR": 26103,
+      "CHoCH_BULL": 27947,
+      "CHoCH_BEAR": 27947,
+      "BOS_BULL": 27468
+    },
+    "noTradeReasons": {
+      "NO_BREAK": 1998699,
+      "OPPOSITE_BREAK": 56129
+    },
+    "results": {
+      "LOSS": 26836,
+      "WIN": 25045,
+      "TIE": 1455
+    },
+    "triggers": 53336,
+    "perPairEvaluated": {
+      "BTC/USD": 527041,
+      "ETH/USD": 527041,
+      "XRP/USD": 527041,
+      "SOL/USD": 527041
+    },
+    "perPairTriggers": {
+      "BTC/USD": 13406,
+      "ETH/USD": 13136,
+      "XRP/USD": 13481,
+      "SOL/USD": 13313
+    }
+  },
+  "triggersTotal": 53336,
+  "rates": {
+    "overall": {
+      "label": "overall",
+      "wins": 25045,
+      "losses": 26836,
+      "ties": 1455,
+      "wr": 0.482739345810605,
+      "wilsonLo": 0.4784409160401851,
+      "wilsonHi": 0.48704033147559656,
+      "conservativeWr": 0.46957027148642566,
+      "sufficient": true,
+      "note": null
+    },
+    "byPair": [
+      {
+        "label": "BTC/USD",
+        "wins": 6554,
+        "losses": 6814,
+        "ties": 38,
+        "wr": 0.4902752842609216,
+        "wilsonLo": 0.48180501661257163,
+        "wilsonHi": 0.4987511393364314,
+        "conservativeWr": 0.48888557362375057,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "ETH/USD",
+        "wins": 6405,
+        "losses": 6681,
+        "ties": 50,
+        "wr": 0.48945437872535535,
+        "wilsonLo": 0.4808939141611083,
+        "wilsonHi": 0.49802103290924166,
+        "conservativeWr": 0.48759135200974424,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "SOL/USD",
+        "wins": 6079,
+        "losses": 6672,
+        "ties": 562,
+        "wr": 0.4767469218100541,
+        "wilsonLo": 0.46808609189318184,
+        "wilsonHi": 0.4854217582894777,
+        "conservativeWr": 0.45662134755502143,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "XRP/USD",
+        "wins": 6007,
+        "losses": 6669,
+        "ties": 805,
+        "wr": 0.473887661722941,
+        "wilsonLo": 0.4652046016090661,
+        "wilsonHi": 0.482586543717961,
+        "conservativeWr": 0.4455900897559528,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byBreakType": [
+      {
+        "label": "BOS",
+        "wins": 12437,
+        "losses": 13952,
+        "ties": 686,
+        "wr": 0.47129485770586227,
+        "wilsonLo": 0.4652767932246503,
+        "wilsonHi": 0.477321278212119,
+        "conservativeWr": 0.45935364727608496,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "CHoCH",
+        "wins": 12608,
+        "losses": 12884,
+        "ties": 769,
+        "wr": 0.4945865369527695,
+        "wilsonLo": 0.48845032652671894,
+        "wilsonHi": 0.5007243786719402,
+        "conservativeWr": 0.48010357564449185,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byEvent": [
+      {
+        "label": "BOS_BEAR",
+        "wins": 5936,
+        "losses": 6638,
+        "ties": 308,
+        "wr": 0.47208525528869094,
+        "wilsonLo": 0.4633693449973496,
+        "wilsonHi": 0.48081821673188535,
+        "conservativeWr": 0.4607980127309424,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "BOS_BULL",
+        "wins": 6501,
+        "losses": 7314,
+        "ties": 378,
+        "wr": 0.4705754614549403,
+        "wilsonLo": 0.462261613423678,
+        "wilsonHi": 0.47890566876690316,
+        "conservativeWr": 0.4580426971042063,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "CHoCH_BEAR",
+        "wins": 6142,
+        "losses": 6320,
+        "ties": 371,
+        "wr": 0.49285828919916547,
+        "wilsonLo": 0.48408415879592187,
+        "wilsonHi": 0.5016368211645584,
+        "conservativeWr": 0.4786098340216629,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "CHoCH_BULL",
+        "wins": 6466,
+        "losses": 6564,
+        "ties": 398,
+        "wr": 0.49623944742901,
+        "wilsonLo": 0.48765695325995695,
+        "wilsonHi": 0.5048241582903401,
+        "conservativeWr": 0.4815311289842121,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byTier": [
+      {
+        "label": "expiry10m",
+        "wins": 8834,
+        "losses": 9426,
+        "ties": 441,
+        "wr": 0.483789704271632,
+        "wilsonLo": 0.4765455221402386,
+        "wilsonHi": 0.4910407054704905,
+        "conservativeWr": 0.47238115608790976,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "expiry5m",
+        "wins": 6159,
+        "losses": 6997,
+        "ties": 381,
+        "wr": 0.4681514138035877,
+        "wilsonLo": 0.4596354003555058,
+        "wilsonHi": 0.47668602094564555,
+        "conservativeWr": 0.45497525301026814,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "expiry7m",
+        "wins": 10052,
+        "losses": 10413,
+        "ties": 633,
+        "wr": 0.4911800635230882,
+        "wilsonLo": 0.48433308573236966,
+        "wilsonHi": 0.49803035185024924,
+        "conservativeWr": 0.47644326476443266,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byDirection": [
+      {
+        "label": "CALL",
+        "wins": 12967,
+        "losses": 13878,
+        "ties": 776,
+        "wr": 0.48303222201527285,
+        "wilsonLo": 0.4770573485229866,
+        "wilsonHi": 0.4890119509141163,
+        "conservativeWr": 0.46946164150465225,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "PUT",
+        "wins": 12078,
+        "losses": 12958,
+        "ties": 679,
+        "wr": 0.48242530755711777,
+        "wilsonLo": 0.4762388125140399,
+        "wilsonHi": 0.4886171950031348,
+        "conservativeWr": 0.46968695314019054,
+        "sufficient": true,
+        "note": null
+      }
+    ]
+  },
+  "noSkillBaselineFixedWindows": [
+    {
+      "minutes": 5,
+      "n": 2108144,
+      "up": 1025849,
+      "down": 1011661,
+      "tie": 70634,
+      "upRate": 0.4866
+    },
+    {
+      "minutes": 7,
+      "n": 2108136,
+      "up": 1033743,
+      "down": 1016945,
+      "tie": 57448,
+      "upRate": 0.4904
+    },
+    {
+      "minutes": 10,
+      "n": 2108124,
+      "up": 1038824,
+      "down": 1021978,
+      "tie": 47322,
+      "upRate": 0.4928
+    }
+  ],
+  "noSkillBaselineFixedWindowsByPair": [
+    {
+      "pair": "BTC/USD",
+      "perWindow": [
+        {
+          "minutes": 5,
+          "n": 527036,
+          "upRate": 0.4998
+        },
+        {
+          "minutes": 7,
+          "n": 527034,
+          "upRate": 0.5014
+        },
+        {
+          "minutes": 10,
+          "n": 527031,
+          "upRate": 0.5017
+        }
+      ]
+    },
+    {
+      "pair": "ETH/USD",
+      "perWindow": [
+        {
+          "minutes": 5,
+          "n": 527036,
+          "upRate": 0.5
+        },
+        {
+          "minutes": 7,
+          "n": 527034,
+          "upRate": 0.5014
+        },
+        {
+          "minutes": 10,
+          "n": 527031,
+          "upRate": 0.502
+        }
+      ]
+    },
+    {
+      "pair": "XRP/USD",
+      "perWindow": [
+        {
+          "minutes": 5,
+          "n": 527036,
+          "upRate": 0.4706
+        },
+        {
+          "minutes": 7,
+          "n": 527034,
+          "upRate": 0.4782
+        },
+        {
+          "minutes": 10,
+          "n": 527031,
+          "upRate": 0.4837
+        }
+      ]
+    },
+    {
+      "pair": "SOL/USD",
+      "perWindow": [
+        {
+          "minutes": 5,
+          "n": 527036,
+          "upRate": 0.476
+        },
+        {
+          "minutes": 7,
+          "n": 527034,
+          "upRate": 0.4805
+        },
+        {
+          "minutes": 10,
+          "n": 527031,
+          "upRate": 0.4837
+        }
+      ]
+    }
+  ],
+  "gate": {
+    "breakeven": 55.5556,
+    "payout": 0.8,
+    "overallLoClears": false,
+    "marginPp": -7.71,
+    "consistentAcrossPairs": false,
+    "pass": false
+  }
+}
