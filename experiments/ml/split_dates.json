@@ -24,6 +24,9 @@
   "frac": 0.15
  },
  "purge_minutes_between_folds": 60,
+ "walk_forward_shape": "initial train = first 40% of Train+Val; 5 contiguous val blocks of 12% (expanding, purged cuts)",
+ "walk_forward_initial_train_minutes": 866102,
+ "amendment_note": "pre-results correction (before any model ran): original layout left fold 1 with no training data; 70/15/15 segments unchanged",
  "label_windows_minutes": [
   5,
   7,
@@ -32,27 +35,27 @@
  "walk_forward_folds_within_trainval": [
   {
    "fold": 1,
-   "val_start": "2021-11-01T00:00:00Z",
-   "val_end": "2022-08-28T17:31:00Z"
+   "val_start": "2023-06-25T11:02:00Z",
+   "val_end": "2023-12-22T21:32:00Z"
   },
   {
    "fold": 2,
-   "val_start": "2022-08-28T17:31:00Z",
-   "val_end": "2023-06-25T11:02:00Z"
+   "val_start": "2023-12-22T21:32:00Z",
+   "val_end": "2024-06-20T08:02:00Z"
   },
   {
    "fold": 3,
-   "val_start": "2023-06-25T11:02:00Z",
-   "val_end": "2024-04-21T04:33:00Z"
+   "val_start": "2024-06-20T08:02:00Z",
+   "val_end": "2024-12-17T18:32:00Z"
   },
   {
    "fold": 4,
-   "val_start": "2024-04-21T04:33:00Z",
-   "val_end": "2025-02-15T22:04:00Z"
+   "val_start": "2024-12-17T18:32:00Z",
+   "val_end": "2025-06-16T05:02:00Z"
   },
   {
    "fold": 5,
-   "val_start": "2025-02-15T22:04:00Z",
+   "val_start": "2025-06-16T05:02:00Z",
    "val_end": "2025-12-13T15:36:00Z"
   }
  ],

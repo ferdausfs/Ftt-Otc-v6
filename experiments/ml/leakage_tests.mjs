@@ -274,7 +274,8 @@ console.log('10. split_dates.json fold integrity');
   }
   check('5 contiguous chronological folds', foldsOk);
   check('purge (60m) >= longest label window (10m)', sp.purge_minutes_between_folds >= Math.max(...sp.label_windows_minutes));
-  check('first fold starts at T0 (train side precedes it, purged)', ms(folds[0].val_start) === ms(sp.T0));
+  check('first fold val block starts after the initial train block (walk-forward, amended shape)',
+    ms(folds[0].val_start) === ms(sp.T0) + sp.walk_forward_initial_train_minutes * 60000);
   check('last fold ends at validation end (test never in CV)',
     ms(folds[folds.length - 1].val_end) === ms(sp.validation.end));
 }

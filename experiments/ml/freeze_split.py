@@ -7,6 +7,14 @@ NO price data is read here — nothing about Test's content is known or used;
 only its duration determines the boundary timestamps (unavoidable and
 declared). Output: experiments/ml/split_dates.json (committed BEFORE any
 feature/model code is written; never re-drawn afterwards).
+
+AMENDMENT (pre-results, committed before ANY model ran): the initial fold
+layout gave fold 1 an empty training set (its val block began at T0 — an
+expanding walk-forward fold cannot train on nothing). Corrected to the
+standard walk-forward shape: initial train block = first 40% of
+Train+Validation, then 5 contiguous validation blocks of 12% each. The
+70/15/15 segment boundaries and every other frozen element are UNCHANGED.
+No result-driven bias was possible: zero models had been fit when amended.
 """
 import json
 from datetime import datetime, timedelta, UTC
@@ -24,14 +32,20 @@ def iso(dt):
 train_end = T0 + timedelta(minutes=int(N_MIN * TRAIN_FRAC))
 val_end = T0 + timedelta(minutes=int(N_MIN * (TRAIN_FRAC + VAL_FRAC)))
 
-# walk-forward validation blocks inside Train+Val (expanding-window folds)
+# walk-forward: initial train = first 40% of Train+Val, then 5 contiguous
+# validation blocks over the remaining 60% (expanding window, purged cuts)
 tv_minutes = int((val_end - T0).total_seconds() // 60)
-block = tv_minutes // K_FOLDS
+init_train_min = int(tv_minutes * 0.40)
+rest = tv_minutes - init_train_min
+block = rest // K_FOLDS
 fold_bounds = []
+cursor = init_train_min
 for i in range(1, K_FOLDS + 1):
-    vs = T0 + timedelta(minutes=block * (i - 1))
-    ve = T0 + timedelta(minutes=block * i if i < K_FOLDS else tv_minutes)
+    vs = T0 + timedelta(minutes=cursor)
+    blk = rest - block * (K_FOLDS - 1) if i == K_FOLDS else block
+    ve = T0 + timedelta(minutes=cursor + blk)
     fold_bounds.append({"fold": i, "val_start": iso(vs), "val_end": iso(ve)})
+    cursor += blk
 
 out = {
     "task": "Task 24 — ML feasibility (gradient-boosted trees), frozen split",
@@ -45,6 +59,9 @@ out = {
     "test": {"start": iso(val_end), "end": iso(T1),
              "minutes": int((T1 - val_end).total_seconds() // 60), "frac": round(1 - TRAIN_FRAC - VAL_FRAC, 4)},
     "purge_minutes_between_folds": PURGE_MIN,
+    "walk_forward_shape": "initial train = first 40% of Train+Val; 5 contiguous val blocks of 12% (expanding, purged cuts)",
+    "walk_forward_initial_train_minutes": init_train_min,
+    "amendment_note": "pre-results correction (before any model ran): original layout left fold 1 with no training data; 70/15/15 segments unchanged",
     "label_windows_minutes": [5, 7, 10],
     "walk_forward_folds_within_trainval": fold_bounds,
     "pairs": ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD"],

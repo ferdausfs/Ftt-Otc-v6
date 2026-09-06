@@ -48,15 +48,20 @@ aggregate WRs can shape these features (the menu below was fixed by the task
 spec, not by results). The split boundary itself was computed from the grid
 count only.
 
-Walk-forward folds (purged, expanding) inside Train+Validation only:
+Walk-forward folds (purged, expanding) inside Train+Validation only —
+AMENDED before any model ran (the initial layout left fold 1 with an empty
+training set; correction committed in the same pre-results window, 70/15/15
+segments untouched): initial train block = first 40% of Train+Val, then five
+contiguous 12% validation blocks:
 
 | fold | validation block |
 |---|---|
-| 1 | 2021-11-01T00:00Z → 2022-08-28T17:31Z |
-| 2 | 2022-08-28T17:31Z → 2023-06-25T11:02Z |
-| 3 | 2023-06-25T11:02Z → 2024-04-21T04:33Z |
-| 4 | 2024-04-21T04:33Z → 2025-02-15T22:04Z |
-| 5 | 2025-02-15T22:04Z → 2025-12-13T15:36Z |
+| initial train | 2021-11-01T00:00Z → 2023-06-25T11:02Z |
+| 1 | 2023-06-25T11:02Z → 2023-12-22T21:32Z |
+| 2 | 2023-12-22T21:32Z → 2024-06-20T08:02Z |
+| 3 | 2024-06-20T08:02Z → 2024-12-17T18:32Z |
+| 4 | 2024-12-17T18:32Z → 2025-06-16T05:02Z |
+| 5 | 2025-06-16T05:02Z → 2025-12-13T15:36Z |
 
 Purge: **60 minutes** around every fold boundary (≥ 6× the longest label
 window of 10m — prevents overlap leakage from forward-return labels).
