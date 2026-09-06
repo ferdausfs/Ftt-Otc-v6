@@ -1,0 +1,228 @@
+{
+  "engine": "EMA Ribbon (C1 EMA 5/13/55@15m full-order bias, C2 EMA 5/7/13@1m flip trigger matching C1; expiry = FTT3 ATR14@1m trailing-100 percentile ladder 75/25 -> 5/7/10m, reused, no gate)",
+  "startedAt": "2026-09-06T05:25:12.894Z",
+  "evalFrom": "2024-07-05T00:00:00Z",
+  "evalTo": "2025-07-05T00:00:00Z",
+  "splitUsed": false,
+  "payoutAssumption": 0.8,
+  "breakevenWr": 55.5556,
+  "minBucket": 30,
+  "data": [
+    {
+      "pair": "BTC/USD",
+      "evaluated": 525600,
+      "signals": 15378,
+      "warmupSkipped": 10079,
+      "afterWindowSkipped": 17,
+      "m1Count": 535696,
+      "m1MissingOnGrid": 0,
+      "m1MaxGapMinutes": 1,
+      "m15Count": 35714,
+      "m15MissingOnGrid": 0,
+      "m15MaxGapMinutes": 15
+    },
+    {
+      "pair": "ETH/USD",
+      "evaluated": 525600,
+      "signals": 15639,
+      "warmupSkipped": 10079,
+      "afterWindowSkipped": 17,
+      "m1Count": 535696,
+      "m1MissingOnGrid": 0,
+      "m1MaxGapMinutes": 1,
+      "m15Count": 35714,
+      "m15MissingOnGrid": 0,
+      "m15MaxGapMinutes": 15
+    },
+    {
+      "pair": "XRP/USD",
+      "evaluated": 525600,
+      "signals": 15272,
+      "warmupSkipped": 10079,
+      "afterWindowSkipped": 17,
+      "m1Count": 535696,
+      "m1MissingOnGrid": 0,
+      "m1MaxGapMinutes": 1,
+      "m15Count": 35714,
+      "m15MissingOnGrid": 0,
+      "m15MaxGapMinutes": 15
+    },
+    {
+      "pair": "SOL/USD",
+      "evaluated": 525600,
+      "signals": 15800,
+      "warmupSkipped": 10079,
+      "afterWindowSkipped": 17,
+      "m1Count": 535696,
+      "m1MissingOnGrid": 0,
+      "m1MaxGapMinutes": 1,
+      "m15Count": 35714,
+      "m15MissingOnGrid": 0,
+      "m15MaxGapMinutes": 15
+    }
+  ],
+  "totalEvaluated": 2102400,
+  "totalSignals": 62089,
+  "totalTies": 500,
+  "totalExpiryGaps": 0,
+  "funnel": {
+    "C2_NO_FLIP": 1350624,
+    "C1_C2_ALL_PASS": 62089,
+    "C2_WRONG_DIRECTION": 65042,
+    "C1_RIBBON_TANGLED": 624645
+  },
+  "rates": {
+    "overall": {
+      "label": "overall",
+      "wins": 30190,
+      "losses": 31399,
+      "ties": 500,
+      "wr": 0.49018493562162074,
+      "wilsonLo": 0.4862376191821966,
+      "wilsonHi": 0.4941334763645436,
+      "conservativeWr": 0.486237497785437,
+      "sufficient": true,
+      "note": null
+    },
+    "byPair": [
+      {
+        "label": "pair BTC/USD",
+        "wins": 7551,
+        "losses": 7824,
+        "ties": 3,
+        "wr": 0.4911219512195122,
+        "wilsonLo": 0.4832230639162856,
+        "wilsonHi": 0.49902527379296446,
+        "conservativeWr": 0.4910261412407335,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "pair ETH/USD",
+        "wins": 7558,
+        "losses": 8055,
+        "ties": 26,
+        "wr": 0.4840837763402293,
+        "wilsonLo": 0.47624976107058825,
+        "wilsonHi": 0.49192562181266264,
+        "conservativeWr": 0.48327898203209924,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "pair XRP/USD",
+        "wins": 7309,
+        "losses": 7641,
+        "ties": 322,
+        "wr": 0.4888963210702341,
+        "wilsonLo": 0.48088729005854153,
+        "wilsonHi": 0.4969110568803231,
+        "conservativeWr": 0.4785882661079099,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "pair SOL/USD",
+        "wins": 7772,
+        "losses": 7879,
+        "ties": 149,
+        "wr": 0.4965816880710498,
+        "wilsonLo": 0.48875032971134014,
+        "wilsonHi": 0.504414724033762,
+        "conservativeWr": 0.4918987341772152,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byTier": [
+      {
+        "label": "expiry5",
+        "wins": 7093,
+        "losses": 7618,
+        "ties": 151,
+        "wr": 0.4821562096390456,
+        "wilsonLo": 0.47408733468858283,
+        "wilsonHi": 0.490234401194937,
+        "conservativeWr": 0.4772574350693043,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "expiry7",
+        "wins": 11805,
+        "losses": 12301,
+        "ties": 200,
+        "wr": 0.4897121048701568,
+        "wilsonLo": 0.48340374954892423,
+        "wilsonHi": 0.49602373856429616,
+        "conservativeWr": 0.4856825475191311,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "expiry10",
+        "wins": 11292,
+        "losses": 11480,
+        "ties": 149,
+        "wr": 0.4958721236606359,
+        "wilsonLo": 0.48937951071343433,
+        "wilsonHi": 0.5023661290540408,
+        "conservativeWr": 0.4926486627983072,
+        "sufficient": true,
+        "note": null
+      }
+    ],
+    "byDirection": [
+      {
+        "label": "PUT",
+        "wins": 14267,
+        "losses": 14648,
+        "ties": 226,
+        "wr": 0.49341172401867545,
+        "wilsonLo": 0.487650377651032,
+        "wilsonHi": 0.4991748207047698,
+        "conservativeWr": 0.4895851206204317,
+        "sufficient": true,
+        "note": null
+      },
+      {
+        "label": "CALL",
+        "wins": 15923,
+        "losses": 16751,
+        "ties": 274,
+        "wr": 0.48732937503825674,
+        "wilsonLo": 0.4819114554053084,
+        "wilsonHi": 0.49275027367360374,
+        "conservativeWr": 0.48327667840233096,
+        "sufficient": true,
+        "note": null
+      }
+    ]
+  },
+  "noSkillBaselineUpRate": [
+    {
+      "minutes": 5,
+      "valid": 2102400,
+      "up": 1042516,
+      "down": 1037473,
+      "tie": 22411,
+      "upRate": 0.4959
+    },
+    {
+      "minutes": 7,
+      "valid": 2102400,
+      "up": 1045405,
+      "down": 1038017,
+      "tie": 18978,
+      "upRate": 0.4972
+    },
+    {
+      "minutes": 10,
+      "valid": 2102400,
+      "up": 1048314,
+      "down": 1038486,
+      "tie": 15600,
+      "upRate": 0.4986
+    }
+  ]
+}

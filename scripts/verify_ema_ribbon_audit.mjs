@@ -91,10 +91,13 @@ for await (const line of rl) {
   else if (r.result === 'EXPIRY_GAP') { tally.gaps++; }
   else tally.structureFail++;
 
-  // a decided signal's result must agree with its own expiry-window marker
+  // a decided signal's result must agree with its own expiry-window marker.
+  // dirN is ABSOLUTE price direction (+1 up / -1 down / 0 tie); the result is
+  // DIRECTION-RELATIVE: CALL wins on up, PUT wins on down.
   if (r.result !== 'EXPIRY_GAP') {
     const d = r['dir' + r.expiryMinutes];
-    const expect = r.result === 'WIN' ? 1 : r.result === 'LOSS' ? -1 : 0;
+    const up = r.result === 'WIN' ? r.decision === 'CALL' : r.result === 'LOSS' ? r.decision === 'PUT' : null;
+    const expect = up === null ? 0 : up ? 1 : -1;
     if (d !== expect) tally.resultDirMismatch++;
   }
   // entry/exit arithmetic on every resolved signal
