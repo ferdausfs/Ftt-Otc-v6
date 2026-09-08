@@ -1,0 +1,1540 @@
+{
+  "engine": "FRVP fade + triple-barrier R:R exit — 50-bin trailing-24h volume profile, VA 70% fade of VAH/VAL pierce-and-reject, SL = trigger wick + 0.1x range, TP variants 1.5R / 3R / POC, max hold 120m; standalone module src/strategy/frvpFade.mjs + backtest/tripleBarrier.mjs",
+  "startedAt": "2026-09-08T04:36:55.238Z",
+  "auditFile": "results/FRVP_audit.jsonl.gz",
+  "mode": "single 12-month block 2023-07-05..2024-07-05, one pass, no split (parameters frozen pre-run, commit 691dd10)",
+  "window": {
+    "start": "2023-07-05T00:00:00.000Z",
+    "end": "2024-07-05T00:00:00.000Z",
+    "inclusiveEnd": true
+  },
+  "frozenParams": {
+    "bins": 50,
+    "vaPct": 0.7,
+    "bufferX": 0.1,
+    "maxHoldMin": 120,
+    "windowBars": 1440,
+    "tpR1": 1.5,
+    "tpR2": 3,
+    "profileWindowRule": "1440 closed 1m candles with close time strictly before the trigger close (trigger candle excluded)",
+    "tieBreaks": "POC tie -> lowest-priced bin; VA expansion tie -> UP first; strict trigger inequalities",
+    "costAssumptions": {
+      "base": 0.001,
+      "low": 0.0005,
+      "high": 0.002
+    }
+  },
+  "dataReuseNote": "Bybit 1m 2023-06-21..2024-07-05T01:00Z reused from the Market Structure fetch (warmup+tail included); legitimate per spec: new hypothesis family + new exit model, not derived from any prior outcome",
+  "minBucket": 30,
+  "bootstrap": {
+    "seed": 20260908,
+    "iters": 5000,
+    "maxN": 60000
+  },
+  "data": [
+    {
+      "pair": "BTC/USD",
+      "source": "bybit",
+      "symbol": "BTCUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "trades": 8740,
+      "overlapped": 7669
+    },
+    {
+      "pair": "ETH/USD",
+      "source": "bybit",
+      "symbol": "ETHUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "trades": 8743,
+      "overlapped": 7645
+    },
+    {
+      "pair": "XRP/USD",
+      "source": "bybit",
+      "symbol": "XRPUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "trades": 10076,
+      "overlapped": 8972
+    },
+    {
+      "pair": "SOL/USD",
+      "source": "bybit",
+      "symbol": "SOLUSDT",
+      "first": "2023-06-21T00:00:00.000Z",
+      "last": "2024-07-05T01:00:00.000Z",
+      "m1Candles": 547261,
+      "gaps": {
+        "count": 0,
+        "maxGapMinutes": 0,
+        "maxAllowedMinutes": 1440
+      },
+      "evaluated": 527041,
+      "trades": 10149,
+      "overlapped": 8996
+    }
+  ],
+  "funnel": {
+    "evaluatedBars": 2108164,
+    "decisions": {
+      "NO_TRADE": 2070456,
+      "CALL": 19305,
+      "PUT": 18403
+    },
+    "reasons": {
+      "NO_TRIGGER": 1345600,
+      "PIERCE_NO_REJECT": 724845,
+      "BOTH_PIERCED": 11
+    },
+    "resolutions": {
+      "v15": {
+        "SL": 21713,
+        "TP": 15807,
+        "TIMEOUT": 188
+      },
+      "v3": {
+        "SL": 26733,
+        "TP": 10283,
+        "TIMEOUT": 692
+      },
+      "vPoc": {
+        "SL": 30705,
+        "TIMEOUT": 2257,
+        "TP": 4746
+      }
+    },
+    "trades": 37708,
+    "pocDegenerate": 100,
+    "overlapShare": 0.8826243767900711,
+    "perPairEvaluated": {
+      "BTC/USD": 527041,
+      "ETH/USD": 527041,
+      "XRP/USD": 527041,
+      "SOL/USD": 527041
+    },
+    "perPairTrades": {
+      "BTC/USD": 8740,
+      "ETH/USD": 8743,
+      "XRP/USD": 10076,
+      "SOL/USD": 10149
+    },
+    "zeroRangeSeen": 0
+  },
+  "variants": {
+    "tp15": {
+      "n": 37708,
+      "wins": 15807,
+      "losses": 21713,
+      "timeouts": 188,
+      "censored": 0,
+      "wr": 0.4212953091684435,
+      "wrLo": 0.4163074309669525,
+      "wrHi": 0.4262993019689313,
+      "conservativeWr": 0.4191948658109685,
+      "timeoutRate": 0.004985679431420388,
+      "avgWinR": 1.5,
+      "avgTimeoutR": 0.1991061074468085,
+      "expectancy": {
+        "gross": 0.053966,
+        "lo": 0.041531,
+        "hi": 0.0664
+      },
+      "expectancyBoot": {
+        "lo": 0.041517,
+        "hi": 0.066701
+      },
+      "expectancyNet": {
+        "base": {
+          "perSide": 0.001,
+          "rtPctOfNotional": 0.2,
+          "point": -3.695443,
+          "lo": -3.914564,
+          "hi": -3.476323,
+          "bootLo": -3.945395,
+          "bootHi": -3.529079,
+          "bootUsed": true
+        },
+        "low": {
+          "perSide": 0.0005,
+          "rtPctOfNotional": 0.1,
+          "point": -1.820739,
+          "lo": -1.93081,
+          "hi": -1.710668,
+          "bootLo": -1.945068,
+          "bootHi": -1.735641,
+          "bootUsed": true
+        },
+        "high": {
+          "perSide": 0.002,
+          "rtPctOfNotional": 0.4,
+          "point": -7.444852,
+          "lo": -7.882598,
+          "hi": -7.007106,
+          "bootLo": -7.943683,
+          "bootHi": -7.113955,
+          "bootUsed": true
+        }
+      },
+      "gapSensitive": {
+        "count": 0,
+        "expectancy": {
+          "gross": 0.053966,
+          "lo": 0.041531,
+          "hi": 0.0664
+        }
+      },
+      "sufficient": true
+    },
+    "tp3": {
+      "n": 37708,
+      "wins": 10283,
+      "losses": 26733,
+      "timeouts": 692,
+      "censored": 0,
+      "wr": 0.2777987897125567,
+      "wrLo": 0.2732590553251211,
+      "wrHi": 0.28238463865726715,
+      "conservativeWr": 0.272700753155829,
+      "timeoutRate": 0.018351543439058024,
+      "avgWinR": 3,
+      "avgTimeoutR": 0.838597303410405,
+      "expectancy": {
+        "gross": 0.124544,
+        "lo": 0.106563,
+        "hi": 0.142525
+      },
+      "expectancyBoot": {
+        "lo": 0.106414,
+        "hi": 0.142564
+      },
+      "expectancyNet": {
+        "base": {
+          "perSide": 0.001,
+          "rtPctOfNotional": 0.2,
+          "point": -3.624865,
+          "lo": -3.84417,
+          "hi": -3.40556,
+          "bootLo": -3.875638,
+          "bootHi": -3.457621,
+          "bootUsed": true
+        },
+        "low": {
+          "perSide": 0.0005,
+          "rtPctOfNotional": 0.1,
+          "point": -1.75016,
+          "lo": -1.860797,
+          "hi": -1.639524,
+          "bootLo": -1.877244,
+          "bootHi": -1.663476,
+          "bootUsed": true
+        },
+        "high": {
+          "perSide": 0.002,
+          "rtPctOfNotional": 0.4,
+          "point": -7.374274,
+          "lo": -7.812012,
+          "hi": -6.936536,
+          "bootLo": -7.87405,
+          "bootHi": -7.041944,
+          "bootUsed": true
+        }
+      },
+      "gapSensitive": {
+        "count": 0,
+        "expectancy": {
+          "gross": 0.124544,
+          "lo": 0.106563,
+          "hi": 0.142525
+        }
+      },
+      "sufficient": true
+    },
+    "tpPoc": {
+      "n": 37708,
+      "wins": 4746,
+      "losses": 30705,
+      "timeouts": 2257,
+      "censored": 0,
+      "wr": 0.1338749259541339,
+      "wrLo": 0.1303699115249543,
+      "wrHi": 0.13745927817403317,
+      "conservativeWr": 0.1258618860719211,
+      "timeoutRate": 0.05985467274848839,
+      "avgWinR": 5.795606166917402,
+      "avgTimeoutR": 5.377765920159513,
+      "expectancy": {
+        "gross": 0.237047,
+        "lo": 0.195648,
+        "hi": 0.278446
+      },
+      "expectancyBoot": {
+        "lo": 0.195158,
+        "hi": 0.279143
+      },
+      "expectancyNet": {
+        "base": {
+          "perSide": 0.001,
+          "rtPctOfNotional": 0.2,
+          "point": -3.512362,
+          "lo": -3.734317,
+          "hi": -3.290407,
+          "bootLo": -3.769276,
+          "bootHi": -3.339896,
+          "bootUsed": true
+        },
+        "low": {
+          "perSide": 0.0005,
+          "rtPctOfNotional": 0.1,
+          "point": -1.637658,
+          "lo": -1.753935,
+          "hi": -1.52138,
+          "bootLo": -1.76642,
+          "bootHi": -1.541338,
+          "bootUsed": true
+        },
+        "high": {
+          "perSide": 0.002,
+          "rtPctOfNotional": 0.4,
+          "point": -7.261771,
+          "lo": -7.700591,
+          "hi": -6.822951,
+          "bootLo": -7.766503,
+          "bootHi": -6.928051,
+          "bootUsed": true
+        }
+      },
+      "gapSensitive": {
+        "count": 0,
+        "expectancy": {
+          "gross": 0.237047,
+          "lo": 0.195648,
+          "hi": 0.278446
+        }
+      },
+      "sufficient": true
+    }
+  },
+  "byPair": {
+    "BTC/USD": {
+      "tp15": {
+        "n": 8740,
+        "wins": 3663,
+        "losses": 5028,
+        "timeouts": 49,
+        "censored": 0,
+        "wr": 0.42147048671039006,
+        "wrLo": 0.4111259304394781,
+        "wrHi": 0.43188443306577495,
+        "conservativeWr": 0.4191075514874142,
+        "timeoutRate": 0.005606407322654462,
+        "avgWinR": 1.5,
+        "avgTimeoutR": 0.24712281489795918,
+        "expectancy": {
+          "gross": 0.054761,
+          "lo": 0.028939,
+          "hi": 0.080582
+        },
+        "expectancyBoot": {
+          "lo": 0.029035,
+          "hi": 0.080387
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -5.197972,
+            "lo": -6.088119,
+            "hi": -4.307824,
+            "bootLo": -6.164168,
+            "bootHi": -4.645337,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -2.571605,
+            "lo": -3.017261,
+            "hi": -2.125949,
+            "bootLo": -3.056571,
+            "bootHi": -2.292795,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -10.450704,
+            "lo": -12.230395,
+            "hi": -8.671012,
+            "bootLo": -12.381396,
+            "bootHi": -9.34999,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.054761,
+            "lo": 0.028939,
+            "hi": 0.080582
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 8740,
+        "wins": 2395,
+        "losses": 6158,
+        "timeouts": 187,
+        "censored": 0,
+        "wr": 0.28001870688647257,
+        "wrLo": 0.27060333852315627,
+        "wrHi": 0.28963158950391693,
+        "conservativeWr": 0.2740274599542334,
+        "timeoutRate": 0.02139588100686499,
+        "avgWinR": 3,
+        "avgTimeoutR": 0.8794760855080217,
+        "expectancy": {
+          "gross": 0.136323,
+          "lo": 0.09892,
+          "hi": 0.173726
+        },
+        "expectancyBoot": {
+          "lo": 0.099796,
+          "hi": 0.173038
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -5.116409,
+            "lo": -6.006641,
+            "hi": -4.226178,
+            "bootLo": -6.0835,
+            "bootHi": -4.56238,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -2.490043,
+            "lo": -2.936193,
+            "hi": -2.043893,
+            "bootLo": -2.976432,
+            "bootHi": -2.208146,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -10.369142,
+            "lo": -12.148711,
+            "hi": -8.589572,
+            "bootLo": -12.301852,
+            "bootHi": -9.26642,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.136323,
+            "lo": 0.09892,
+            "hi": 0.173726
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 8740,
+        "wins": 1138,
+        "losses": 7052,
+        "timeouts": 550,
+        "censored": 0,
+        "wr": 0.13894993894993896,
+        "wrLo": 0.13162788332321676,
+        "wrHi": 0.14661053150085088,
+        "conservativeWr": 0.13020594965675059,
+        "timeoutRate": 0.06292906178489703,
+        "avgWinR": 5.916566356616878,
+        "avgTimeoutR": 5.11966546510909,
+        "expectancy": {
+          "gross": 0.285683,
+          "lo": 0.190059,
+          "hi": 0.381307
+        },
+        "expectancyBoot": {
+          "lo": 0.193865,
+          "hi": 0.385695
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -4.967049,
+            "lo": -5.85969,
+            "hi": -4.074409,
+            "bootLo": -5.937243,
+            "bootHi": -4.403203,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -2.340683,
+            "lo": -2.79353,
+            "hi": -1.887837,
+            "bootLo": -2.841007,
+            "bootHi": -2.032413,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -10.219782,
+            "lo": -11.999589,
+            "hi": -8.439975,
+            "bootLo": -12.161117,
+            "bootHi": -9.116686,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.285683,
+            "lo": 0.190059,
+            "hi": 0.381307
+          }
+        },
+        "sufficient": true
+      },
+      "n": 8740
+    },
+    "ETH/USD": {
+      "tp15": {
+        "n": 8743,
+        "wins": 3715,
+        "losses": 4999,
+        "timeouts": 29,
+        "censored": 0,
+        "wr": 0.4263254532935506,
+        "wrLo": 0.41597667936398613,
+        "wrHi": 0.43673915562053456,
+        "conservativeWr": 0.4249113576575546,
+        "timeoutRate": 0.003316939265698273,
+        "avgWinR": 1.5,
+        "avgTimeoutR": 0.08083663620689654,
+        "expectancy": {
+          "gross": 0.065863,
+          "lo": 0.039983,
+          "hi": 0.091744
+        },
+        "expectancyBoot": {
+          "lo": 0.040202,
+          "hi": 0.092476
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -4.699879,
+            "lo": -5.002478,
+            "hi": -4.39728,
+            "bootLo": -5.007982,
+            "bootHi": -4.41431,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -2.317008,
+            "lo": -2.469755,
+            "hi": -2.16426,
+            "bootLo": -2.47215,
+            "bootHi": -2.173166,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -9.465621,
+            "lo": -10.069569,
+            "hi": -8.861673,
+            "bootLo": -10.081012,
+            "bootHi": -8.894588,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.065863,
+            "lo": 0.039983,
+            "hi": 0.091744
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 8743,
+        "wins": 2465,
+        "losses": 6127,
+        "timeouts": 151,
+        "censored": 0,
+        "wr": 0.2868947858472998,
+        "wrLo": 0.27742769554074737,
+        "wrHi": 0.2965523484674586,
+        "conservativeWr": 0.2819398375843532,
+        "timeoutRate": 0.017270959624842732,
+        "avgWinR": 3,
+        "avgTimeoutR": 0.9851546584768212,
+        "expectancy": {
+          "gross": 0.162045,
+          "lo": 0.124304,
+          "hi": 0.199786
+        },
+        "expectancyBoot": {
+          "lo": 0.124673,
+          "hi": 0.200661
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -4.603697,
+            "lo": -4.906429,
+            "hi": -4.300966,
+            "bootLo": -4.911395,
+            "bootHi": -4.31987,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -2.220826,
+            "lo": -2.374933,
+            "hi": -2.066719,
+            "bootLo": -2.379543,
+            "bootHi": -2.075636,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -9.36944,
+            "lo": -9.972895,
+            "hi": -8.765984,
+            "bootLo": -9.984005,
+            "bootHi": -8.80041,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.162045,
+            "lo": 0.124304,
+            "hi": 0.199786
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 8743,
+        "wins": 1133,
+        "losses": 7041,
+        "timeouts": 569,
+        "censored": 0,
+        "wr": 0.13861022755077074,
+        "wrLo": 0.13128902141368165,
+        "wrHi": 0.14627095211377342,
+        "conservativeWr": 0.12958938579434975,
+        "timeoutRate": 0.06508063593732129,
+        "avgWinR": 6.051531173565758,
+        "avgTimeoutR": 5.533696504815464,
+        "expectancy": {
+          "gross": 0.339021,
+          "lo": 0.247084,
+          "hi": 0.430958
+        },
+        "expectancyBoot": {
+          "lo": 0.252246,
+          "hi": 0.43622
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -4.426722,
+            "lo": -4.740761,
+            "hi": -4.112682,
+            "bootLo": -4.74431,
+            "bootHi": -4.131077,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -2.04385,
+            "lo": -2.219208,
+            "hi": -1.868493,
+            "bootLo": -2.221763,
+            "bootHi": -1.876243,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -9.192464,
+            "lo": -9.801627,
+            "hi": -8.583301,
+            "bootLo": -9.800075,
+            "bootHi": -8.620443,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.339021,
+            "lo": 0.247084,
+            "hi": 0.430958
+          }
+        },
+        "sufficient": true
+      },
+      "n": 8743
+    },
+    "XRP/USD": {
+      "tp15": {
+        "n": 10076,
+        "wins": 4209,
+        "losses": 5786,
+        "timeouts": 81,
+        "censored": 0,
+        "wr": 0.4211105552776388,
+        "wrLo": 0.4114631838184968,
+        "wrHi": 0.43081854387021146,
+        "conservativeWr": 0.4177252878126241,
+        "timeoutRate": 0.008038904327113934,
+        "avgWinR": 1.5,
+        "avgTimeoutR": 0.21790255123456798,
+        "expectancy": {
+          "gross": 0.054104,
+          "lo": 0.030077,
+          "hi": 0.07813
+        },
+        "expectancyBoot": {
+          "lo": 0.029967,
+          "hi": 0.078166
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.337205,
+            "lo": -3.394563,
+            "hi": -3.279847,
+            "bootLo": -3.395073,
+            "bootHi": -3.27952,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.641551,
+            "lo": -1.676706,
+            "hi": -1.606395,
+            "bootLo": -1.677201,
+            "bootHi": -1.606069,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -6.728514,
+            "lo": -6.836144,
+            "hi": -6.620884,
+            "bootLo": -6.835749,
+            "bootHi": -6.618958,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.054104,
+            "lo": 0.030077,
+            "hi": 0.07813
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 10076,
+        "wins": 2745,
+        "losses": 7110,
+        "timeouts": 221,
+        "censored": 0,
+        "wr": 0.2785388127853881,
+        "wrLo": 0.2697758811538114,
+        "wrHi": 0.2874743273791759,
+        "conservativeWr": 0.27242953552997223,
+        "timeoutRate": 0.021933306867804685,
+        "avgWinR": 3,
+        "avgTimeoutR": 0.731690415837104,
+        "expectancy": {
+          "gross": 0.1277,
+          "lo": 0.092938,
+          "hi": 0.162462
+        },
+        "expectancyBoot": {
+          "lo": 0.093132,
+          "hi": 0.162383
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.263609,
+            "lo": -3.325092,
+            "hi": -3.202126,
+            "bootLo": -3.325528,
+            "bootHi": -3.20227,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.567955,
+            "lo": -1.610341,
+            "hi": -1.525569,
+            "bootLo": -1.610357,
+            "bootHi": -1.525318,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -6.654918,
+            "lo": -6.764158,
+            "hi": -6.545678,
+            "bootLo": -6.764843,
+            "bootHi": -6.546378,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.1277,
+            "lo": 0.092938,
+            "hi": 0.162462
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 10076,
+        "wins": 1235,
+        "losses": 8240,
+        "timeouts": 601,
+        "censored": 0,
+        "wr": 0.13034300791556727,
+        "wrLo": 0.12371336875216918,
+        "wrHi": 0.1372722664195165,
+        "conservativeWr": 0.12256847955537911,
+        "timeoutRate": 0.05964668519253672,
+        "avgWinR": 5.578874563295545,
+        "avgTimeoutR": 5.392793535557411,
+        "expectancy": {
+          "gross": 0.187672,
+          "lo": 0.114252,
+          "hi": 0.261091
+        },
+        "expectancyBoot": {
+          "lo": 0.117133,
+          "hi": 0.26209
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.203637,
+            "lo": -3.292033,
+            "hi": -3.115242,
+            "bootLo": -3.290134,
+            "bootHi": -3.114357,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.507983,
+            "lo": -1.584823,
+            "hi": -1.431143,
+            "bootLo": -1.581067,
+            "bootHi": -1.430609,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -6.594946,
+            "lo": -6.720719,
+            "hi": -6.469174,
+            "bootLo": -6.723008,
+            "bootHi": -6.467651,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.187672,
+            "lo": 0.114252,
+            "hi": 0.261091
+          }
+        },
+        "sufficient": true
+      },
+      "n": 10076
+    },
+    "SOL/USD": {
+      "tp15": {
+        "n": 10149,
+        "wins": 4220,
+        "losses": 5900,
+        "timeouts": 29,
+        "censored": 0,
+        "wr": 0.41699604743083,
+        "wrLo": 0.4074229387071919,
+        "wrHi": 0.4266321473159153,
+        "conservativeWr": 0.41580451275987784,
+        "timeoutRate": 0.00285742437678589,
+        "avgWinR": 1.5,
+        "avgTimeoutR": 0.18374348862068962,
+        "expectancy": {
+          "gross": 0.042894,
+          "lo": 0.018939,
+          "hi": 0.066849
+        },
+        "expectancyBoot": {
+          "lo": 0.01941,
+          "hi": 0.066799
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -1.89189,
+            "lo": -1.933081,
+            "hi": -1.850698,
+            "bootLo": -1.934399,
+            "bootHi": -1.850043,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -0.924498,
+            "lo": -0.953814,
+            "hi": -0.895182,
+            "bootLo": -0.954177,
+            "bootHi": -0.894875,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -3.826673,
+            "lo": -3.897571,
+            "hi": -3.755774,
+            "bootLo": -3.900402,
+            "bootHi": -3.755249,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.042894,
+            "lo": 0.018939,
+            "hi": 0.066849
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 10149,
+        "wins": 2678,
+        "losses": 7338,
+        "timeouts": 133,
+        "censored": 0,
+        "wr": 0.26737220447284343,
+        "wrLo": 0.258794955438475,
+        "wrHi": 0.2761278256104349,
+        "conservativeWr": 0.2638683614149177,
+        "timeoutRate": 0.013104739383190463,
+        "avgWinR": 3,
+        "avgTimeoutR": 0.7923712078195488,
+        "expectancy": {
+          "gross": 0.078962,
+          "lo": 0.044659,
+          "hi": 0.113265
+        },
+        "expectancyBoot": {
+          "lo": 0.044618,
+          "hi": 0.113219
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -1.855821,
+            "lo": -1.903097,
+            "hi": -1.808546,
+            "bootLo": -1.902136,
+            "bootHi": -1.809894,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -0.88843,
+            "lo": -0.926244,
+            "hi": -0.850615,
+            "bootLo": -0.925438,
+            "bootHi": -0.851479,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -3.790605,
+            "lo": -3.864768,
+            "hi": -3.716441,
+            "bootLo": -3.865069,
+            "bootHi": -3.716906,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.078962,
+            "lo": 0.044659,
+            "hi": 0.113265
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 10149,
+        "wins": 1240,
+        "losses": 8372,
+        "timeouts": 537,
+        "censored": 0,
+        "wr": 0.1290054099042863,
+        "wrLo": 0.12245211418463132,
+        "wrHi": 0.13585512491232593,
+        "conservativeWr": 0.1221795250763622,
+        "timeoutRate": 0.05291161690806976,
+        "avgWinR": 5.666612458903231,
+        "avgTimeoutR": 5.460073463463687,
+        "expectancy": {
+          "gross": 0.156336,
+          "lo": 0.083627,
+          "hi": 0.229046
+        },
+        "expectancyBoot": {
+          "lo": 0.084333,
+          "hi": 0.229025
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -1.778447,
+            "lo": -1.857057,
+            "hi": -1.699837,
+            "bootLo": -1.855964,
+            "bootHi": -1.701133,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -0.811055,
+            "lo": -0.884928,
+            "hi": -0.737182,
+            "bootLo": -0.883577,
+            "bootHi": -0.736902,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -3.71323,
+            "lo": -3.80956,
+            "hi": -3.6169,
+            "bootLo": -3.807583,
+            "bootHi": -3.617374,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.156336,
+            "lo": 0.083627,
+            "hi": 0.229046
+          }
+        },
+        "sufficient": true
+      },
+      "n": 10149
+    }
+  },
+  "byDirection": {
+    "PUT": {
+      "tp15": {
+        "n": 18403,
+        "wins": 7733,
+        "losses": 10580,
+        "timeouts": 90,
+        "censored": 0,
+        "wr": 0.42226833397040353,
+        "wrLo": 0.4151317506327503,
+        "wrHi": 0.4294375215094884,
+        "conservativeWr": 0.4202032277346085,
+        "timeoutRate": 0.004890506982557192,
+        "avgWinR": 1.5,
+        "avgTimeoutR": 0.2079415474444444,
+        "expectancy": {
+          "gross": 0.056416,
+          "lo": 0.038611,
+          "hi": 0.07422
+        },
+        "expectancyBoot": {
+          "lo": 0.038053,
+          "hi": 0.074563
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.962846,
+            "lo": -4.398172,
+            "hi": -3.527521,
+            "bootLo": -4.506232,
+            "bootHi": -3.662523,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.953215,
+            "lo": -2.171415,
+            "hi": -1.735016,
+            "bootLo": -2.225293,
+            "bootHi": -1.800517,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -7.982108,
+            "lo": -8.85223,
+            "hi": -7.111987,
+            "bootLo": -9.065137,
+            "bootHi": -7.380836,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.056416,
+            "lo": 0.038611,
+            "hi": 0.07422
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 18403,
+        "wins": 5069,
+        "losses": 13032,
+        "timeouts": 302,
+        "censored": 0,
+        "wr": 0.28003977680791114,
+        "wrLo": 0.2735457225384851,
+        "wrHi": 0.2866271727552415,
+        "conservativeWr": 0.2754442210509156,
+        "timeoutRate": 0.01641036787480302,
+        "avgWinR": 3,
+        "avgTimeoutR": 0.8077112002317876,
+        "expectancy": {
+          "gross": 0.131442,
+          "lo": 0.105626,
+          "hi": 0.157258
+        },
+        "expectancyBoot": {
+          "lo": 0.105289,
+          "hi": 0.157488
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.88782,
+            "lo": -4.323294,
+            "hi": -3.452346,
+            "bootLo": -4.433306,
+            "bootHi": -3.586186,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.878189,
+            "lo": -2.096937,
+            "hi": -1.659441,
+            "bootLo": -2.15204,
+            "bootHi": -1.725063,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -7.907082,
+            "lo": -8.777151,
+            "hi": -7.037012,
+            "bootLo": -8.992828,
+            "bootHi": -7.305167,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.131442,
+            "lo": 0.105626,
+            "hi": 0.157258
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 18403,
+        "wins": 2340,
+        "losses": 15079,
+        "timeouts": 984,
+        "censored": 0,
+        "wr": 0.13433606980882945,
+        "wrLo": 0.12935244888541303,
+        "wrHi": 0.13948093686813265,
+        "conservativeWr": 0.127153181546487,
+        "timeoutRate": 0.053469543009291964,
+        "avgWinR": 6.139132947897441,
+        "avgTimeoutR": 5.164391134644299,
+        "expectancy": {
+          "gross": 0.237371,
+          "lo": 0.176111,
+          "hi": 0.29863
+        },
+        "expectancyBoot": {
+          "lo": 0.179401,
+          "hi": 0.30105
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.781891,
+            "lo": -4.220139,
+            "hi": -3.343644,
+            "bootLo": -4.309418,
+            "bootHi": -3.475396,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.77226,
+            "lo": -1.997217,
+            "hi": -1.547304,
+            "bootLo": -2.040425,
+            "bootHi": -1.605701,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -7.801153,
+            "lo": -8.672234,
+            "hi": -6.930073,
+            "bootLo": -8.876709,
+            "bootHi": -7.199205,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.237371,
+            "lo": 0.176111,
+            "hi": 0.29863
+          }
+        },
+        "sufficient": true
+      },
+      "n": 18403
+    },
+    "CALL": {
+      "tp15": {
+        "n": 19305,
+        "wins": 8074,
+        "losses": 11133,
+        "timeouts": 98,
+        "censored": 0,
+        "wr": 0.42036757432186184,
+        "wrLo": 0.41340331230720023,
+        "wrHi": 0.42736368342503694,
+        "conservativeWr": 0.4182336182336182,
+        "timeoutRate": 0.005076405076405077,
+        "avgWinR": 1.5,
+        "avgTimeoutR": 0.19099192785714283,
+        "expectancy": {
+          "gross": 0.05163,
+          "lo": 0.034257,
+          "hi": 0.069003
+        },
+        "expectancyBoot": {
+          "lo": 0.033932,
+          "hi": 0.068927
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.440534,
+            "lo": -3.545185,
+            "hi": -3.335884,
+            "bootLo": -3.550279,
+            "bootHi": -3.341454,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.694452,
+            "lo": -1.748796,
+            "hi": -1.640108,
+            "bootLo": -1.750668,
+            "bootHi": -1.643211,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -6.932699,
+            "lo": -7.140039,
+            "hi": -6.725358,
+            "bootLo": -7.14758,
+            "bootHi": -6.737529,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.05163,
+            "lo": 0.034257,
+            "hi": 0.069003
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 19305,
+        "wins": 5214,
+        "losses": 13701,
+        "timeouts": 390,
+        "censored": 0,
+        "wr": 0.27565424266455196,
+        "wrLo": 0.26933232109545774,
+        "wrHi": 0.2820672707626248,
+        "conservativeWr": 0.27008547008547007,
+        "timeoutRate": 0.020202020202020204,
+        "avgWinR": 3,
+        "avgTimeoutR": 0.8625142345897433,
+        "expectancy": {
+          "gross": 0.117968,
+          "lo": 0.09291,
+          "hi": 0.143027
+        },
+        "expectancyBoot": {
+          "lo": 0.092801,
+          "hi": 0.14289
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.374196,
+            "lo": -3.47976,
+            "hi": -3.268631,
+            "bootLo": -3.483211,
+            "bootHi": -3.275287,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.628114,
+            "lo": -1.684791,
+            "hi": -1.571436,
+            "bootLo": -1.685407,
+            "bootHi": -1.574253,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -6.86636,
+            "lo": -7.073841,
+            "hi": -6.65888,
+            "bootLo": -7.079177,
+            "bootHi": -6.672853,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.117968,
+            "lo": 0.09291,
+            "hi": 0.143027
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 19305,
+        "wins": 2406,
+        "losses": 15626,
+        "timeouts": 1273,
+        "censored": 0,
+        "wr": 0.13342945874001774,
+        "wrLo": 0.12854433840306165,
+        "wrHi": 0.13847073099736032,
+        "conservativeWr": 0.12463092463092464,
+        "timeoutRate": 0.06594146594146594,
+        "avgWinR": 5.461502813844549,
+        "avgTimeoutR": 5.542699768507468,
+        "expectancy": {
+          "gross": 0.236738,
+          "lo": 0.180802,
+          "hi": 0.292675
+        },
+        "expectancyBoot": {
+          "lo": 0.18221,
+          "hi": 0.293069
+        },
+        "expectancyNet": {
+          "base": {
+            "perSide": 0.001,
+            "rtPctOfNotional": 0.2,
+            "point": -3.255426,
+            "lo": -3.371196,
+            "hi": -3.139656,
+            "bootLo": -3.370738,
+            "bootHi": -3.144065,
+            "bootUsed": true
+          },
+          "low": {
+            "perSide": 0.0005,
+            "rtPctOfNotional": 0.1,
+            "point": -1.509344,
+            "lo": -1.584125,
+            "hi": -1.434562,
+            "bootLo": -1.581905,
+            "bootHi": -1.434533,
+            "bootUsed": true
+          },
+          "high": {
+            "perSide": 0.002,
+            "rtPctOfNotional": 0.4,
+            "point": -6.74759,
+            "lo": -6.959875,
+            "hi": -6.535305,
+            "bootLo": -6.964033,
+            "bootHi": -6.546342,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.236738,
+            "lo": 0.180802,
+            "hi": 0.292675
+          }
+        },
+        "sufficient": true
+      },
+      "n": 19305
+    }
+  },
+  "gate": {
+    "tp15": {
+      "n": 37708,
+      "sufficient": true,
+      "netExpectancy": -3.695443,
+      "netLoUsed": -3.945395,
+      "ciSource": "bootstrap",
+      "pass": false
+    },
+    "tp3": {
+      "n": 37708,
+      "sufficient": true,
+      "netExpectancy": -3.624865,
+      "netLoUsed": -3.875638,
+      "ciSource": "bootstrap",
+      "pass": false
+    },
+    "tpPoc": {
+      "n": 37708,
+      "sufficient": true,
+      "netExpectancy": -3.512362,
+      "netLoUsed": -3.769276,
+      "ciSource": "bootstrap",
+      "pass": false
+    }
+  }
+}
