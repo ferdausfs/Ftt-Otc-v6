@@ -1,0 +1,2339 @@
+{
+  "engine": "FRVP fade FX 1h + triple-barrier R:R exit — 50-bin trailing-480h tick-volume profile, VA 70% fade of VAH/VAL pierce-and-reject, SL = trigger wick + 0.1x range, TP variants 1.5R / 3R / POC, max hold 240h; standalone module src/strategy/frvpFadeFx1h.mjs + backtest/tripleBarrier.mjs (UNCHANGED from feature/frvp-rr)",
+  "startedAt": "2026-09-09T04:29:41.089Z",
+  "auditFile": "results/FRVP_FX1H_audit.jsonl.gz",
+  "mode": "single fetched block 2026-06..2026-09, one pass, no split (parameters frozen pre-run, commit 2af0ad2); first 480 hourly candles per pair are profile warmup; per-pair evaluable counts reported, not padded",
+  "frozenParams": {
+    "bins": 50,
+    "vaPct": 0.7,
+    "bufferX": 0.1,
+    "maxHoldHours": 240,
+    "windowBars": 480,
+    "tpR1": 1.5,
+    "tpR2": 3,
+    "profileWindowRule": "480 closed 1h candles with close time strictly before the trigger close (trigger candle excluded)",
+    "tieBreaks": "POC tie -> lowest-priced bin; VA expansion tie -> UP first; strict trigger inequalities",
+    "costAssumptions": {
+      "perPair": {
+        "EUR/USD": {
+          "pipSize": 0.0001,
+          "spreadPips": 1,
+          "swapPipsPerNight": 1
+        },
+        "GBP/USD": {
+          "pipSize": 0.0001,
+          "spreadPips": 1.5,
+          "swapPipsPerNight": 1
+        },
+        "USD/JPY": {
+          "pipSize": 0.01,
+          "spreadPips": 1.2,
+          "swapPipsPerNight": 1
+        },
+        "AUD/USD": {
+          "pipSize": 0.0001,
+          "spreadPips": 1.2,
+          "swapPipsPerNight": 1
+        }
+      },
+      "spreadMults": {
+        "base": 1,
+        "low": 0.5,
+        "high": 2
+      },
+      "swapMults": {
+        "base": 1,
+        "high": 2
+      },
+      "swapNightRule": "flat charge per UTC-midnight crossed during the hold, both directions (conservative: real swaps are directional, sometimes positive)"
+    }
+  },
+  "dataCaveats": {
+    "tickVolume": "FX volume is a tick-count proxy (histdata quote-update count per hour), NEVER real traded volume; VAH/VAL/POC are built from that proxy",
+    "shortWindow": "evaluable window is ~75 calendar days per pair after warmup — far shorter than the crypto 12-month test; expect wide confidence intervals",
+    "source": "histdata.com free tick feed (TwelveData unusable: no locally accessible key; demo whitelist = EUR/USD+USD/JPY only; forex rows carry no volume field)"
+  },
+  "minBucket": 30,
+  "bootstrap": {
+    "seed": 20260908,
+    "iters": 5000,
+    "maxN": 60000
+  },
+  "data": [
+    {
+      "pair": "EUR/USD",
+      "source": "histdata.com free tick feed (ASCII TICK, GMT)",
+      "aggregation": "1h OHLC from bid/ask mid; volume = tick count (tick-count proxy, NOT real traded volume)",
+      "first": "2026-06-01T00:00:00.000Z",
+      "last": "2026-09-04T16:00:00.000Z",
+      "h1Candles": 1673,
+      "ticks": 4078391,
+      "gapHours": 13,
+      "duplicateTickTs": 1387936,
+      "backwardsJitterSkipped": 0,
+      "evaluated": 1673,
+      "trades": 37,
+      "overlapped": 34
+    },
+    {
+      "pair": "GBP/USD",
+      "source": "histdata.com free tick feed (ASCII TICK, GMT)",
+      "aggregation": "1h OHLC from bid/ask mid; volume = tick count (tick-count proxy, NOT real traded volume)",
+      "first": "2026-06-01T00:00:00.000Z",
+      "last": "2026-09-04T16:00:00.000Z",
+      "h1Candles": 1673,
+      "ticks": 6159267,
+      "gapHours": 13,
+      "duplicateTickTs": 2527907,
+      "backwardsJitterSkipped": 0,
+      "evaluated": 1673,
+      "trades": 61,
+      "overlapped": 60
+    },
+    {
+      "pair": "USD/JPY",
+      "source": "histdata.com free tick feed (ASCII TICK, GMT)",
+      "aggregation": "1h OHLC from bid/ask mid; volume = tick count (tick-count proxy, NOT real traded volume)",
+      "first": "2026-06-01T00:00:00.000Z",
+      "last": "2026-09-04T16:00:00.000Z",
+      "h1Candles": 1669,
+      "ticks": 6183868,
+      "gapHours": 14,
+      "duplicateTickTs": 3095014,
+      "backwardsJitterSkipped": 2,
+      "evaluated": 1669,
+      "trades": 39,
+      "overlapped": 36
+    },
+    {
+      "pair": "AUD/USD",
+      "source": "histdata.com free tick feed (ASCII TICK, GMT)",
+      "aggregation": "1h OHLC from bid/ask mid; volume = tick count (tick-count proxy, NOT real traded volume)",
+      "first": "2026-06-01T00:00:00.000Z",
+      "last": "2026-09-04T16:00:00.000Z",
+      "h1Candles": 1673,
+      "ticks": 4254116,
+      "gapHours": 13,
+      "duplicateTickTs": 1297565,
+      "backwardsJitterSkipped": 0,
+      "evaluated": 1673,
+      "trades": 32,
+      "overlapped": 28
+    }
+  ],
+  "funnel": {
+    "evaluatedBars": 6688,
+    "decisions": {
+      "NO_TRADE": 6519,
+      "CALL": 35,
+      "PUT": 134
+    },
+    "reasons": {
+      "WARMUP_INSUFFICIENT": 1920,
+      "PIERCE_NO_REJECT": 2168,
+      "NO_TRIGGER": 2430,
+      "BOTH_PIERCED": 1
+    },
+    "resolutions": {
+      "v15": {
+        "SL": 104,
+        "CENSORED": 2,
+        "TP": 63
+      },
+      "v3": {
+        "SL": 127,
+        "CENSORED": 3,
+        "TP": 38,
+        "TIMEOUT": 1
+      },
+      "vPoc": {
+        "SL": 135,
+        "CENSORED": 5,
+        "TP": 29
+      }
+    },
+    "trades": 169,
+    "pocDegenerate": 1,
+    "overlapShare": 0.9349112426035503,
+    "multiNightTrades": 14,
+    "perPairEvaluated": {
+      "EUR/USD": 1673,
+      "GBP/USD": 1673,
+      "USD/JPY": 1669,
+      "AUD/USD": 1673
+    },
+    "perPairTrades": {
+      "EUR/USD": 37,
+      "GBP/USD": 61,
+      "USD/JPY": 39,
+      "AUD/USD": 32
+    }
+  },
+  "variants": {
+    "tp15": {
+      "n": 167,
+      "wins": 63,
+      "losses": 104,
+      "timeouts": 0,
+      "censored": 2,
+      "wr": 0.3772455089820359,
+      "wrLo": 0.3072721413582582,
+      "wrHi": 0.45273927342017284,
+      "conservativeWr": 0.3772455089820359,
+      "timeoutRate": 0,
+      "avgWinR": 1.5,
+      "avgTimeoutR": null,
+      "avgRPips": 12.747218934911489,
+      "holdNights": {
+        "avg": 0.347,
+        "max": 4
+      },
+      "expectancy": {
+        "gross": -0.056886,
+        "lo": -0.24122,
+        "hi": 0.127447
+      },
+      "expectancyBoot": {
+        "lo": -0.236527,
+        "hi": 0.137725
+      },
+      "expectancyNet": {
+        "base": {
+          "spreadMult": 1,
+          "swapMult": 1,
+          "point": -0.283331,
+          "lo": -0.4708,
+          "hi": -0.095863,
+          "bootLo": -0.469476,
+          "bootHi": -0.089554,
+          "bootUsed": true
+        },
+        "high": {
+          "spreadMult": 1,
+          "swapMult": 2,
+          "point": -0.31087,
+          "lo": -0.498745,
+          "hi": -0.122996,
+          "bootLo": -0.496984,
+          "bootHi": -0.116905,
+          "bootUsed": true
+        },
+        "lowSpreadBaseSwap": {
+          "spreadMult": 0.5,
+          "swapMult": 1,
+          "point": -0.183878,
+          "lo": -0.369219,
+          "hi": 0.001463,
+          "bootLo": -0.367248,
+          "bootHi": 0.007546,
+          "bootUsed": true
+        },
+        "highSpreadBaseSwap": {
+          "spreadMult": 2,
+          "swapMult": 1,
+          "point": -0.482238,
+          "lo": -0.67722,
+          "hi": -0.287255,
+          "bootLo": -0.678078,
+          "bootHi": -0.281633,
+          "bootUsed": true
+        },
+        "highSpreadhighSwap": {
+          "spreadMult": 2,
+          "swapMult": 2,
+          "point": -0.509777,
+          "lo": -0.705004,
+          "hi": -0.314549,
+          "bootLo": -0.705727,
+          "bootHi": -0.310228,
+          "bootUsed": true
+        }
+      },
+      "gapSensitive": {
+        "count": 0,
+        "expectancy": {
+          "gross": -0.056886,
+          "lo": -0.24122,
+          "hi": 0.127447
+        }
+      },
+      "sufficient": true
+    },
+    "tp3": {
+      "n": 166,
+      "wins": 38,
+      "losses": 127,
+      "timeouts": 1,
+      "censored": 3,
+      "wr": 0.23030303030303031,
+      "wrLo": 0.17263687674117476,
+      "wrHi": 0.30024140433571617,
+      "conservativeWr": 0.2289156626506024,
+      "timeoutRate": 0.005917159763313609,
+      "avgWinR": 3,
+      "avgTimeoutR": 2.13440274,
+      "avgRPips": 12.747218934911489,
+      "holdNights": {
+        "avg": 0.633,
+        "max": 10
+      },
+      "expectancy": {
+        "gross": -0.065455,
+        "lo": -0.322976,
+        "hi": 0.192065
+      },
+      "expectancyBoot": {
+        "lo": -0.311634,
+        "hi": 0.19439
+      },
+      "expectancyNet": {
+        "base": {
+          "spreadMult": 1,
+          "swapMult": 1,
+          "point": -0.314589,
+          "lo": -0.569015,
+          "hi": -0.060162,
+          "bootLo": -0.559277,
+          "bootHi": -0.060556,
+          "bootUsed": true
+        },
+        "high": {
+          "spreadMult": 1,
+          "swapMult": 2,
+          "point": -0.363729,
+          "lo": -0.617108,
+          "hi": -0.11035,
+          "bootLo": -0.608715,
+          "bootHi": -0.107329,
+          "bootUsed": true
+        },
+        "lowSpreadBaseSwap": {
+          "spreadMult": 0.5,
+          "swapMult": 1,
+          "point": -0.214592,
+          "lo": -0.469256,
+          "hi": 0.040071,
+          "bootLo": -0.459919,
+          "bootHi": 0.039838,
+          "bootUsed": true
+        },
+        "highSpreadBaseSwap": {
+          "spreadMult": 2,
+          "swapMult": 1,
+          "point": -0.514582,
+          "lo": -0.771075,
+          "hi": -0.25809,
+          "bootLo": -0.759401,
+          "bootHi": -0.257928,
+          "bootUsed": true
+        },
+        "highSpreadhighSwap": {
+          "spreadMult": 2,
+          "swapMult": 2,
+          "point": -0.563722,
+          "lo": -0.819099,
+          "hi": -0.308345,
+          "bootLo": -0.812135,
+          "bootHi": -0.308401,
+          "bootUsed": true
+        }
+      },
+      "gapSensitive": {
+        "count": 0,
+        "expectancy": {
+          "gross": -0.065455,
+          "lo": -0.322976,
+          "hi": 0.192065
+        }
+      },
+      "sufficient": true
+    },
+    "tpPoc": {
+      "n": 164,
+      "wins": 29,
+      "losses": 135,
+      "timeouts": 0,
+      "censored": 5,
+      "wr": 0.17682926829268292,
+      "wrLo": 0.1260345948205014,
+      "wrHi": 0.24241703361713218,
+      "conservativeWr": 0.17682926829268292,
+      "timeoutRate": 0,
+      "avgWinR": 4.00648621137931,
+      "avgTimeoutR": null,
+      "avgRPips": 12.747218934911489,
+      "holdNights": {
+        "avg": 0.634,
+        "max": 9
+      },
+      "expectancy": {
+        "gross": -0.114707,
+        "lo": -0.544697,
+        "hi": 0.315283
+      },
+      "expectancyBoot": {
+        "lo": -0.506431,
+        "hi": 0.346751
+      },
+      "expectancyNet": {
+        "base": {
+          "spreadMult": 1,
+          "swapMult": 1,
+          "point": -0.370954,
+          "lo": -0.801687,
+          "hi": 0.059779,
+          "bootLo": -0.760591,
+          "bootHi": 0.08937,
+          "bootUsed": true
+        },
+        "high": {
+          "spreadMult": 1,
+          "swapMult": 2,
+          "point": -0.42939,
+          "lo": -0.859403,
+          "hi": 0.000622,
+          "bootLo": -0.819913,
+          "bootHi": 0.025536,
+          "bootUsed": true
+        },
+        "lowSpreadBaseSwap": {
+          "spreadMult": 0.5,
+          "swapMult": 1,
+          "point": -0.272049,
+          "lo": -0.701424,
+          "hi": 0.157327,
+          "bootLo": -0.663834,
+          "bootHi": 0.18356,
+          "bootUsed": true
+        },
+        "highSpreadBaseSwap": {
+          "spreadMult": 2,
+          "swapMult": 1,
+          "point": -0.568764,
+          "lo": -1.003719,
+          "hi": -0.13381,
+          "bootLo": -0.964312,
+          "bootHi": -0.107815,
+          "bootUsed": true
+        },
+        "highSpreadhighSwap": {
+          "spreadMult": 2,
+          "swapMult": 2,
+          "point": -0.627201,
+          "lo": -1.061442,
+          "hi": -0.192959,
+          "bootLo": -1.02428,
+          "bootHi": -0.168537,
+          "bootUsed": true
+        }
+      },
+      "gapSensitive": {
+        "count": 0,
+        "expectancy": {
+          "gross": -0.114707,
+          "lo": -0.544697,
+          "hi": 0.315283
+        }
+      },
+      "sufficient": true
+    }
+  },
+  "byPair": {
+    "EUR/USD": {
+      "tp15": {
+        "n": 35,
+        "wins": 16,
+        "losses": 19,
+        "timeouts": 0,
+        "censored": 2,
+        "wr": 0.45714285714285713,
+        "wrLo": 0.30466019285269996,
+        "wrHi": 0.6181027493501198,
+        "conservativeWr": 0.45714285714285713,
+        "timeoutRate": 0,
+        "avgWinR": 1.5,
+        "avgTimeoutR": null,
+        "avgRPips": 12.224729729730594,
+        "holdNights": {
+          "avg": 0.4,
+          "max": 4
+        },
+        "expectancy": {
+          "gross": 0.142857,
+          "lo": -0.27576,
+          "hi": 0.561475
+        },
+        "expectancyBoot": {
+          "lo": -0.285714,
+          "hi": 0.571429
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.028758,
+            "lo": -0.439697,
+            "hi": 0.382181,
+            "bootLo": -0.433151,
+            "bootHi": 0.386375,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.060642,
+            "lo": -0.467266,
+            "hi": 0.345981,
+            "bootLo": -0.452134,
+            "bootHi": 0.346466,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": 0.041107,
+            "lo": -0.370907,
+            "hi": 0.453121,
+            "bootLo": -0.368089,
+            "bootHi": 0.458947,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.168489,
+            "lo": -0.578531,
+            "hi": 0.241553,
+            "bootLo": -0.564969,
+            "bootHi": 0.240767,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.200374,
+            "lo": -0.605788,
+            "hi": 0.205041,
+            "bootLo": -0.590763,
+            "bootHi": 0.2016,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.142857,
+            "lo": -0.27576,
+            "hi": 0.561475
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 35,
+        "wins": 9,
+        "losses": 26,
+        "timeouts": 0,
+        "censored": 2,
+        "wr": 0.2571428571428571,
+        "wrLo": 0.14163027067038275,
+        "wrHi": 0.4206930684789296,
+        "conservativeWr": 0.2571428571428571,
+        "timeoutRate": 0,
+        "avgWinR": 3,
+        "avgTimeoutR": null,
+        "avgRPips": 12.224729729730594,
+        "holdNights": {
+          "avg": 0.743,
+          "max": 7
+        },
+        "expectancy": {
+          "gross": 0.028571,
+          "lo": -0.559065,
+          "hi": 0.616208
+        },
+        "expectancyBoot": {
+          "lo": -0.542857,
+          "hi": 0.6
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.179182,
+            "lo": -0.756137,
+            "hi": 0.397773,
+            "bootLo": -0.73875,
+            "bootHi": 0.396304,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.247204,
+            "lo": -0.81514,
+            "hi": 0.320731,
+            "bootLo": -0.795667,
+            "bootHi": 0.331364,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.109316,
+            "lo": -0.685924,
+            "hi": 0.467292,
+            "bootLo": -0.669132,
+            "bootHi": 0.465682,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.318913,
+            "lo": -0.897455,
+            "hi": 0.259629,
+            "bootLo": -0.877612,
+            "bootHi": 0.266077,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.386935,
+            "lo": -0.956166,
+            "hi": 0.182295,
+            "bootLo": -0.935332,
+            "bootHi": 0.191813,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.028571,
+            "lo": -0.559065,
+            "hi": 0.616208
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 35,
+        "wins": 9,
+        "losses": 26,
+        "timeouts": 0,
+        "censored": 2,
+        "wr": 0.2571428571428571,
+        "wrLo": 0.14163027067038275,
+        "wrHi": 0.4206930684789296,
+        "conservativeWr": 0.2571428571428571,
+        "timeoutRate": 0,
+        "avgWinR": 2.3830238255555556,
+        "avgTimeoutR": null,
+        "avgRPips": 12.224729729730594,
+        "holdNights": {
+          "avg": 0.457,
+          "max": 3
+        },
+        "expectancy": {
+          "gross": -0.13008,
+          "lo": -0.79556,
+          "hi": 0.535401
+        },
+        "expectancyBoot": {
+          "lo": -0.677388,
+          "hi": 0.622984
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.332862,
+            "lo": -0.998511,
+            "hi": 0.332787,
+            "bootLo": -0.884951,
+            "bootHi": 0.41441,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.395914,
+            "lo": -1.063058,
+            "hi": 0.271231,
+            "bootLo": -0.951921,
+            "bootHi": 0.345437,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.262997,
+            "lo": -0.927936,
+            "hi": 0.401943,
+            "bootLo": -0.812183,
+            "bootHi": 0.485657,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.472593,
+            "lo": -1.140432,
+            "hi": 0.195245,
+            "bootLo": -1.024947,
+            "bootHi": 0.271789,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.535645,
+            "lo": -1.205219,
+            "hi": 0.133929,
+            "bootLo": -1.097103,
+            "bootHi": 0.204122,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.13008,
+            "lo": -0.79556,
+            "hi": 0.535401
+          }
+        },
+        "sufficient": true
+      },
+      "n": 37
+    },
+    "GBP/USD": {
+      "tp15": {
+        "n": 61,
+        "wins": 18,
+        "losses": 43,
+        "timeouts": 0,
+        "censored": 0,
+        "wr": 0.29508196721311475,
+        "wrLo": 0.19555018756317594,
+        "wrHi": 0.41889402060250897,
+        "conservativeWr": 0.29508196721311475,
+        "timeoutRate": 0,
+        "avgWinR": 1.5,
+        "avgTimeoutR": null,
+        "avgRPips": 13.998196721311427,
+        "holdNights": {
+          "avg": 0.492,
+          "max": 3
+        },
+        "expectancy": {
+          "gross": -0.262295,
+          "lo": -0.5508,
+          "hi": 0.02621
+        },
+        "expectancyBoot": {
+          "lo": -0.54918,
+          "hi": 0.02459
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.513489,
+            "lo": -0.812192,
+            "hi": -0.214785,
+            "bootLo": -0.806828,
+            "bootHi": -0.209377,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.547145,
+            "lo": -0.845017,
+            "hi": -0.249272,
+            "bootLo": -0.836929,
+            "bootHi": -0.244502,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.40472,
+            "lo": -0.696615,
+            "hi": -0.112825,
+            "bootLo": -0.689091,
+            "bootHi": -0.108744,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.731027,
+            "lo": -1.049128,
+            "hi": -0.412925,
+            "bootLo": -1.047822,
+            "bootHi": -0.407745,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.764682,
+            "lo": -1.081611,
+            "hi": -0.447754,
+            "bootLo": -1.080523,
+            "bootHi": -0.442575,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.262295,
+            "lo": -0.5508,
+            "hi": 0.02621
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 60,
+        "wins": 8,
+        "losses": 51,
+        "timeouts": 1,
+        "censored": 1,
+        "wr": 0.13559322033898305,
+        "wrLo": 0.07034174671461951,
+        "wrHi": 0.24539660809572245,
+        "conservativeWr": 0.13333333333333333,
+        "timeoutRate": 0.01639344262295082,
+        "avgWinR": 3,
+        "avgTimeoutR": 2.13440274,
+        "avgRPips": 13.998196721311427,
+        "holdNights": {
+          "avg": 0.9,
+          "max": 10
+        },
+        "expectancy": {
+          "gross": -0.414427,
+          "lo": -0.771128,
+          "hi": -0.057726
+        },
+        "expectancyBoot": {
+          "lo": -0.733333,
+          "hi": -0.057706
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.697689,
+            "lo": -1.045665,
+            "hi": -0.349713,
+            "bootLo": -1.019854,
+            "bootHi": -0.343606,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.760095,
+            "lo": -1.100925,
+            "hi": -0.419265,
+            "bootLo": -1.070449,
+            "bootHi": -0.409605,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.587261,
+            "lo": -0.934122,
+            "hi": -0.2404,
+            "bootLo": -0.902236,
+            "bootHi": -0.234645,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.918545,
+            "lo": -1.274391,
+            "hi": -0.562699,
+            "bootLo": -1.249939,
+            "bootHi": -0.557553,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.980951,
+            "lo": -1.329982,
+            "hi": -0.63192,
+            "bootLo": -1.305897,
+            "bootHi": -0.627535,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.414427,
+            "lo": -0.771128,
+            "hi": -0.057726
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 60,
+        "wins": 5,
+        "losses": 55,
+        "timeouts": 0,
+        "censored": 1,
+        "wr": 0.08333333333333333,
+        "wrLo": 0.03612045659492961,
+        "wrHi": 0.18068942021226345,
+        "conservativeWr": 0.08333333333333333,
+        "timeoutRate": 0,
+        "avgWinR": 1.941977696,
+        "avgTimeoutR": null,
+        "avgRPips": 13.998196721311427,
+        "holdNights": {
+          "avg": 0.917,
+          "max": 9
+        },
+        "expectancy": {
+          "gross": -0.754835,
+          "lo": -0.991021,
+          "hi": -0.518649
+        },
+        "expectancyBoot": {
+          "lo": -0.96147,
+          "hi": -0.492019
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -1.041824,
+            "lo": -1.288607,
+            "hi": -0.795041,
+            "bootLo": -1.25807,
+            "bootHi": -0.769527,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -1.110395,
+            "lo": -1.36228,
+            "hi": -0.85851,
+            "bootLo": -1.335649,
+            "bootHi": -0.833809,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.932615,
+            "lo": -1.173384,
+            "hi": -0.691847,
+            "bootLo": -1.143086,
+            "bootHi": -0.664845,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -1.260242,
+            "lo": -1.526358,
+            "hi": -0.994126,
+            "bootLo": -1.502503,
+            "bootHi": -0.97432,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -1.328813,
+            "lo": -1.600044,
+            "hi": -1.057582,
+            "bootLo": -1.577234,
+            "bootHi": -1.034466,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.754835,
+            "lo": -0.991021,
+            "hi": -0.518649
+          }
+        },
+        "sufficient": true
+      },
+      "n": 61
+    },
+    "USD/JPY": {
+      "tp15": {
+        "n": 39,
+        "wins": 18,
+        "losses": 21,
+        "timeouts": 0,
+        "censored": 0,
+        "wr": 0.46153846153846156,
+        "wrLo": 0.3156688560368363,
+        "wrHi": 0.6143055173282316,
+        "conservativeWr": 0.46153846153846156,
+        "timeoutRate": 0,
+        "avgWinR": 1.5,
+        "avgTimeoutR": null,
+        "avgRPips": 14.657820512820763,
+        "holdNights": {
+          "avg": 0.154,
+          "max": 1
+        },
+        "expectancy": {
+          "gross": 0.153846,
+          "lo": -0.242411,
+          "hi": 0.550104
+        },
+        "expectancyBoot": {
+          "lo": -0.230769,
+          "hi": 0.538462
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.044035,
+            "lo": -0.4485,
+            "hi": 0.360429,
+            "bootLo": -0.440893,
+            "bootHi": 0.356111,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.055093,
+            "lo": -0.461584,
+            "hi": 0.351397,
+            "bootLo": -0.456648,
+            "bootHi": 0.347098,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": 0.049376,
+            "lo": -0.350854,
+            "hi": 0.449607,
+            "bootLo": -0.343982,
+            "bootHi": 0.44282,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.230859,
+            "lo": -0.650312,
+            "hi": 0.188594,
+            "bootLo": -0.637086,
+            "bootHi": 0.179164,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.241917,
+            "lo": -0.663141,
+            "hi": 0.179307,
+            "bootLo": -0.651017,
+            "bootHi": 0.167373,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.153846,
+            "lo": -0.242411,
+            "hi": 0.550104
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 39,
+        "wins": 14,
+        "losses": 25,
+        "timeouts": 0,
+        "censored": 0,
+        "wr": 0.358974358974359,
+        "wrLo": 0.2274208545642896,
+        "wrHi": 0.5158185144409593,
+        "conservativeWr": 0.358974358974359,
+        "timeoutRate": 0,
+        "avgWinR": 3,
+        "avgTimeoutR": null,
+        "avgRPips": 14.657820512820763,
+        "holdNights": {
+          "avg": 0.359,
+          "max": 4
+        },
+        "expectancy": {
+          "gross": 0.435897,
+          "lo": -0.174181,
+          "hi": 1.045976
+        },
+        "expectancyBoot": {
+          "lo": -0.179487,
+          "hi": 1.051282
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": 0.231715,
+            "lo": -0.377907,
+            "hi": 0.841336,
+            "bootLo": -0.373806,
+            "bootHi": 0.848221,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": 0.214355,
+            "lo": -0.396704,
+            "hi": 0.825414,
+            "bootLo": -0.394307,
+            "bootHi": 0.835471,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": 0.325126,
+            "lo": -0.2847,
+            "hi": 0.934953,
+            "bootLo": -0.286897,
+            "bootHi": 0.943377,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": 0.044891,
+            "lo": -0.568845,
+            "hi": 0.658627,
+            "bootLo": -0.559781,
+            "bootHi": 0.661291,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": 0.027532,
+            "lo": -0.587378,
+            "hi": 0.642442,
+            "bootLo": -0.579536,
+            "bootHi": 0.64516,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 0.435897,
+            "lo": -0.174181,
+            "hi": 1.045976
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 39,
+        "wins": 13,
+        "losses": 26,
+        "timeouts": 0,
+        "censored": 0,
+        "wr": 0.3333333333333333,
+        "wrLo": 0.20632956187170853,
+        "wrHi": 0.49022605604358543,
+        "conservativeWr": 0.3333333333333333,
+        "timeoutRate": 0,
+        "avgWinR": 6.113935453076921,
+        "avgTimeoutR": null,
+        "avgRPips": 14.657820512820763,
+        "holdNights": {
+          "avg": 0.564,
+          "max": 9
+        },
+        "expectancy": {
+          "gross": 1.371312,
+          "lo": -0.196746,
+          "hi": 2.93937
+        },
+        "expectancyBoot": {
+          "lo": -0.017926,
+          "hi": 3.058486
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": 1.13558,
+            "lo": -0.423661,
+            "hi": 2.694821,
+            "bootLo": -0.247061,
+            "bootHi": 2.818079,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": 1.086671,
+            "lo": -0.464539,
+            "hi": 2.63788,
+            "bootLo": -0.288232,
+            "bootHi": 2.757039,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": 1.228991,
+            "lo": -0.329908,
+            "hi": 2.787891,
+            "bootLo": -0.149008,
+            "bootHi": 2.90965,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": 0.948756,
+            "lo": -0.612941,
+            "hi": 2.510453,
+            "bootLo": -0.440757,
+            "bootHi": 2.625274,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": 0.899847,
+            "lo": -0.653697,
+            "hi": 2.453392,
+            "bootLo": -0.481175,
+            "bootHi": 2.562565,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": 1.371312,
+            "lo": -0.196746,
+            "hi": 2.93937
+          }
+        },
+        "sufficient": true
+      },
+      "n": 39
+    },
+    "AUD/USD": {
+      "tp15": {
+        "n": 32,
+        "wins": 11,
+        "losses": 21,
+        "timeouts": 0,
+        "censored": 0,
+        "wr": 0.34375,
+        "wrLo": 0.20410437921820646,
+        "wrHi": 0.5168891202505382,
+        "conservativeWr": 0.34375,
+        "timeoutRate": 0,
+        "avgWinR": 1.5,
+        "avgTimeoutR": null,
+        "avgRPips": 8.638125000000086,
+        "holdNights": {
+          "avg": 0.25,
+          "max": 2
+        },
+        "expectancy": {
+          "gross": -0.140625,
+          "lo": -0.558612,
+          "hi": 0.277362
+        },
+        "expectancyBoot": {
+          "lo": -0.53125,
+          "hi": 0.25
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.414675,
+            "lo": -0.831662,
+            "hi": 0.002311,
+            "bootLo": -0.798849,
+            "bootHi": 0.006066,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.445887,
+            "lo": -0.870171,
+            "hi": -0.021603,
+            "bootLo": -0.831706,
+            "bootHi": -0.016598,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.293256,
+            "lo": -0.711088,
+            "hi": 0.124576,
+            "bootLo": -0.680881,
+            "bootHi": 0.125728,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.657514,
+            "lo": -1.085589,
+            "hi": -0.229438,
+            "bootLo": -1.050109,
+            "bootHi": -0.228698,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.688726,
+            "lo": -1.123646,
+            "hi": -0.253806,
+            "bootLo": -1.087215,
+            "bootHi": -0.253658,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.140625,
+            "lo": -0.558612,
+            "hi": 0.277362
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 32,
+        "wins": 7,
+        "losses": 25,
+        "timeouts": 0,
+        "censored": 0,
+        "wr": 0.21875,
+        "wrLo": 0.11023836250824938,
+        "wrHi": 0.38754993653549097,
+        "conservativeWr": 0.21875,
+        "timeoutRate": 0,
+        "avgWinR": 3,
+        "avgTimeoutR": null,
+        "avgRPips": 8.638125000000086,
+        "holdNights": {
+          "avg": 0.344,
+          "max": 2
+        },
+        "expectancy": {
+          "gross": -0.125,
+          "lo": -0.707098,
+          "hi": 0.457098
+        },
+        "expectancyBoot": {
+          "lo": -0.625,
+          "hi": 0.5
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.410185,
+            "lo": -0.974018,
+            "hi": 0.153648,
+            "bootLo": -0.918463,
+            "bootHi": 0.179265,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.452531,
+            "lo": -1.021344,
+            "hi": 0.116282,
+            "bootLo": -0.970038,
+            "bootHi": 0.140699,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.288766,
+            "lo": -0.861873,
+            "hi": 0.284342,
+            "bootLo": -0.798302,
+            "bootHi": 0.322041,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.653023,
+            "lo": -1.207643,
+            "hi": -0.098404,
+            "bootLo": -1.157793,
+            "bootHi": -0.07493,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.69537,
+            "lo": -1.25463,
+            "hi": -0.136109,
+            "bootLo": -1.209118,
+            "bootHi": -0.112724,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.125,
+            "lo": -0.707098,
+            "hi": 0.457098
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 30,
+        "wins": 2,
+        "losses": 28,
+        "timeouts": 0,
+        "censored": 2,
+        "wr": 0.06666666666666667,
+        "wrLo": 0.018477023786309322,
+        "wrHi": 0.213234583672062,
+        "conservativeWr": 0.06666666666666667,
+        "timeoutRate": 0,
+        "avgWinR": 2.774918165,
+        "avgTimeoutR": null,
+        "avgRPips": 8.638125000000086,
+        "holdNights": {
+          "avg": 0.367,
+          "max": 2
+        },
+        "expectancy": {
+          "gross": -0.748339,
+          "lo": -1.091584,
+          "hi": -0.405093
+        },
+        "expectancyBoot": {
+          "lo": -1,
+          "hi": -0.364061
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -1.032147,
+            "lo": -1.40248,
+            "hi": -0.661813,
+            "bootLo": -1.33687,
+            "bootHi": -0.614024,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -1.077316,
+            "lo": -1.453259,
+            "hi": -0.701373,
+            "bootLo": -1.389438,
+            "bootHi": -0.658656,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.912827,
+            "lo": -1.268511,
+            "hi": -0.557144,
+            "bootLo": -1.192521,
+            "bootHi": -0.511113,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -1.270785,
+            "lo": -1.683458,
+            "hi": -0.858112,
+            "bootLo": -1.632675,
+            "bootHi": -0.82034,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -1.315954,
+            "lo": -1.733086,
+            "hi": -0.898823,
+            "bootLo": -1.685774,
+            "bootHi": -0.865885,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.748339,
+            "lo": -1.091584,
+            "hi": -0.405093
+          }
+        },
+        "sufficient": true
+      },
+      "n": 32
+    }
+  },
+  "byDirection": {
+    "PUT": {
+      "tp15": {
+        "n": 133,
+        "wins": 51,
+        "losses": 82,
+        "timeouts": 0,
+        "censored": 1,
+        "wr": 0.38345864661654133,
+        "wrLo": 0.3051979646332581,
+        "wrHi": 0.46826250365792366,
+        "conservativeWr": 0.38345864661654133,
+        "timeoutRate": 0,
+        "avgWinR": 1.5,
+        "avgTimeoutR": null,
+        "avgRPips": 11.53208955223897,
+        "holdNights": {
+          "avg": 0.376,
+          "max": 4
+        },
+        "expectancy": {
+          "gross": -0.041353,
+          "lo": -0.248721,
+          "hi": 0.166015
+        },
+        "expectancyBoot": {
+          "lo": -0.24812,
+          "hi": 0.165414
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.277044,
+            "lo": -0.488479,
+            "hi": -0.065609,
+            "bootLo": -0.4788,
+            "bootHi": -0.054783,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.307279,
+            "lo": -0.519279,
+            "hi": -0.095279,
+            "bootLo": -0.510381,
+            "bootHi": -0.085401,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.174316,
+            "lo": -0.383104,
+            "hi": 0.034471,
+            "bootLo": -0.375453,
+            "bootHi": 0.042981,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.482499,
+            "lo": -0.703258,
+            "hi": -0.26174,
+            "bootLo": -0.693102,
+            "bootHi": -0.251191,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.512734,
+            "lo": -0.73378,
+            "hi": -0.291688,
+            "bootLo": -0.724044,
+            "bootHi": -0.279003,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.041353,
+            "lo": -0.248721,
+            "hi": 0.166015
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 133,
+        "wins": 32,
+        "losses": 101,
+        "timeouts": 0,
+        "censored": 1,
+        "wr": 0.24060150375939848,
+        "wrLo": 0.17589599470590217,
+        "wrHi": 0.31987085407124455,
+        "conservativeWr": 0.24060150375939848,
+        "timeoutRate": 0,
+        "avgWinR": 3,
+        "avgTimeoutR": null,
+        "avgRPips": 11.53208955223897,
+        "holdNights": {
+          "avg": 0.617,
+          "max": 7
+        },
+        "expectancy": {
+          "gross": -0.037594,
+          "lo": -0.329273,
+          "hi": 0.254085
+        },
+        "expectancyBoot": {
+          "lo": -0.308271,
+          "hi": 0.263158
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.295835,
+            "lo": -0.584023,
+            "hi": -0.007647,
+            "bootLo": -0.565005,
+            "bootHi": -0.002351,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.34862,
+            "lo": -0.635961,
+            "hi": -0.06128,
+            "bootLo": -0.618194,
+            "bootHi": -0.054481,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.193107,
+            "lo": -0.481667,
+            "hi": 0.095453,
+            "bootLo": -0.461649,
+            "bootHi": 0.100391,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.50129,
+            "lo": -0.791854,
+            "hi": -0.210725,
+            "bootLo": -0.771265,
+            "bootHi": -0.20425,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.554075,
+            "lo": -0.843685,
+            "hi": -0.264466,
+            "bootLo": -0.823265,
+            "bootHi": -0.256723,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.037594,
+            "lo": -0.329273,
+            "hi": 0.254085
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 130,
+        "wins": 24,
+        "losses": 106,
+        "timeouts": 0,
+        "censored": 4,
+        "wr": 0.18461538461538463,
+        "wrLo": 0.12731639211538673,
+        "wrHi": 0.26001843880012315,
+        "conservativeWr": 0.18461538461538463,
+        "timeoutRate": 0,
+        "avgWinR": 4.069327052916667,
+        "avgTimeoutR": null,
+        "avgRPips": 11.53208955223897,
+        "holdNights": {
+          "avg": 0.562,
+          "max": 4
+        },
+        "expectancy": {
+          "gross": -0.064124,
+          "lo": -0.576109,
+          "hi": 0.447861
+        },
+        "expectancyBoot": {
+          "lo": -0.521032,
+          "hi": 0.49715
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.327705,
+            "lo": -0.840745,
+            "hi": 0.185334,
+            "bootLo": -0.790333,
+            "bootHi": 0.242919,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.387063,
+            "lo": -0.899596,
+            "hi": 0.12547,
+            "bootLo": -0.845543,
+            "bootHi": 0.190284,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.225594,
+            "lo": -0.737192,
+            "hi": 0.286005,
+            "bootLo": -0.682538,
+            "bootHi": 0.341732,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.531929,
+            "lo": -1.049642,
+            "hi": -0.014217,
+            "bootLo": -1.00531,
+            "bootHi": 0.046866,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.591287,
+            "lo": -1.108517,
+            "hi": -0.074056,
+            "bootLo": -1.061629,
+            "bootHi": -0.00752,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.064124,
+            "lo": -0.576109,
+            "hi": 0.447861
+          }
+        },
+        "sufficient": true
+      },
+      "n": 134
+    },
+    "CALL": {
+      "tp15": {
+        "n": 34,
+        "wins": 12,
+        "losses": 22,
+        "timeouts": 0,
+        "censored": 1,
+        "wr": 0.35294117647058826,
+        "wrLo": 0.2148792059225254,
+        "wrHi": 0.5208603688410428,
+        "conservativeWr": 0.35294117647058826,
+        "timeoutRate": 0,
+        "avgWinR": 1.5,
+        "avgTimeoutR": null,
+        "avgRPips": 17.399428571429116,
+        "holdNights": {
+          "avg": 0.235,
+          "max": 2
+        },
+        "expectancy": {
+          "gross": -0.117647,
+          "lo": -0.525266,
+          "hi": 0.289972
+        },
+        "expectancyBoot": {
+          "lo": -0.485294,
+          "hi": 0.25
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.307927,
+            "lo": -0.718715,
+            "hi": 0.102861,
+            "bootLo": -0.68546,
+            "bootHi": 0.094351,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.324917,
+            "lo": -0.735809,
+            "hi": 0.085975,
+            "bootLo": -0.704496,
+            "bootHi": 0.075755,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.221282,
+            "lo": -0.629264,
+            "hi": 0.186699,
+            "bootLo": -0.593514,
+            "bootHi": 0.168226,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.481216,
+            "lo": -0.901675,
+            "hi": -0.060757,
+            "bootLo": -0.868974,
+            "bootHi": -0.067369,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.498206,
+            "lo": -0.919092,
+            "hi": -0.077321,
+            "bootLo": -0.889207,
+            "bootHi": -0.084042,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.117647,
+            "lo": -0.525266,
+            "hi": 0.289972
+          }
+        },
+        "sufficient": true
+      },
+      "tp3": {
+        "n": 33,
+        "wins": 6,
+        "losses": 26,
+        "timeouts": 1,
+        "censored": 2,
+        "wr": 0.1875,
+        "wrLo": 0.08889544688023825,
+        "wrHi": 0.3530915520572509,
+        "conservativeWr": 0.18181818181818182,
+        "timeoutRate": 0.02857142857142857,
+        "avgWinR": 3,
+        "avgTimeoutR": 2.13440274,
+        "avgRPips": 17.399428571429116,
+        "holdNights": {
+          "avg": 0.697,
+          "max": 10
+        },
+        "expectancy": {
+          "gross": -0.177745,
+          "lo": -0.728925,
+          "hi": 0.373435
+        },
+        "expectancyBoot": {
+          "lo": -0.662594,
+          "hi": 0.402085
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.390174,
+            "lo": -0.935525,
+            "hi": 0.155178,
+            "bootLo": -0.893009,
+            "bootHi": 0.181881,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.424621,
+            "lo": -0.965006,
+            "hi": 0.115764,
+            "bootLo": -0.924705,
+            "bootHi": 0.135214,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.301183,
+            "lo": -0.845888,
+            "hi": 0.243521,
+            "bootLo": -0.792696,
+            "bootHi": 0.268649,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.568155,
+            "lo": -1.118012,
+            "hi": -0.018298,
+            "bootLo": -1.088014,
+            "bootHi": -0.005207,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.602602,
+            "lo": -1.14753,
+            "hi": -0.057674,
+            "bootLo": -1.11551,
+            "bootHi": -0.042016,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.177745,
+            "lo": -0.728925,
+            "hi": 0.373435
+          }
+        },
+        "sufficient": true
+      },
+      "tpPoc": {
+        "n": 34,
+        "wins": 5,
+        "losses": 29,
+        "timeouts": 0,
+        "censored": 1,
+        "wr": 0.14705882352941177,
+        "wrLo": 0.06449441443568425,
+        "wrHi": 0.30128056499687955,
+        "conservativeWr": 0.14705882352941177,
+        "timeoutRate": 0,
+        "avgWinR": 3.7048501719999996,
+        "avgTimeoutR": null,
+        "avgRPips": 17.399428571429116,
+        "holdNights": {
+          "avg": 0.912,
+          "max": 9
+        },
+        "expectancy": {
+          "gross": -0.30811,
+          "lo": -1.002148,
+          "hi": 0.385927
+        },
+        "expectancyBoot": {
+          "lo": -0.869532,
+          "hi": 0.495101
+        },
+        "expectancyNet": {
+          "base": {
+            "spreadMult": 1,
+            "swapMult": 1,
+            "point": -0.536315,
+            "lo": -1.230758,
+            "hi": 0.158128,
+            "bootLo": -1.111687,
+            "bootHi": 0.265351,
+            "bootUsed": true
+          },
+          "high": {
+            "spreadMult": 1,
+            "swapMult": 2,
+            "point": -0.591231,
+            "lo": -1.280729,
+            "hi": 0.098267,
+            "bootLo": -1.166885,
+            "bootHi": 0.203699,
+            "bootUsed": true
+          },
+          "lowSpreadBaseSwap": {
+            "spreadMult": 0.5,
+            "swapMult": 1,
+            "point": -0.449671,
+            "lo": -1.139513,
+            "hi": 0.240172,
+            "bootLo": -1.021584,
+            "bootHi": 0.345587,
+            "bootUsed": true
+          },
+          "highSpreadBaseSwap": {
+            "spreadMult": 2,
+            "swapMult": 1,
+            "point": -0.709604,
+            "lo": -1.415601,
+            "hi": -0.003607,
+            "bootLo": -1.299976,
+            "bootHi": 0.099005,
+            "bootUsed": true
+          },
+          "highSpreadhighSwap": {
+            "spreadMult": 2,
+            "swapMult": 2,
+            "point": -0.76452,
+            "lo": -1.465419,
+            "hi": -0.063621,
+            "bootLo": -1.354597,
+            "bootHi": 0.031202,
+            "bootUsed": true
+          }
+        },
+        "gapSensitive": {
+          "count": 0,
+          "expectancy": {
+            "gross": -0.30811,
+            "lo": -1.002148,
+            "hi": 0.385927
+          }
+        },
+        "sufficient": true
+      },
+      "n": 35
+    }
+  },
+  "weekly": {
+    "tp15": {
+      "2026-06-29": {
+        "n": 14,
+        "w": 5,
+        "l": 9,
+        "to": 0,
+        "expectancy": -0.1071,
+        "sufficient": false
+      },
+      "2026-07-06": {
+        "n": 12,
+        "w": 9,
+        "l": 3,
+        "to": 0,
+        "expectancy": 0.875,
+        "sufficient": false
+      },
+      "2026-07-13": {
+        "n": 13,
+        "w": 9,
+        "l": 4,
+        "to": 0,
+        "expectancy": 0.7308,
+        "sufficient": false
+      },
+      "2026-07-20": {
+        "n": 16,
+        "w": 4,
+        "l": 12,
+        "to": 0,
+        "expectancy": -0.375,
+        "sufficient": false
+      },
+      "2026-07-27": {
+        "n": 24,
+        "w": 8,
+        "l": 16,
+        "to": 0,
+        "expectancy": -0.1667,
+        "sufficient": false
+      },
+      "2026-08-03": {
+        "n": 14,
+        "w": 6,
+        "l": 8,
+        "to": 0,
+        "expectancy": 0.0714,
+        "sufficient": false
+      },
+      "2026-08-10": {
+        "n": 23,
+        "w": 6,
+        "l": 17,
+        "to": 0,
+        "expectancy": -0.3478,
+        "sufficient": false
+      },
+      "2026-08-17": {
+        "n": 16,
+        "w": 3,
+        "l": 13,
+        "to": 0,
+        "expectancy": -0.5313,
+        "sufficient": false
+      },
+      "2026-08-24": {
+        "n": 9,
+        "w": 3,
+        "l": 6,
+        "to": 0,
+        "expectancy": -0.1667,
+        "sufficient": false
+      },
+      "2026-08-31": {
+        "n": 26,
+        "w": 10,
+        "l": 16,
+        "to": 0,
+        "expectancy": -0.0385,
+        "sufficient": false
+      }
+    },
+    "tp3": {
+      "2026-06-29": {
+        "n": 14,
+        "w": 2,
+        "l": 11,
+        "to": 1,
+        "expectancy": -0.2047,
+        "sufficient": false
+      },
+      "2026-07-06": {
+        "n": 12,
+        "w": 7,
+        "l": 5,
+        "to": 0,
+        "expectancy": 1.3333,
+        "sufficient": false
+      },
+      "2026-07-13": {
+        "n": 13,
+        "w": 7,
+        "l": 6,
+        "to": 0,
+        "expectancy": 1.1538,
+        "sufficient": false
+      },
+      "2026-07-20": {
+        "n": 16,
+        "w": 2,
+        "l": 14,
+        "to": 0,
+        "expectancy": -0.5,
+        "sufficient": false
+      },
+      "2026-07-27": {
+        "n": 23,
+        "w": 3,
+        "l": 20,
+        "to": 0,
+        "expectancy": -0.4783,
+        "sufficient": false
+      },
+      "2026-08-03": {
+        "n": 14,
+        "w": 2,
+        "l": 12,
+        "to": 0,
+        "expectancy": -0.4286,
+        "sufficient": false
+      },
+      "2026-08-10": {
+        "n": 23,
+        "w": 6,
+        "l": 17,
+        "to": 0,
+        "expectancy": 0.0435,
+        "sufficient": false
+      },
+      "2026-08-17": {
+        "n": 16,
+        "w": 1,
+        "l": 15,
+        "to": 0,
+        "expectancy": -0.75,
+        "sufficient": false
+      },
+      "2026-08-24": {
+        "n": 9,
+        "w": 2,
+        "l": 7,
+        "to": 0,
+        "expectancy": -0.1111,
+        "sufficient": false
+      },
+      "2026-08-31": {
+        "n": 26,
+        "w": 6,
+        "l": 20,
+        "to": 0,
+        "expectancy": -0.0769,
+        "sufficient": false
+      }
+    },
+    "tpPoc": {
+      "2026-06-29": {
+        "n": 14,
+        "w": 2,
+        "l": 12,
+        "to": 0,
+        "expectancy": -0.461,
+        "sufficient": false
+      },
+      "2026-07-06": {
+        "n": 12,
+        "w": 9,
+        "l": 3,
+        "to": 0,
+        "expectancy": 5.9577,
+        "sufficient": false
+      },
+      "2026-07-13": {
+        "n": 13,
+        "w": 7,
+        "l": 6,
+        "to": 0,
+        "expectancy": 0.8673,
+        "sufficient": false
+      },
+      "2026-07-20": {
+        "n": 16,
+        "w": 1,
+        "l": 15,
+        "to": 0,
+        "expectancy": -0.9007,
+        "sufficient": false
+      },
+      "2026-07-27": {
+        "n": 24,
+        "w": 5,
+        "l": 19,
+        "to": 0,
+        "expectancy": -0.4276,
+        "sufficient": false
+      },
+      "2026-08-03": {
+        "n": 14,
+        "w": 3,
+        "l": 11,
+        "to": 0,
+        "expectancy": -0.3186,
+        "sufficient": false
+      },
+      "2026-08-10": {
+        "n": 23,
+        "w": 0,
+        "l": 23,
+        "to": 0,
+        "expectancy": -1,
+        "sufficient": false
+      },
+      "2026-08-17": {
+        "n": 16,
+        "w": 0,
+        "l": 16,
+        "to": 0,
+        "expectancy": -1,
+        "sufficient": false
+      },
+      "2026-08-24": {
+        "n": 8,
+        "w": 0,
+        "l": 8,
+        "to": 0,
+        "expectancy": -1,
+        "sufficient": false
+      },
+      "2026-08-31": {
+        "n": 24,
+        "w": 2,
+        "l": 22,
+        "to": 0,
+        "expectancy": -0.7913,
+        "sufficient": false
+      }
+    }
+  },
+  "gate": {
+    "tp15": {
+      "n": 167,
+      "sufficient": true,
+      "netExpectancy": -0.283331,
+      "netLoUsed": -0.469476,
+      "ciSource": "bootstrap",
+      "pass": false
+    },
+    "tp3": {
+      "n": 166,
+      "sufficient": true,
+      "netExpectancy": -0.314589,
+      "netLoUsed": -0.559277,
+      "ciSource": "bootstrap",
+      "pass": false
+    },
+    "tpPoc": {
+      "n": 164,
+      "sufficient": true,
+      "netExpectancy": -0.370954,
+      "netLoUsed": -0.760591,
+      "ciSource": "bootstrap",
+      "pass": false
+    }
+  }
+}
