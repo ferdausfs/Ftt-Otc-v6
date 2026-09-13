@@ -23,7 +23,9 @@ import { dirname, join } from 'node:path';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT_DIR = join(ROOT, 'backtest', 'data', 'external');
 const OUT_FILE = join(OUT_DIR, 'fng_full.json');
-const PROV_FILE = join(OUT_DIR, 'PROVENANCE_FNG.md');
+// results/ IS committed on this branch (backtest/data is gitignored) — the
+// provenance note pins the raw file's sha256 there.
+const PROV_FILE = join(ROOT, 'results', 'PROVENANCE_FNG.md');
 
 const URL = 'https://api.alternative.me/fng/?limit=0&format=json';
 
