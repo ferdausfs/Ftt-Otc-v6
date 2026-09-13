@@ -36,7 +36,7 @@ CLOSE_FIELD = {5: "cH5", 7: "cH7", 10: "cH10"}
 # PRE-DECLARED RULE (inherited): rounds = median(best_round across folds) x 1.1.
 # The VALUES are filled from THIS run's cv_summary after the CV phase completes
 # and BEFORE the final training (same sequence as the original run).
-FINAL_ROUNDS = {5: 118, 7: 57, 10: 81}
+FINAL_ROUNDS = {5: 38, 7: 35, 10: 31}   # ceil(median(best_round across the 5 folds of THIS run) x 1.1) — from cv_runs/cv_summary.json
 
 with open(os.path.join(DATA, "BTCUSDT.meta.json")) as _f:
     NF = len(json.load(_f)["featureNames"])
