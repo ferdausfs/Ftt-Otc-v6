@@ -26,7 +26,7 @@ from collections import defaultdict
 
 import numpy as np
 
-ROOT = "/home/z/my-project/Ftt-Otc-v6"
+ROOT = "/home/z/my-project/repos/wt-ml-sentimacro"
 RESULTS = f"{ROOT}/results"
 PAIRS = ["BTC/USD", "ETH/USD", "XRP/USD", "SOL/USD"]
 HORIZONS = [5, 7, 10]
@@ -58,8 +58,8 @@ def check(counter, name, cond):
 
 
 def aggregate_horizon(H):
-    path = f"{RESULTS}/ML_FEASIBILITY_test_predictions_H{H}.jsonl.gz"
-    funnel = json.load(open(f"{RESULTS}/ML_FEASIBILITY_test_funnel_H{H}.json"))
+    path = f"{RESULTS}/ML_SENTIMACRO_test_predictions_H{H}.jsonl.gz"
+    funnel = json.load(open(f"{RESULTS}/ML_SENTIMACRO_test_funnel_H{H}.json"))
     val_end = parse_ms(funnel["test_start"]); T1 = parse_ms(funnel["test_end"])
 
     V = {"total": 0, "fail": 0}
@@ -128,12 +128,15 @@ def aggregate_horizon(H):
     agg.pop("seen")
 
     # V6: sampled cross-check against raw .bin memmaps (independent source)
+    DATA_DIR = f"{ROOT}/backtest/data/ml_features"
+    with open(f"{DATA_DIR}/BTCUSDT.meta.json") as _mf:
+        NF = len(json.load(_mf)["featureNames"])
     DT = np.dtype([("ts", "<i8"), ("c_t", "<f8"),
                    ("l5", "u1"), ("l7", "u1"), ("l10", "u1"), ("pad", "u1"),
                    ("cH5", "<f8"), ("cH7", "<f8"), ("cH10", "<f8"),
-                   ("f", "<f4", (41,))])
+                   ("f", "<f4", (NF,))])
     cf = {5: "cH5", 7: "cH7", 10: "cH10"}[H]
-    mm = {s: np.memmap(f"{ROOT}/backtest/data/ml_features/{s}.bin", dtype=DT, mode="r")
+    mm = {s: np.memmap(f"{DATA_DIR}/{s}.bin", dtype=DT, mode="r")
           for s in ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"]}
     sym = {"BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT", "XRP/USD": "XRPUSDT", "SOL/USD": "SOLUSDT"}
     checked = 0
@@ -213,7 +216,7 @@ for H in HORIZONS:
               f"  (CALL {t['calls']['wr']*100:.2f}% / PUT {t['puts']['wr']*100:.2f}%)")
 
 print(f"\nVERIFICATION: {ver_tot:,} checks, {ver_fail} failures")
-json.dump(all_out, open(f"{RESULTS}/ML_FEASIBILITY_test_aggregate.json", "w"), indent=1)
-print("written: results/ML_FEASIBILITY_test_aggregate.json")
+json.dump(all_out, open(f"{RESULTS}/ML_SENTIMACRO_test_aggregate.json", "w"), indent=1)
+print("written: results/ML_SENTIMACRO_test_aggregate.json")
 if ver_fail:
     raise SystemExit("VERIFICATION FAILURES — do not report")

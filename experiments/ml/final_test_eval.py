@@ -33,12 +33,17 @@ PAIRS = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"]
 PAIR_NAME = {"BTCUSDT": "BTC/USD", "ETHUSDT": "ETH/USD", "XRPUSDT": "XRP/USD", "SOLUSDT": "SOL/USD"}
 LABEL_FIELD = {5: "l5", 7: "l7", 10: "l10"}
 CLOSE_FIELD = {5: "cH5", 7: "cH7", 10: "cH10"}
-FINAL_ROUNDS = {5: 118, 7: 57, 10: 81}   # median(best_round) x 1.1, from cv_summary.json
+# PRE-DECLARED RULE (inherited): rounds = median(best_round across folds) x 1.1.
+# The VALUES are filled from THIS run's cv_summary after the CV phase completes
+# and BEFORE the final training (same sequence as the original run).
+FINAL_ROUNDS = {5: 118, 7: 57, 10: 81}
 
+with open(os.path.join(DATA, "BTCUSDT.meta.json")) as _f:
+    NF = len(json.load(_f)["featureNames"])
 DT = np.dtype([("ts", "<i8"), ("c_t", "<f8"),
                ("l5", "u1"), ("l7", "u1"), ("l10", "u1"), ("pad", "u1"),
                ("cH5", "<f8"), ("cH7", "<f8"), ("cH10", "<f8"),
-               ("f", "<f4", (41,))])
+               ("f", "<f4", (NF,))])
 T0_MS = 1635724800000
 PARAMS = {"objective": "binary", "min_data_in_leaf": 500, "feature_fraction": 0.8,
           "bagging_fraction": 0.8, "bagging_freq": 1, "num_threads": 2, "seed": 42,
@@ -66,7 +71,7 @@ def main():
 
     for H in horizons:
         lf, cf = LABEL_FIELD[H], CLOSE_FIELD[H]
-        out_path = os.path.join(RESULTS, f"ML_FEASIBILITY_test_predictions_H{H}.jsonl.gz")
+        out_path = os.path.join(RESULTS, f"ML_SENTIMACRO_test_predictions_H{H}.jsonl.gz")
         if os.path.exists(out_path):
             print(f"H={H}: predictions already exist — skipping (single-touch rule)")
             continue
@@ -144,7 +149,7 @@ def main():
                 print(f"  {PAIR_NAME[s]}: rows={n_rows} decided={decided_n} ties={n_tie} "
                       f"missing={n_missing} ({time.time() - t0:.0f}s)")
         funnel["predicted_total"] = sum(v["predicted"] for v in funnel["pairs"].values())
-        json.dump(funnel, open(os.path.join(RESULTS, f"ML_FEASIBILITY_test_funnel_H{H}.json"), "w"), indent=1)
+        json.dump(funnel, open(os.path.join(RESULTS, f"ML_SENTIMACRO_test_funnel_H{H}.json"), "w"), indent=1)
         print(f"H={H}: DONE -> {out_path} ({time.time() - t0:.0f}s total)")
 
 

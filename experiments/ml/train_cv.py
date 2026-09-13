@@ -42,13 +42,17 @@ PAIRS = ["BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"]
 HORIZONS = [5, 7, 10]
 LABEL_FIELD = {5: "l5", 7: "l7", 10: "l10"}
 
-DT = np.dtype([  # packed 208B — must match build_features.mjs
+# feature count is read from the builder's meta (Task 25: 47 = 41 base + 6
+# external); the dtype below is rebuilt after load — NF placeholder here.
+with open(os.path.join(DATA, "BTCUSDT.meta.json")) as _f:
+    NF = len(json.load(_f)["featureNames"])
+DT = np.dtype([  # packed 232B (47 features) — must match build_features.mjs
     ("ts", "<i8"), ("c_t", "<f8"),
     ("l5", "u1"), ("l7", "u1"), ("l10", "u1"), ("pad", "u1"),
     ("cH5", "<f8"), ("cH7", "<f8"), ("cH10", "<f8"),
-    ("f", "<f4", (41,)),
+    ("f", "<f4", (NF,)),
 ])
-assert DT.itemsize == 208, DT.itemsize
+assert DT.itemsize == 44 + 4 * NF, (DT.itemsize, NF)
 
 T0_MS = 1635724800000          # 2021-11-01T00:00Z (frozen window open)
 HP_GRID = [                    # A3: declared grid reduced to lr=0.10 (pre-results)
@@ -107,7 +111,7 @@ def materialize(ts_lo, ts_hi, horizon, stride=1, stride_phase=0, keep_idx=None):
             m &= ((mm["ts"][lo:hi] - T0_MS) // 60000 % stride) == stride_phase
         parts.append((sym, lo, hi, m, int(m.sum())))
     n = sum(p[4] for p in parts)
-    ncol = len(keep_idx) if keep_idx is not None else 41
+    ncol = len(keep_idx) if keep_idx is not None else NF
     X = np.empty((n, ncol), dtype=np.float32)
     y = np.empty(n, dtype=np.int8)
     off = 0
@@ -237,6 +241,20 @@ def main():
             for fi in range(len(folds)):
                 vs, ve = folds[fi]
                 chunked_train("grid", ci, fi, 10, params, vs - PURGE_MS, vs, ve, names, t_start, budget,
+                              val_end_guard=val_end)
+
+    if phase in (None, "cvfrozen"):
+        # Task 25 path: the HP grid decision is INHERITED frozen from the
+        # original run (cv_runs/grid_choice.json on feature/ml-feasibility);
+        # pre-reg §7 forbids re-running the grid. Only fold metrics + the
+        # final-round derivation are produced here.
+        frozen = json.load(open(os.path.join(RUNS, "grid_choice.json")))["frozen_hp"]
+        log(f"== PHASE cvfrozen (frozen HP {frozen}, {len(folds)} folds x {len(HORIZONS)} horizons) ==")
+        params = {**BASE_PARAMS, **frozen}
+        for fi in range(len(folds)):
+            vs, ve = folds[fi]
+            for H in HORIZONS:
+                chunked_train("cv", None, fi, H, params, vs - PURGE_MS, vs, ve, names, t_start, budget,
                               val_end_guard=val_end)
 
     if phase in (None, "cv"):
