@@ -1,31 +1,39 @@
 /**
- * TASK 24 — ML FEASIBILITY: dataset builder.
- * Reads the RAW fetched candles + funding (backtest/data/ml/), builds the
- * frozen 41-feature rows + 5/7/10m labels on the frozen window
+ * TASK 24 + TASK 25 — ML dataset builder.
+ * Reads the RAW fetched candles + funding (backtest/data/ml/) and the THREE
+ * external regime sources (backtest/data/external/, sha256-verified against
+ * results/PROVENANCE_EXTERNAL_ML.md — pre-reg S7), builds the frozen
+ * 47-feature rows + 5/7/10m labels on the frozen window
  * [T0=2021-11-01T00:00Z, T1=2026-09-05T00:00Z), streams them to a compact
  * binary file per pair (float32 features, structured rows) + a meta JSON
  * with the full decision funnel. NO Test knowledge beyond timestamps from
  * split_dates.json — rows are just written with their timestamps; split
  * assignment happens at training time.
  *
- * Row layout (208 bytes, packed):
- *   ts:i64(ms) c_t:f64 l5:u8 l7:u8 l10:u8 pad:u8 cH5:f64 cH7:f64 cH10:f64 features:f32 x41
+ * Row layout (232 bytes, packed):
+ *   ts:i64(ms) c_t:f64 l5:u8 l7:u8 l10:u8 pad:u8 cH5:f64 cH7:f64 cH10:f64 features:f32 x47
  * Labels: 0=down 1=up 2=tie 255=target candle missing (never fabricated).
  *
  * Fail-loud rules: missing 1m candles counted & reported; 15m context older
  * than 60m (the audited server-side 15m hole) -> row excluded, counted;
- * any non-finite feature aborts the build (features_lib throws).
+ * external as-of lookup missing (level or change reference) -> row excluded,
+ * counted in funnel.extExcluded (expected ZERO — sources fetched from
+ * 2021-07-01, window opens 2021-11-01); any non-finite feature aborts the
+ * build (features_lib throws).
  *
  * Run: node experiments/ml/build_features.mjs --pair BTCUSDT
  */
-import { readFileSync, writeFileSync, appendFileSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, rmSync, existsSync, createHash } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { FEATURE_NAMES, N_FEATURES, buildSeries, findClosed15, labelAt, fundAsOf, featureRow } from './features_lib.mjs';
+import { FEATURE_NAMES, N_FEATURES, buildSeries, findClosed15, labelAt, fundAsOf, featureRow,
+         parseFredCsv, prepFredKf, prepFngKf, externalVals } from './features_lib.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DATA = join(ROOT, 'backtest', 'data', 'ml');
 const OUT = join(ROOT, 'backtest', 'data', 'ml_features');
+const EXT_DIR = join(ROOT, 'backtest', 'data', 'external');
+const PROV = join(ROOT, 'results', 'PROVENANCE_EXTERNAL_ML.md');
 
 const T0 = Date.UTC(2021, 10, 1, 0, 0, 0);
 const T1 = Date.UTC(2026, 8, 5, 0, 0, 0);
@@ -35,6 +43,33 @@ const HORIZONS = [5, 7, 10];
 
 const pairArg = (() => { const i = process.argv.indexOf('--pair'); return i === -1 ? null : process.argv[i + 1]; })();
 if (!pairArg) { console.error('usage: node build_features.mjs --pair BTCUSDT'); process.exit(1); }
+
+// ── external regime series (Task 25) — sha256-gated load (pre-reg S7) ────────
+function sha256(buf) { return createHash('sha256').update(buf).digest('hex'); }
+function loadExternal() {
+  const prov = readFileSync(PROV, 'utf8');
+  const need = (file) => {
+    const p = join(EXT_DIR, file);
+    const buf = readFileSync(p);
+    const sha = sha256(buf);
+    // provenance lists one 64-hex pin per file line; find the line mentioning the file
+    const line = prov.split('\n').find(l => l.includes(file) && /[0-9a-f]{64}/.test(l));
+    if (!line) throw new Error(`provenance: no sha256 pin found for ${file}`);
+    const pin = (line.match(/([0-9a-f]{64})/) || [])[1];
+    if (pin !== sha) throw new Error(`sha256 mismatch for ${file}: provenance ${pin} != actual ${sha}`);
+    return buf;
+  };
+  const dff = parseFredCsv(need('fred_DFF.csv').toString('utf8'));
+  const curve = parseFredCsv(need('fred_T10Y2Y.csv').toString('utf8'));
+  const fngRaw = JSON.parse(need('fng_full.json').toString('utf8'));
+  // raw file stores the API's own field name `timestamp` (string) — coerced in prepFngKf
+  const fng = prepFngKf(fngRaw.data.map(r => r.timestamp), fngRaw.data.map(r => r.value));
+  const ext = { ff: prepFredKf(dff.dateT, dff.v), curve: prepFredKf(curve.dateT, curve.v), fng };
+  const span = (s) => `${new Date(s.kfT[0]).toISOString()}..${new Date(s.kfT[s.kfT.length - 1]).toISOString()}`;
+  console.log(`external series verified+loaded: DFF ${ext.ff.kfT.length} obs (${span(ext.ff)}) | T10Y2Y ${ext.curve.kfT.length} (${span(ext.curve)}) | FNG ${ext.fng.kfT.length} (${span(ext.fng)})`);
+  return ext;
+}
+const EXT = loadExternal();
 
 // ── load + merge chunks (dedupe shared boundary candles by timestamp) ────────
 function loadSeries(symbol, tf) {
@@ -87,7 +122,7 @@ const S = buildSeries(m1, m15, fundT, fundRate);
 // ── stream rows ──────────────────────────────────────────────────────────────
 rmSync(join(OUT, `${pairArg}.bin`), { force: true });
 writeFileSync(join(OUT, `${pairArg}.meta.json`), 'building', 'utf8'); // lock/marker
-const ROW_BYTES = 8 + 8 + 3 + 1 + 24 + N_FEATURES * 4;   // 208
+const ROW_BYTES = 8 + 8 + 3 + 1 + 24 + N_FEATURES * 4;   // 232 (47 features)
 const BUF_ROWS = 65536;
 const buf = Buffer.allocUnsafe(ROW_BYTES * BUF_ROWS);
 let bufN = 0, totalRows = 0;
@@ -103,7 +138,11 @@ const funnel = {
   pair: pairArg,
   gridExpected: GRID_MIN, m1Present: a1.inWin, m1Missing: a1.holes,
   m15Present: a15.inWin, m15Missing: a15.holes,
-  rowsWritten: 0, stale15m: 0, noClosed15m: 0,
+  rowsWritten: 0, stale15m: 0, noClosed15m: 0, extExcluded: 0,
+  externalSources: {
+    dffObs: EXT.ff.kfT.length, curveObs: EXT.curve.kfT.length, fngObs: EXT.fng.kfT.length,
+    pinning: 'FRED obs D -> next business day 21:30 UTC; FNG stamp D -> D+1 00:00 UTC (frozen pre-reg §3)',
+  },
   perHorizon: {}, perSplit: {},
 };
 
@@ -120,6 +159,28 @@ const t0ms = Date.now();
 let j15 = 0, fi = -1;
 let startIdx = m1.t.findIndex(t => t >= T0);
 
+// monotonic external as-of pointers: level instant (t+60000) and change
+// reference instants (t+60000-90d, t+60000-7d) are all strictly increasing
+// in t, so six binary searches per row collapse to six pointer advances.
+function mkPtr(src) {
+  return { kfT: src.kfT, kfV: src.kfV, lvl: -1, ref: -1, refMs: -Infinity };
+}
+const pFF = mkPtr(EXT.ff), pCV = mkPtr(EXT.curve), pFG = mkPtr(EXT.fng);
+function advPtr(p, tLevel, refMs) {
+  while (p.lvl + 1 < p.kfT.length && p.kfT[p.lvl + 1] <= tLevel) p.lvl++;
+  if (refMs !== p.refMs) { p.refMs = refMs; p.ref = -1; let lo = 0, hi = p.kfT.length - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (p.kfT[m] <= refMs) { p.ref = m; lo = m + 1; } else hi = m - 1; } }
+}
+function extValsFor(decMs) {
+  advPtr(pFF, decMs, decMs - 90 * 86400000);
+  advPtr(pCV, decMs, decMs - 90 * 86400000);
+  advPtr(pFG, decMs, decMs - 7 * 86400000);
+  if (pFF.lvl < 0 || pFF.ref < 0 || pCV.lvl < 0 || pCV.ref < 0 || pFG.lvl < 0 || pFG.ref < 0) return null;
+  return [pFF.kfV[pFF.lvl], pFF.kfV[pFF.lvl] - pFF.kfV[pFF.ref],
+          pCV.kfV[pCV.lvl], pCV.kfV[pCV.lvl] - pCV.kfV[pCV.ref],
+          pFG.kfV[pFG.lvl], pFG.kfV[pFG.lvl] - pFG.kfV[pFG.ref]];
+}
+
 for (let i = startIdx; i < m1.t.length; i++) {
   const t = m1.t[i];
   if (t >= T1) break;
@@ -132,7 +193,11 @@ for (let i = startIdx; i < m1.t.length; i++) {
   if (decision - (m15.t[j15] + 900000) > FRESH_15M_MS) { funnel.stale15m++; continue; }   // 15m hole region
   if (fundT.length === 0 || fi < 0) { funnel.noClosed15m++; continue; }                    // no funding as-of (should not happen)
 
-  const row = featureRow(S, i, j15, fi, /* pairId */ ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'SOLUSDT'].indexOf(pairArg));
+  const decMs = t + 60000;
+  const extVals = extValsFor(decMs);
+  if (extVals === null) { funnel.extExcluded++; continue; }   // pre-reg §2: invalid row, counted (expected 0)
+
+  const row = featureRow(S, i, j15, fi, /* pairId */ ['BTCUSDT', 'ETHUSDT', 'XRPUSDT', 'SOLUSDT'].indexOf(pairArg), extVals);
   if (row === null) throw new Error(`${pairArg}: invalid feature row at i=${i} (${new Date(t).toISOString()})`);
 
   const l5 = labelAt(m1.t, m1.c, i, 5), l7 = labelAt(m1.t, m1.c, i, 7), l10 = labelAt(m1.t, m1.c, i, 10);
@@ -187,8 +252,8 @@ funnel.sources = {
   m15: { unique: m15.count },
   funding: { records: fundT.length },
 };
-funnel.layout = 'ts:i64 c_t:f64 l5:u8 l7:u8 l10:u8 pad:u8 cH5:f64 cH7:f64 cH10:f64 f:f32x41 (packed, 208B)';
+funnel.layout = `ts:i64 c_t:f64 l5:u8 l7:u8 l10:u8 pad:u8 cH5:f64 cH7:f64 cH10:f64 f:f32x${N_FEATURES} (packed, ${ROW_BYTES}B)`;
 writeFileSync(join(OUT, `${pairArg}.meta.json`), JSON.stringify(funnel, null, 1));
 console.log(`done: ${totalRows} rows -> ${pairArg}.bin (${(totalRows * ROW_BYTES / 1e6).toFixed(0)} MB) in ${funnel.elapsedSeconds}s`);
-console.log(`funnel: stale15m=${funnel.stale15m} noClosed15m=${funnel.noClosed15m}`);
+console.log(`funnel: stale15m=${funnel.stale15m} noClosed15m=${funnel.noClosed15m} extExcluded=${funnel.extExcluded}`);
 for (const H of HORIZONS) console.log(`  H=${H}: decided=${funnel.perHorizon[H].decided} ties=${funnel.perHorizon[H].ties} missingTarget=${funnel.perHorizon[H].missingTarget}`);

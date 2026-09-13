@@ -170,11 +170,18 @@ for (let k = 0; k < Math.floor(3000 / 480); k++) {
 }
 const S = buildSeries(m1, m15, fundT, fundRate);
 
+// Task 25: featureRow requires the six external as-of values. For the
+// candle-mutation proofs below a FROZEN CONSTANT vector is used — the
+// external series are independent of candles by construction (their own
+// boundary proofs live in leakage_sentimacro_tests.mjs), so a fixed vector
+// keeps these assertions about candle/funding causality exact.
+const EXT_FIX = [0.08, 0.0025, 0.42, -0.15, 61, -3.0];
+
 function rowFor(i) {
   const t = S.m1t[i];
   const j15 = findClosed15(S.m15t, t);
   const fi = fundAsOf(S.fundT, t + 60000);
-  return { row: featureRow(S, i, j15, fi, 2), t, j15, fi };
+  return { row: featureRow(S, i, j15, fi, 2, EXT_FIX), t, j15, fi };
 }
 
 console.log('6. featureRow FUTURE-MUTATION INVARIANCE (core no-lookahead proof)');
@@ -190,7 +197,7 @@ console.log('6. featureRow FUTURE-MUTATION INVARIANCE (core no-lookahead proof)'
   const S2 = buildSeries(m1b, m15, fundT, fundRate);
   const j15b = findClosed15(S2.m15t, before.t);
   const fib = fundAsOf(S2.fundT, before.t + 60000);
-  const after = featureRow(S2, i, j15b, fib, 2);
+  const after = featureRow(S2, i, j15b, fib, 2, EXT_FIX);
   let identical = after !== null && before.row.length === after.length;
   if (identical) for (let k = 0; k < before.row.length; k++) if (before.row[k] !== after[k]) { identical = false; break; }
   check('mutating ALL future 1m candles (OHLCV x1.5/1.7/0.6/3.3) leaves the row bit-identical', identical);
@@ -203,7 +210,7 @@ console.log('6. featureRow FUTURE-MUTATION INVARIANCE (core no-lookahead proof)'
   const j15c = findClosed15(S3.m15t, before.t);
   check('mutating all 15m candles closing after the decision instant leaves the row bit-identical',
     j15c === before.j15 && (() => {
-      const after3 = featureRow(S3, i, j15c, before.fi, 2);
+      const after3 = featureRow(S3, i, j15c, before.fi, 2, EXT_FIX);
       for (let k = 0; k < before.row.length; k++) if (before.row[k] !== after3[k]) return false;
       return true;
     })());
@@ -212,7 +219,7 @@ console.log('6. featureRow FUTURE-MUTATION INVARIANCE (core no-lookahead proof)'
   for (let j = 0; j < fbT.length; j++) if (fbT[j] > before.t + 60000) fbR[j] = 0.05;
   const S4 = buildSeries(m1, m15, fbT, fbR);
   const fi4 = fundAsOf(S4.fundT, before.t + 60000);
-  const after4 = featureRow(S4, i, before.j15, fi4, 2);
+  const after4 = featureRow(S4, i, before.j15, fi4, 2, EXT_FIX);
   let id4 = after4 !== null;
   if (id4) for (let k = 0; k < before.row.length; k++) if (before.row[k] !== after4[k]) { id4 = false; break; }
   check('mutating all future funding rates leaves the row bit-identical', id4);
@@ -227,7 +234,7 @@ console.log('7. featureRow TRUNCATED-RECOMPUTE EQUALITY');
   const cut15 = { t: m15.t.slice(0, keep15), o: m15.o.slice(0, keep15), h: m15.h.slice(0, keep15), l: m15.l.slice(0, keep15), c: m15.c.slice(0, keep15), v: m15.v.slice(0, keep15) };
   const keepF = before.fi + 1;
   const S5 = buildSeries(cut1, cut15, fundT.slice(0, keepF), fundRate.slice(0, keepF));
-  const after = featureRow(S5, i, before.j15, before.fi, 2);
+  const after = featureRow(S5, i, before.j15, before.fi, 2, EXT_FIX);
   let identical = after !== null;
   if (identical) for (let k = 0; k < before.row.length; k++) if (before.row[k] !== after[k]) { identical = false; break; }
   check('row from truncated-to-decision-instant data is bit-identical to full-batch row', identical);
@@ -240,7 +247,7 @@ console.log('8. featureRow current-candle sensitivity (canary against frozen row
   const m1b = { t: m1.t.slice(), o: m1.o.slice(), h: m1.h.slice(), l: m1.l.slice(), c: m1.c.slice(), v: m1.v.slice() };
   m1b.c[i] *= 1.01;  // mutate the CURRENT candle close
   const S6 = buildSeries(m1b, m15, fundT, fundRate);
-  const after = featureRow(S6, i, before.j15, before.fi, 2);
+  const after = featureRow(S6, i, before.j15, before.fi, 2, EXT_FIX);
   let changed = false;
   for (let k = 0; k < before.row.length; k++) if (before.row[k] !== after[k]) { changed = true; break; }
   check('mutating the CURRENT candle close DOES change the row (rows are alive)', changed);
@@ -282,13 +289,24 @@ console.log('10. split_dates.json fold integrity');
 
 console.log('11. feature shape sanity');
 {
-  check('41 features declared', N_FEATURES === 41 && FEATURE_NAMES.length === 41);
+  check('47 features declared (41 Task-24 base + 6 Task-25 external)',
+    N_FEATURES === 47 && FEATURE_NAMES.length === 47);
+  check('spot indices of the Task-24 block unchanged',
+    FEATURE_NAMES[0] === 'f_ret_1m' && FEATURE_NAMES[21] === 'f_volz_1440' &&
+    FEATURE_NAMES[34] === 'f15_volz_96' && FEATURE_NAMES[35] === 'f_fund_last' &&
+    FEATURE_NAMES[38] === 'f_utc_hour' && FEATURE_NAMES[39] === 'f_dow' &&
+    FEATURE_NAMES[40] === 'f_pair_id');
+  check('external names appended at 41-46 in frozen order',
+    ['f_macro_ff_level', 'f_macro_ff_chg_90d', 'f_macro_curve_10y2y', 'f_macro_curve_chg_90d', 'f_sent_fng', 'f_sent_fng_chg_7d']
+      .every((n, k) => FEATURE_NAMES[41 + k] === n));
   const { row } = rowFor(2500);
   check('row length matches', row.length === N_FEATURES);
   let noNan = true;
   for (const v of row) if (!Number.isFinite(v)) noNan = false;
   check('synthetic row has no NaN/Inf (fail-loud path verified elsewhere)', noNan);
   check('utc hour/dow are integers in range', Number.isInteger(row[38]) && row[38] >= 0 && row[38] <= 23 && Number.isInteger(row[39]) && row[39] >= 0 && row[39] <= 6);
+  check('external block carries the fixed vector (indices 41-46)',
+    EXT_FIX.every((v, k) => row[41 + k] === v));
 }
 
 console.log(`\nleakage_tests: ${pass} passed, ${fail} failed`);

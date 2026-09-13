@@ -1,5 +1,13 @@
 /**
- * TASK 24 — ML FEASIBILITY: feature math library (pure, causal, testable).
+ * TASK 24 + TASK 25 — ML feature math library (pure, causal, testable).
+ *
+ * Task 24: 41 price/indicator/funding/calendar features, unchanged (indices
+ * 0-40). Task 25 (PRE_REGISTRATION_SENTIMACRO.md, commit 4c08e9f): SIX
+ * externally-sourced regime features appended at indices 41-46, merged
+ * point-in-time onto the 1m decision grid with conservative publication
+ * pinning. featureRow now REQUIRES the caller to pass `extVals` (the six
+ * as-of values for this decision instant, computed by externalVals()) —
+ * rows without them fail LOUD rather than silently writing synthetic data.
  *
  * Reuses src/strategy/indicators.mjs (ema, macd, trueRange, atr) — the same
  * conventions the repo's engines use (EMA seeded by SMA of the first
@@ -11,13 +19,14 @@
  * Row assembly (features_lib.featureRow) is a pure function of:
  *   1m arrays + index i (candle open t = m1t[i]; decision instant t+60s),
  *   the last CLOSED 15m candle index (close time T+15m <= t+60s),
- *   funding events up to the decision instant.
+ *   funding events up to the decision instant,
+ *   the six external as-of values (knowable strictly by the decision instant).
  * Nothing global — no centering/scaling across the dataset — so a row
  * computed from truncated data equals the row from full data.
  */
 import { ema, macd, atr } from '../../src/strategy/indicators.mjs';
 
-export const FEATURE_NAMES = [
+export const BASE_FEATURE_NAMES = [
   // 1m block (22)
   'f_ret_1m', 'f_ret_5m', 'f_ret_15m', 'f_ret_60m', 'f_ret_240m', 'f_ret_1440m',
   'f_rvol_15', 'f_rvol_60', 'f_rvol_240',
@@ -34,7 +43,20 @@ export const FEATURE_NAMES = [
   'f_fund_last', 'f_fund_roc', 'f_fund_hours_since',
   'f_utc_hour', 'f_dow', 'f_pair_id',
 ];
-export const N_FEATURES = FEATURE_NAMES.length; // 41
+export const N_BASE_FEATURES = BASE_FEATURE_NAMES.length; // 41 — Task 24 block, unchanged
+
+// Task 25 appended block (indices 41-46) — PRE_REGISTRATION_SENTIMACRO.md §2
+export const EXT_FEATURE_NAMES = [
+  'f_macro_ff_level',       // 41 FRED DFF as-of
+  'f_macro_ff_chg_90d',     // 42 DFF asof(t) - DFF asof(t-90d)
+  'f_macro_curve_10y2y',    // 43 FRED T10Y2Y as-of
+  'f_macro_curve_chg_90d',  // 44 T10Y2Y asof(t) - asof(t-90d)
+  'f_sent_fng',             // 45 Fear&Greed as-of
+  'f_sent_fng_chg_7d',      // 46 FNG asof(t) - asof(t-7d)
+];
+
+export const FEATURE_NAMES = [...BASE_FEATURE_NAMES, ...EXT_FEATURE_NAMES];
+export const N_FEATURES = FEATURE_NAMES.length; // 47
 
 // ── fresh causal indicators (indicators.mjs style) ───────────────────────────
 
@@ -94,6 +116,106 @@ export function meanStdPrefix(s, s2, from, to) {
   return { mean, std: Math.sqrt(varr) };
 }
 
+// ── Task 25: external regime series — frozen pinning + as-of join ───────────
+
+export const DAY_MS = 86400000;
+const REF_90D = 90 * DAY_MS;   // frozen change windows (pre-reg §2)
+const REF_7D = 7 * DAY_MS;
+
+/** Parse a fredgraph.csv (observation_date,<ID>) into business-day arrays.
+ *  Frozen: weekend calendar-fill rows are DROPPED (DFF carries copies of
+ *  Friday on Sat/Sun — they add no information); '.' cells (holiday/missing)
+ *  are dropped. Values stay raw (no normalization — pre-reg §2). */
+export function parseFredCsv(text) {
+  const dateT = [], v = [];
+  const lines = text.trim().split('\n');
+  if (!lines[0].startsWith('observation_date')) throw new Error('fred csv: unexpected header');
+  for (let k = 1; k < lines.length; k++) {
+    const parts = lines[k].split(',');
+    if (parts.length < 2) continue;
+    const d = parts[0].trim(), val = parts[1].trim();
+    if (!d || val === '' || val === '.') continue;
+    const t = Date.parse(d + 'T00:00:00Z');
+    if (!Number.isFinite(t) || !Number.isFinite(+val)) continue;
+    const dow = new Date(t).getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    dateT.push(t); v.push(+val);
+  }
+  if (dateT.length < 100) throw new Error(`fred csv: only ${dateT.length} business-day rows`);
+  for (let k = 1; k < dateT.length; k++) {
+    if (dateT[k] <= dateT[k - 1]) throw new Error(`fred csv: non-monotone dates at row ${k} (loader refuses unsorted input)`);
+  }
+  return { dateT, v };
+}
+
+function nextBusinessDay(t) {
+  let d = new Date(t + DAY_MS);
+  while (d.getUTCDay() === 0 || d.getUTCDay() === 6) d = new Date(d.getTime() + DAY_MS);
+  return d;
+}
+
+/** Frozen FRED pinning (pre-reg §3): observation dated business day D is
+ *  knowable from the NEXT business day at 21:30 UTC (deliberately later than
+ *  every plausible actual release). Mon-Fri only; holidays NOT subtracted
+ *  (makes known_from no earlier than reality under all release conventions). */
+export function prepFredKf(dateT, v) {
+  const kfT = new Array(dateT.length);
+  for (let i = 0; i < dateT.length; i++) {
+    const nb = nextBusinessDay(dateT[i]);
+    kfT[i] = Date.UTC(nb.getUTCFullYear(), nb.getUTCMonth(), nb.getUTCDate(), 21, 30, 0);
+  }
+  return { kfT, kfV: v.slice() };
+}
+
+/** Frozen F&G pinning (pre-reg §3): value stamped D is knowable from
+ *  D+1 00:00 UTC (one full day after the source's ~00:00 UTC publication).
+ *  Stamps are coerced to numbers (the API returns them as strings) and the
+ *  series is SORTED ascending (the raw API payload is newest-first); a
+ *  non-numeric stamp or duplicate day fails loudly. */
+export function prepFngKf(stampsSec, values) {
+  const rows = stampsSec.map((s, i) => ({ s: +s, v: +values[i] }));
+  for (const r of rows) {
+    if (!Number.isFinite(r.s) || r.s <= 0) throw new Error(`prepFngKf: non-numeric stamp ${JSON.stringify(stampsSec[rows.indexOf(r)])}`);
+    if (!Number.isFinite(r.v)) throw new Error('prepFngKf: non-numeric value');
+  }
+  rows.sort((a, b) => a.s - b.s);
+  const kfT = rows.map(r => (r.s + 86400) * 1000);
+  for (let k = 1; k < kfT.length; k++) {
+    if (kfT[k] <= kfT[k - 1]) throw new Error(`prepFngKf: duplicate/non-monotone stamp at row ${k} (loader refuses ambiguous input)`);
+  }
+  return { kfT, kfV: rows.map(r => r.v) };
+}
+
+/** Largest index with kfT[idx] <= t; -1 if none. Inclusive at the boundary. */
+export function asOfKf(kfT, t) {
+  let lo = 0, hi = kfT.length - 1, ans = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (kfT[m] <= t) { ans = m; lo = m + 1; } else hi = m - 1;
+  }
+  return ans;
+}
+
+/** The six external as-of values for decision instant t (pure). Returns
+ *  null if ANY lookup (level or reference instant) predates the first
+ *  observation — the caller treats that row as invalid and counts it.
+ *  Changes reference asof(t - window): the value knowable THEN, never a
+ *  back-projection of the current value (pre-reg §3). */
+export function externalVals(ext, t) {
+  const ff = asOfKf(ext.ff.kfT, t), ffRef = asOfKf(ext.ff.kfT, t - REF_90D);
+  const cv = asOfKf(ext.curve.kfT, t), cvRef = asOfKf(ext.curve.kfT, t - REF_90D);
+  const fg = asOfKf(ext.fng.kfT, t), fgRef = asOfKf(ext.fng.kfT, t - REF_7D);
+  if (ff < 0 || ffRef < 0 || cv < 0 || cvRef < 0 || fg < 0 || fgRef < 0) return null;
+  return [
+    ext.ff.kfV[ff],
+    ext.ff.kfV[ff] - ext.ff.kfV[ffRef],
+    ext.curve.kfV[cv],
+    ext.curve.kfV[cv] - ext.curve.kfV[cvRef],
+    ext.fng.kfV[fg],
+    ext.fng.kfV[fg] - ext.fng.kfV[fgRef],
+  ];
+}
+
 // ── the pure row assembler ───────────────────────────────────────────────────
 /**
  * @param s pooled series object:
@@ -107,9 +229,11 @@ export function meanStdPrefix(s, s2, from, to) {
  *        (caller guarantees close time m15t[j15]+900000 <= m1t[i]+60000)
  * @param fundIdx index of the latest funding event with t <= decision instant
  * @param pairId 0..3
+ * @param extVals Float64Array/Array(6) — externalVals(ext, decisionInstant);
+ *        REQUIRED since Task 25 (indices 41-46). Missing/invalid -> throw.
  * @returns Float64Array(N_FEATURES) or null if any input undefined (row invalid)
  */
-export function featureRow(s, i, j15, fundIdx, pairId) {
+export function featureRow(s, i, j15, fundIdx, pairId, extVals) {
   const t = s.m1t[i];
   const c = s.m1c[i];
   if (!Number.isFinite(c) || c <= 0) return null;
@@ -160,6 +284,12 @@ export function featureRow(s, i, j15, fundIdx, pairId) {
   put(32, r1); put(33, r4); put(34, vz15);
   put(35, fLast); put(36, fRoc); put(37, fHours);
   put(38, d.getUTCHours()); put(39, d.getUTCDay()); put(40, pairId);
+  // Task 25 external block (41-46): values computed by the caller via
+  // externalVals(ext, t + 60000) — pure pass-through, still fail-loud.
+  if (!extVals || extVals.length !== 6) {
+    throw new Error(`featureRow: extVals required (6 values) since Task 25 — got ${extVals ? extVals.length : 'none'} at i=${i}`);
+  }
+  for (let k = 0; k < 6; k++) put(41 + k, extVals[k]);
   return out;
 }
 
