@@ -23,7 +23,8 @@
  *
  * Run: node experiments/ml/build_features.mjs --pair BTCUSDT
  */
-import { readFileSync, writeFileSync, appendFileSync, rmSync, existsSync, createHash } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, rmSync, existsSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { FEATURE_NAMES, N_FEATURES, buildSeries, findClosed15, labelAt, fundAsOf, featureRow,
@@ -120,6 +121,7 @@ console.log('building indicator series ...');
 const S = buildSeries(m1, m15, fundT, fundRate);
 
 // ── stream rows ──────────────────────────────────────────────────────────────
+mkdirSync(OUT, { recursive: true });
 rmSync(join(OUT, `${pairArg}.bin`), { force: true });
 writeFileSync(join(OUT, `${pairArg}.meta.json`), 'building', 'utf8'); // lock/marker
 const ROW_BYTES = 8 + 8 + 3 + 1 + 24 + N_FEATURES * 4;   // 232 (47 features)
