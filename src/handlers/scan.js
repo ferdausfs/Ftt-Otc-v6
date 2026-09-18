@@ -1,27 +1,38 @@
 /**
- * FTT3 — cron scanner (every-5-minutes, aligned to 5m candle closes) + on-demand signal.
+ * UT Bot Alerts — cron scanner (every-5-minutes, aligned to candle closes)
+ * + on-demand evaluation. THE LIVE SIGNAL PATH (FTT3 retired — see
+ * src/strategy/engine.mjs for the retired engine, kept for the audit record).
  *
- * Every tick, for each active pair:
- *   1. fetch the three candle windows (1m/5m/15m, KV-cached, key rotation)
- *   2. evaluateSignal() — C1 bias -> C2 cross -> C3 vol gate, dynamic expiry
- *   3. write the decision (CALL/PUT/NO_TRADE + audit) to the latest: cache
- *   4. CALL/PUT only: dedup-guarded history save -> Telegram push
+ * Every tick, for each config-enabled pair:
+ *   1. fetch the pair's configured timeframe window (KV-cached, 300 bars so
+ *      the Wilder recursion matches TradingView's full-history run to float
+ *      precision)
+ *   2. computeUtBot() — exact Pine port (trailing stop, crossovers, events)
+ *   3. emit every NEW buy/sell event whose candle closed after the stored
+ *      last-scan close-time (idempotent across ticks and manual calls):
+ *      history save -> Telegram push via the proven push plumbing
+ *   4. write the latest snapshot (decision + full audit) to the latest: cache
  *
- * The engine can only fire on 5m boundaries, so scanning every 5 minutes is
- * the exact cadence the strategy needs — no wasted credits in between.
+ * Event timing = candle CLOSE confirmation — the moment the TradingView
+ * marker stops flickering and becomes final. Events on a 1min-timeframe pair
+ * surface on the next 5-minute tick (up to 4 min late); 5min/15min pairs are
+ * exact to their boundary.
  */
 
 import { CONFIG, SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
 import { sanitizePair, getAssetType } from '../utils/pairs.js';
 import { isForexMarketOpen } from '../utils/session.js';
 import { fetchCandlesWithCache, fetchCandles } from '../fetch/candles.js';
-import { evaluateSignal, precompute, lastClosedIndex, MS_1M } from '../strategy/engine.mjs';
+import {
+  computeUtBot, lastClosedIndexTf, eventToSignal, TF_MS,
+} from '../strategy/utBotAlerts.mjs';
 import { writeLatest } from '../history/latestCache.js';
 import { saveSignal, computeStats } from '../history/store.js';
-import { pushSignalToSubscribers, formatSignalText } from './push.js';
+import { pushSignalToSubscribers, formatUtBotText } from './push.js';
+import {
+  getUtBotConfig, getLastScanT, setLastScanT,
+} from './utbotConfig.js';
 import { jsonResponse } from '../utils/helpers.js';
-
-const TIMEFRAMES = ['15min', '5min', '1min'];
 
 function mintSignalId() {
   return 'sig_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -36,16 +47,15 @@ function toEngineCandles(rows) {
 }
 
 async function fetchWindow(pair, tf, env, ctx, assetType, noCache = false) {
+  const limit = CONFIG.FETCH_LIMITS[tf] || CONFIG.UTBOT.WINDOW_BARS;
   if (noCache) {
-    // Retry path: a cached window would pin the same stale candle set for the
-    // whole TTL (50s for 1min) — longer than the lag-retry loop itself.
-    const res = await fetchCandles(pair, tf, CONFIG.FETCH_LIMITS[tf], env, assetType);
+    const res = await fetchCandles(pair, tf, limit, env, assetType);
     if (!res || res.error) throw new Error((res && res.error) || ('fetch failed ' + tf));
     const candles = toEngineCandles(res);
     if (candles.length === 0) throw new Error('empty window ' + tf);
     return candles;
   }
-  const res = await fetchCandlesWithCache(pair, tf, CONFIG.FETCH_LIMITS[tf], env, ctx, assetType);
+  const res = await fetchCandlesWithCache(pair, tf, limit, env, ctx, assetType);
   if (!res || res.error) throw new Error((res && res.error) || ('fetch failed ' + tf));
   const candles = toEngineCandles(res.candles);
   if (candles.length === 0) throw new Error('empty window ' + tf);
@@ -64,116 +74,174 @@ export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketO
 }
 
 /**
- * Evaluate one pair right now. Returns the response object also written to
- * the latest: cache. Never throws — failures come back as { error }.
- *
- * Boundary-lag retries: the every-5-minutes cron fires exactly on the boundary, but the
- * just-closed 1m candle usually reaches TwelveData's feed 1-3s later. When the
- * fetched window's last closed candle is NOT the boundary candle we sleep and
- * re-fetch a few times before giving up — otherwise every cron tick would
- * systematically miss its own boundary.
+ * Evaluate one pair right now: compute the UT Bot series over the configured
+ * timeframe, determine new events since the last processed candle, and
+ * return the response object (also written to the latest: cache). Never
+ * throws — failures come back as { error }.
  */
-const LAG_RETRIES = 3;
-const LAG_SLEEP_MS = 5000;
+const LAG_RETRIES = CONFIG.UTBOT.LAG_RETRIES;
+const LAG_SLEEP_MS = CONFIG.UTBOT.LAG_SLEEP_MS;
 
-export async function evaluatePair(pair, env, ctx, now = Date.now()) {
+export async function evaluatePair(pair, env, ctx, now = Date.now(), pairCfg = null, lastScanT = null) {
   const assetType = getAssetType(pair);
   if (assetType === ASSET_TYPE.FOREX && !isForexMarketOpen()) {
     return { pair, marketStatus: 'CLOSED', signal: null, generatedAt: new Date().toISOString() };
   }
 
+  const cfg = pairCfg || (await getUtBotConfig(env)).pairs[pair];
+  const tf = cfg.timeframe;
+  const tfMs = TF_MS[tf];
+
   let attempt = 0;
   while (true) {
-    // Attempt 0 uses the KV cache (cheap for manual calls); every lag retry
-    // fetches direct — a cached 1min window outlives the retry interval.
-    const [c15, c5, c1] = await Promise.all(
-      TIMEFRAMES.map(tf => fetchWindow(pair, tf, env, ctx, assetType, attempt > 0)),
-    );
-    const i = lastClosedIndex(c1, now);
-    if (i < 0) throw new Error('no closed 1m candle');
+    const candles = await fetchWindow(pair, tf, env, ctx, assetType, attempt > 0);
+    const i = lastClosedIndexTf(candles, now, tfMs);
+    if (i < 0) throw new Error('no closed ' + tf + ' candle');
 
-    const r = evaluateSignal(c15, c5, c1, i, precompute({ c15, c5, c1 }));
-    if (r.reason !== 'NOT_5M_BOUNDARY' || attempt >= LAG_RETRIES) {
-      return buildResult(pair, assetType, c15, c5, c1, i, r);
+    // Freshness retry: the just-closed boundary candle usually reaches the
+    // feed 1-3s late; if the newest CLOSED candle is a full period behind
+    // "now", sleep + re-fetch before emitting (same contract as the previous
+    // engine — never emit on a stale window when we can avoid it).
+    const newestCloseT = candles[i].t + tfMs;
+    if (now - newestCloseT >= tfMs && attempt < LAG_RETRIES) {
+      attempt++;
+      await new Promise(res => setTimeout(res, LAG_SLEEP_MS));
+      continue;
     }
-    attempt++;
-    await new Promise(res => setTimeout(res, LAG_SLEEP_MS));
+
+    const series = computeUtBot(candles, { a: cfg.a, c: cfg.c }, { tfMs });
+    return buildResult(pair, assetType, candles, i, tf, tfMs, cfg, series, lastScanT);
   }
 }
 
-function buildResult(pair, assetType, c15, c5, c1, i, r) {
-  const entryCloseT = c1[i].t + MS_1M;
+function buildResult(pair, assetType, candles, i, tf, tfMs, cfg, series, lastScanT) {
+  const candle = candles[i];
+  const closeT = candle.t + tfMs;
+
+  // Pending events = every event whose candle closed strictly after the last
+  // processed close-time. Missing state (fresh deploy) -> only the newest
+  // closed candle is eligible (never replay history). Covers multi-event
+  // gaps (e.g. a 1min-timeframe pair between */5 ticks).
+  const pendingEvents = series.events.filter(e =>
+    lastScanT === null ? e.i === i : e.closeT > lastScanT && e.closeT <= closeT);
+
+  const newestEvent = pendingEvents.length > 0 ? pendingEvents[pendingEvents.length - 1]
+    : (series.buy[i] ? { type: 'buy' } : series.sell[i] ? { type: 'sell' } : null);
+  // NOTE: when lastScanT is set and newest closed candle was already
+  // processed, newestEvent stays null even if series.buy[i] fired then —
+  // the decision reflects "new pending signal", not history.
+  const decision = newestEvent && newestEvent.type === 'buy' ? 'CALL'
+    : newestEvent && newestEvent.type === 'sell' ? 'PUT' : 'NO_TRADE';
 
   const signal = {
     engine: CONFIG.ENGINE,
-    finalSignal: r.decision,
-    reason: r.reason,
+    finalSignal: decision,
+    reason: decision === 'CALL' ? 'UT_BOT_BUY_CROSS'
+      : decision === 'PUT' ? 'UT_BOT_SELL_CROSS' : 'UT_BOT_NO_EVENT',
     pair,
     market: assetType === ASSET_TYPE.CRYPTO ? 'CRYPTO' : 'FOREX',
-    timestamp: new Date(entryCloseT).toISOString(),
-    currentPrice: c1[i].c,
-    audit: r.audit,
+    timeframe: tf,
+    timestamp: new Date(closeT).toISOString(),
+    currentPrice: candle.c,
+    audit: {
+      event: newestEvent ? newestEvent.type : null,
+      key: cfg.a,
+      atrPeriod: cfg.c,
+      atr: series.atr[i],
+      nLoss: series.atr[i] === undefined ? undefined : cfg.a * series.atr[i],
+      stop: series.stop[i],
+      stopPrev: i > 0 ? series.stop[i - 1] : null,
+      pos: series.pos[i],
+      posPrev: i > 0 ? series.pos[i - 1] : null,
+      crossover: newestEvent ? (newestEvent.type === 'buy' ? 'above' : 'below') : null,
+      timeframe: tf,
+      eventCandle: { t: candle.t, closeT },
+      barIndex: i,
+      pendingEventCount: pendingEvents.length,
+    },
     entryPrice: null, expiryMinutes: null, expiryTime: null, atrPercentile: null,
   };
 
-  if (r.decision === 'CALL' || r.decision === 'PUT') {
-    signal.entryPrice = c1[i].c;
-    signal.entryTime = new Date(entryCloseT).toISOString();
-    signal.expiryMinutes = r.audit.expiry.minutes;
-    signal.expiryTime = new Date(entryCloseT + r.audit.expiry.minutes * MS_1M).toISOString();
-    signal.atrPercentile = r.audit.expiry.atrPercentile;
+  if (decision !== 'NO_TRADE') {
+    signal.entryPrice = candle.c;
+    signal.entryTime = new Date(closeT).toISOString();
+    signal.expiryMinutes = cfg.expiryMinutes;
+    signal.expiryTime = new Date(closeT + cfg.expiryMinutes * 60000).toISOString();
   }
   return {
     pair,
-    marketStatus: assetType === ASSET_TYPE.CRYPTO ? 'OPEN' : 'OPEN',
+    marketStatus: 'OPEN',
     signal,
-    source: 'FTT3',
+    source: CONFIG.ENGINE,
     generatedAt: new Date().toISOString(),
+    _pendingEvents: pendingEvents,
+    _series: { i, closeT, newestClosedCloseT: closeT },
   };
-  return result;
 }
 
-/** Full scan of one pair: evaluate -> latest: cache -> history -> push. */
+/** Full scan of one pair: evaluate -> emit events -> latest: cache. */
 export async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
   try {
-    const result = await evaluatePair(pair, env, ctx, opts.now || Date.now());
+    const cfg = (await getUtBotConfig(env)).pairs[pair];
+    if (!cfg || cfg.enabled !== true) return null;   // per-pair gate (app toggle)
+
+    const now = opts.now || Date.now();
+    const lastScanT = await getLastScanT(env, pair);
+    const result = await evaluatePair(pair, env, ctx, now, cfg, lastScanT);
     if (!result || result.error) {
       console.warn('scanOnePair ' + pair + ' error: ' + (result && result.message ? result.message : 'unknown'));
       return null;
     }
     if (!result.signal) return null;   // market closed — nothing to cache
 
-    const sig = result.signal;
-    if ((sig.finalSignal === 'CALL' || sig.finalSignal === 'PUT') && !opts.noPush) {
-      const record = {
-        id: mintSignalId(),
-        pair,
-        market: sig.market,
-        engine: CONFIG.ENGINE,
-        direction: sig.finalSignal,
-        entryPrice: sig.entryPrice,
-        entryTime: sig.entryTime,
-        expiryTime: sig.expiryTime,
-        expiryMinutes: sig.expiryMinutes,
-        atrPercentile: sig.atrPercentile,
-        indicators: sig.audit,
-        timestamp: sig.entryTime,
-        currentPrice: sig.currentPrice,
-        result: null, exitPrice: null, checkedAt: null, checks: 0,
-      };
-      const saved = await saveSignal(record, env);
-      if (!saved.deduped) {
-        sig.signalId = record.id;
-        // Await the push (scan ticks are awaited — see previous worker's
-        // waitUntil lesson: nested waitUntil could freeze before sendMessage).
-        await pushSignalToSubscribers({ ...sig, signalId: record.id, text: formatSignalText(sig) }, env);
-      } else {
-        sig.signalId = saved.duplicateOf;
+    const { _pendingEvents, _series, ...cleanResult } = result;
+
+    if (!opts.noPush && _pendingEvents.length > 0) {
+      // Emit oldest-first so Telegram order matches chart order.
+      for (const event of _pendingEvents) {
+        const closeIso = new Date(event.closeT).toISOString();
+        const sig = eventToSignal(event, pair, {
+          timestamp: closeIso,
+          market: getAssetType(pair) === ASSET_TYPE.CRYPTO ? 'CRYPTO' : 'FOREX',
+          a: cfg.a, c: cfg.c,
+          timeframe: cfg.timeframe,
+          expiryMinutes: cfg.expiryMinutes,
+          expiryTime: new Date(event.closeT + cfg.expiryMinutes * 60000).toISOString(),
+        });
+        const record = {
+          id: mintSignalId(),
+          pair,
+          market: sig.market,
+          engine: CONFIG.ENGINE,
+          direction: sig.finalSignal,
+          entryPrice: sig.entryPrice,
+          entryTime: sig.entryTime,
+          expiryTime: sig.expiryTime,
+          expiryMinutes: sig.expiryMinutes,
+          atrPercentile: null,
+          indicators: sig.audit,
+          timestamp: sig.entryTime,
+          currentPrice: sig.currentPrice,
+          result: null, exitPrice: null, checkedAt: null, checks: 0,
+        };
+        const saved = await saveSignal(record, env);
+        if (!saved.deduped) {
+          sig.signalId = record.id;
+          // Await the push (scan ticks are awaited — nested waitUntil could
+          // freeze the isolate before sendMessage completes; proven lesson).
+          await pushSignalToSubscribers({ ...sig, signalId: record.id, text: formatUtBotText(sig) }, env);
+        } else {
+          sig.signalId = saved.duplicateOf;
+        }
       }
     }
 
-    await writeLatest(pair, result, { generationId, generatedAt: result.generatedAt, opportunistic: false }, env);
-    return result;
+    // Advance the idempotency cursor to the newest closed candle we've
+    // processed, whether or not it carried an event.
+    await setLastScanT(env, pair, _series.newestClosedCloseT);
+
+    await writeLatest(pair, cleanResult, { generationId, generatedAt: result.generatedAt, opportunistic: false }, env);
+    return cleanResult;
   } catch (e) {
     console.warn('scanOnePair exception ' + pair + ': ' + e.message);
     return null;
@@ -186,7 +254,10 @@ export async function scheduledScan(env, ctx) {
   if (!env || !env.SIGNAL_CACHE) return { ok: 0, failed: 0, aborted: true };
 
   const generationId = 'gen_' + Date.now().toString(36);
-  const activePairs = selectActivePairs();
+  const cfg = await getUtBotConfig(env);
+  // Config gate first: disabled pairs are skipped entirely (no fetch).
+  const enabledPairs = SCAN_PAIRS.filter(p => cfg.pairs[p] && cfg.pairs[p].enabled === true);
+  const activePairs = selectActivePairs(enabledPairs);
   let ok = 0, failed = 0, processed = 0;
 
   for (let i = 0; i < activePairs.length; i += SCAN_CONFIG.BATCH_SIZE) {
@@ -202,7 +273,8 @@ export async function scheduledScan(env, ctx) {
       await new Promise(res => setTimeout(res, SCAN_CONFIG.BATCH_DELAY_MS));
     }
   }
-  console.log('scheduledScan ' + generationId + ': ' + ok + ' ok, ' + failed + ' failed, ' + processed + ' processed, ' + (Date.now() - startTime) + 'ms');
+  console.log('scheduledScan ' + generationId + ': ' + ok + ' ok, ' + failed + ' failed, '
+    + processed + ' processed, ' + (Date.now() - startTime) + 'ms');
   return { ok, failed, processed, generationId };
 }
 

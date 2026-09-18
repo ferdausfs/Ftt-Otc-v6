@@ -1,16 +1,18 @@
 /**
- * FTT Signal Worker FTT3-v1.0.0 — configuration.
+ * FTT Signal Worker UT-BOT-v1.0.0 — configuration.
  *
- * FTT3 is a full replacement engine: three conditions on three timeframes and
- * an ATR-percentile expiry ladder, nothing else. This file holds ONLY plumbing
- * constants (fetch, cache, scan cadence, history KV layout) plus the fixed
- * asset vocabularies the pair sanitizer needs. Every strategy constant lives
- * in src/strategy/engine.mjs and is committed there.
+ * Live engine: UT Bot Alerts (src/strategy/utBotAlerts.mjs) — an exact port
+ * of the TradingView indicator (defaults a=1, c=10, Heikin Ashi off), event-
+ * driven on candle closes. The retired FTT3 engine lives on in
+ * src/strategy/engine.mjs + git history for the audit record; it is no
+ * longer imported by the live signal path. This file holds ONLY plumbing
+ * constants (fetch, cache, scan cadence, history KV layout, UT Bot config
+ * store) plus the fixed asset vocabularies the pair sanitizer needs.
  */
 
 export const CONFIG = {
-  ENGINE: 'FTT3',
-  VERSION: 'FTT3-v1.0.0',
+  ENGINE: 'UT-BOT',
+  VERSION: 'UT-BOT-v1.0.0',
 
   API_BASE_URL: 'https://api.twelvedata.com',
   REQUEST_TIMEOUT: 12000,
@@ -18,7 +20,8 @@ export const CONFIG = {
   // Timeframes the engine reads. The engine itself defines the indicators.
   TIMEFRAME_MAP: { '1min': '1min', '5min': '5min', '15min': '15min' },
   // Candle windows fetched per scan (cache-keyed by pair+tf+limit).
-  FETCH_LIMITS: { '1min': 150, '5min': 60, '15min': 80 },
+  // 300 bars = UT Bot lead-in depth (see CONFIG.UTBOT.WINDOW_BARS).
+  FETCH_LIMITS: { '1min': 300, '5min': 300, '15min': 300 },
   // KV cache TTL per interval (seconds). 1min stays just under one candle so
   // the */2 result checker always sees a fresh last candle.
   CACHE_TTL: { '1min': 50, '5min': 240, '15min': 840 },
@@ -26,21 +29,45 @@ export const CONFIG = {
   // Rate limiting (middleware/rateLimit.js — unchanged plumbing).
   RATE_LIMIT_WINDOW_SECONDS: 60,
   RATE_LIMIT_MAX_REQUESTS: 30,
+
+  // ── UT Bot Alerts (live engine) ──────────────────────────────────────────
+  // Indicator defaults = TradingView defaults (a=1 Key Value, c=10 ATR
+  // period, Heikin Ashi out of scope). Per-pair overrides come from the KV
+  // config store (utbot:config), written by the app's toggle UI.
+  UTBOT: {
+    TIMEFRAMES: ['1min', '5min', '15min'],
+    DEFAULT_TIMEFRAME: '5min',
+    DEFAULT_A: 1,
+    DEFAULT_C: 10,
+    DEFAULT_EXPIRY_MINUTES: 5,   // record-keeping/result tracking only —
+                                 // NOT part of the indicator logic
+    KV_CONFIG_KEY: 'utbot:config',
+    KV_LASTSCAN_PREFIX: 'utbot:lastscan:',
+    // Window depth: the Wilder ATR / trailing-stop recursion is path-
+    // dependent; 300 bars of lead-in puts the seed influence below 1e-12
+    // (decays as (1-1/c)^bars for c=10), matching TradingView's full-history
+    // computation to float precision.
+    WINDOW_BARS: 300,
+    LAG_RETRIES: 3,              // same boundary-lag retry contract as before
+    LAG_SLEEP_MS: 5000,
+  },
 };
 
 // Top-level alias: fetch/candles.js imports TIMEFRAME_MAP directly.
 export const TIMEFRAME_MAP = CONFIG.TIMEFRAME_MAP;
 
 /**
- * Scanned universe = exactly the pairs the FTT3 backtest validated
- * (4 crypto + 4 forex, real markets only — no OTC anywhere in FTT3).
+ * Scanned universe (unchanged from the audited universe — 4 crypto + 4
+ * forex, real markets only, no OTC). Each pair is individually gated by the
+ * UT Bot KV config store (utbot:config); disabled pairs are skipped.
  */
 export const SCAN_PAIRS = [
   'BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD',
   'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
 ];
 
-/** every-5-minutes scanner settings (kept from the previous worker's proven cadence). */
+/** every-5-minutes scanner settings (cadence unchanged; the engine now emits
+ *  UT Bot events on candle closes instead of FTT3 5m-boundary conditions). */
 export const SCAN_CONFIG = {
   KV_LATEST_PREFIX: 'latest:',
   LATEST_TTL_SECONDS: 600,        // 10 min = 2x cron interval

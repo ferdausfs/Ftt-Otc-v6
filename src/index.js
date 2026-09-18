@@ -1,13 +1,17 @@
 /**
- * FTT Signal Worker FTT3-v1.0.0 — entry point.
+ * FTT Signal Worker UT-BOT-v1.0.0 — entry point.
  *
- * Engine: FTT3 (src/strategy/engine.mjs) — three conditions, three timeframes,
- * ATR-percentile expiry. No grading, no confidence scores, no AI layer, no
- * hidden filters. Backtest verdict (walk-forward, OOS touched once): FAIL —
- * the engine runs as an audited data collector (results/FTT3_BACKTEST_REPORT.md).
+ * Engine: UT Bot Alerts (src/strategy/utBotAlerts.mjs) — an exact port of the
+ * TradingView indicator (defaults a=1, c=10, Heikin Ashi off), emitting
+ * buy/sell events on candle closes. The retired FTT3 engine stays in the
+ * repo for the audit record (src/strategy/engine.mjs) but is no longer part
+ * of the live path. Backtest win-rate framing does NOT apply to this engine:
+ * the bar is exact behavioral match to TradingView, proven by
+ * scripts/utbot_tests.mjs + scripts/utbot_tv_diff.mjs.
  *
  * Crons:
- *   * /5 -> signal scanner (aligned to 5m candle closes — the only moments C2 can fire)
+ *   * /5 -> signal scanner (UT Bot events on candle closes; 1min-timeframe
+ *          pairs surface events on the next tick)
  *   * /2 -> result checker (resolves expired signals against the 1m feed)
  */
 
@@ -19,6 +23,9 @@ import { checkRateLimit } from './middleware/rateLimit.js';
 import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
 import { handleSignal, handleBatch, scheduledScan } from './handlers/scan.js';
 import { handleLatest } from './handlers/latest.js';
+import {
+  handleUtBotConfigGet, handleUtBotConfigPost,
+} from './handlers/utbotConfig.js';
 import { scheduledTracker } from './history/store.js';
 
 export default {
@@ -51,7 +58,7 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (path === '/api/signal' || path === '/signal' || path === '/api/batch') {
+      if (path === '/api/signal' || path === '/signal' || path === '/api/batch' || path === '/api/utbot/config') {
         const rl = await checkRateLimit(request, env);
         if (rl) return applyCors(rl);
       }
@@ -81,12 +88,17 @@ export default {
         } else {
           response = jsonResponse({
             error: true,
-            message: 'FTT3 scans only the pairs its backtest covered (no OTC). Scanned pairs: ' + SCAN_PAIRS.join(', '),
+            message: 'UT Bot Alerts scans a fixed pair universe (no OTC). Scanned pairs: ' + SCAN_PAIRS.join(', '),
           }, 400);
         }
 
       } else if (path === '/api/signals/latest') {
         response = await handleLatest(url, env);
+
+      } else if (path === '/api/utbot/config') {
+        response = request.method === 'POST'
+          ? await handleUtBotConfigPost(request, env)
+          : await handleUtBotConfigGet(env);
 
       } else if (path === '/api/batch') {
         response = await handleBatch(url, env, ctx);
@@ -106,13 +118,14 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker ' + CONFIG.VERSION + ' — 3-condition engine (15m EMA bias / 5m MACD cross / 1m ATR gate), no OTC',
+          message: 'FTT Signal Worker ' + CONFIG.VERSION + ' — UT Bot Alerts (exact TradingView port), no OTC',
           endpoints: {
             health: '/',
             signal: '/api/signal?pair=EUR/USD',
             latestAll: '/api/signals/latest',
             latestOne: '/api/signals/latest?pair=BTC/USD',
             batch: '/api/batch?pairs=EUR/USD,BTC/USD',
+            utbotConfig: '/api/utbot/config (GET read, POST merge-write)',
             pairs: '/api/pairs',
             history: '/api/history?pair=EUR/USD&limit=20',
             stats: '/api/stats?pair=EUR/USD',

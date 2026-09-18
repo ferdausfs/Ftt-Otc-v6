@@ -100,3 +100,43 @@ not add filters to rescue the number — that is what this repo's history taught
 Crons: `*/5` signal scanner (aligned to 5m closes), `*/2` result checker
 (resolves expiries against the 1m feed; ties are stored as TIE, missing candles
 as EXPIRY_GAP — both excluded from win/loss stats).
+
+---
+
+# UT Bot Alerts — live engine (UT-BOT-v1.0.0)
+
+The live signal path is now an **exact port of the TradingView "UT Bot Alerts"
+indicator** (Pine v4, defaults `a=1` Key Value, `c=10` ATR period), replacing
+FTT3 for signal generation. FTT3 remains in the repo for the audit record
+(`src/strategy/engine.mjs`, `results/FTT3_BACKTEST_REPORT.md`); it is no
+longer imported by the live path.
+
+This is **not** a win-rate-seeking engine. The success criterion is exact
+behavioral match to TradingView's own indicator output, verified bar-by-bar:
+
+- `scripts/utbot_tests.mjs` — hand-derived fixtures for every porting pitfall
+  (crossover `<=` semantics, `nz()` first-bar seeding, Pine `ta.atr` Wilder/SMA
+  seeding — reused from `indicators.mjs`, the nested `iff` reset branches),
+  plus no-lookahead proofs (truncation invariance, future-mutation
+  invariance, leakage canary).
+- `scripts/utbot_reference.py` + `scripts/utbot_crosscheck.mjs` — an
+  independent Python derivation of the Pine source; the two implementations
+  must agree on every bar (they do: 2000 bars, 0 mismatches, events exact).
+- `scripts/utbot_tv_diff.mjs` — the mandatory verification harness: run a
+  TradingView "Export chart data" CSV (with the indicator applied, defaults,
+  Heikin Ashi **off**) through `--csv` and it diffs `xATRTrailingStop`
+  bar-by-bar plus every Buy/Sell marker. Export a window with >=300 bars of
+  lead-in and diff from there (`--from 300` or `--auto-lead`) because the
+  Wilder recursion is path-dependent and the export only carries its own
+  window.
+
+**Known limitation (out of scope):** the indicator's Heikin Ashi input
+(`h=true`) is NOT implemented — the port computes the `h=false` raw-close path
+only, which is the indicator's default. Enable per pair via
+`/api/utbot/config` (GET read / POST merge-write; per-pair `enabled`,
+`timeframe` 1min/5min/15min, `a`, `c`, `expiryMinutes`). `expiryMinutes`
+only drives the existing result-tracking records — it is not part of the
+indicator logic. Signals correspond to TradingView **bar-close confirmation**
+(the marker as it stands once the candle closes; intrabar flicker of the live
+bar is deliberately not reproduced). Events on a 1min-timeframe pair surface
+on the next 5-minute scan tick.

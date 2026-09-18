@@ -1,15 +1,17 @@
 /**
- * FTT3 — Telegram push (plumbing only).
+ * UT Bot Alerts — Telegram push (plumbing only).
  *
- * Mechanics carried over from the previous worker (proven in production):
+ * Mechanics carried over from the proven production path (unchanged):
  *   - subscribers = the Bot's `auto_users` index in BOT_KV, records at u:<chatId>
  *   - a per-(subscriber, pair, direction) push lock (30 min) makes pushes
  *     idempotent across manual /api/signal calls and cron re-scans
  *   - plain-text messages, NO parse_mode (Telegram 400s on stray markdown chars)
  *   - durable lastAttempt + delivered24h diagnostics for /health
  *
- * Removed with the old engine: grade/confidence/AI filtering — FTT3 has no
- * such concepts, so every auto-enabled subscriber receives every signal.
+ * formatSignalText (FTT3) was retired with the FTT3 live path. The live
+ * format is formatUtBotText — deliberately DIFFERENT from any FTT3 message:
+ * it names the indicator, shows the event vocabulary (BUY/SELL), the
+ * trailing stop, and the exact event-candle close time.
  */
 
 const PUSH_LOCK_PREFIX = 'pushLock:';
@@ -91,32 +93,43 @@ async function sendTelegram(env, chatId, text) {
   }
 }
 
-/** Human-readable signal text (plain, no markdown). */
-export function formatSignalText(sig) {
+/**
+ * Human-readable UT Bot event text (plain, no markdown).
+ *
+ * Distinct from the retired FTT3 format — a subscriber must be able to tell
+ * at a glance which engine sent the message. Layout:
+ *
+ *   UT BOT BUY - BTC/USD (5min)
+ *   Event candle closed: 2026-09-18T10:35:00.000Z
+ *   Entry: 61234.5
+ *   Trailing stop: 61001.2 (prev 61150.8)
+ *   ATR(10) x1: 123.45
+ *   id sig_xxx
+ */
+export function formatUtBotText(sig) {
   const a = sig.audit || {};
-  const c1 = a.c1 || {}, c2 = a.c2 || {}, c3 = a.c3 || {};
   const lines = [
-    'FTT3 ' + sig.direction + ' - ' + sig.pair,
-    'Entry: ' + sig.entryPrice + ' @ ' + (sig.entryTime || ''),
-    'Expiry: ' + sig.expiryMinutes + 'm (' + sig.expiryTime + ' UTC) - ATR pct ' +
-      (sig.atrPercentile != null ? sig.atrPercentile.toFixed(0) : '?'),
+    'UT BOT ' + (a.event === 'buy' ? 'BUY' : 'SELL') + ' - ' + sig.pair
+      + (a.timeframe ? ' (' + a.timeframe + ')' : ''),
+    'Event candle closed: ' + (sig.entryTime || sig.timestamp || ''),
+    'Entry: ' + sig.entryPrice,
   ];
-  if (c1.ema20 != null)
-    lines.push('C1 bias: EMA20 ' + c1.ema20.toFixed(6) + ' ' + (c1.bias === 'UP' ? '>' : '<') + ' EMA50 ' + c1.ema50.toFixed(6));
-  if (c2.cross)
-    lines.push('C2 cross: ' + c2.cross + ' (MACD ' + c2.macd.toFixed(8) + ' vs signal ' + c2.signal.toFixed(8) + ', 5m)');
-  if (c3.atr != null)
-    lines.push('C3 vol: ATR ' + c3.atr.toFixed(8) + ' >= median ' + (c3.atrMedian != null ? c3.atrMedian.toFixed(8) : '?'));
+  if (a.stop != null) {
+    const prev = a.stopPrev != null ? ' (prev ' + a.stopPrev + ')' : '';
+    lines.push('Trailing stop: ' + a.stop + prev);
+  }
+  if (a.atr != null)
+    lines.push('ATR(' + (a.atrPeriod != null ? a.atrPeriod : '?') + ') x' + (a.key != null ? a.key : '?') + ': ' + a.atr);
   lines.push('id ' + sig.signalId);
   return lines.join('\n');
 }
 
-/** Human-readable result text. */
+/** Human-readable result text (result tracking unchanged; rebranded). */
 export function formatResultText(record) {
   const move = record.exitPrice != null && record.entryPrice != null
     ? ' (entry ' + record.entryPrice + ' -> exit ' + record.exitPrice + ')'
     : '';
-  return 'FTT3 result - ' + record.pair + ' ' + record.direction + ': ' + record.result + move + '  id ' + record.id;
+  return 'UT BOT result - ' + record.pair + ' ' + record.direction + ': ' + record.result + move + '  id ' + record.id;
 }
 
 async function tryPush(signal, chatIds, env, lockSuffix) {
