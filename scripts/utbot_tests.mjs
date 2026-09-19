@@ -162,7 +162,7 @@ console.log('[4] golden down-then-up fixture (P4 nested iff, both resets)');
     timestamp: 'x', a: 1, c: 3, timeframe: '1min', expiryMinutes: 1, expiryTime: 'y',
     stopPrev: r.stop[5], posPrev: r.pos[5],
   });
-  ok(sig.finalSignal === 'CALL' && sig.engine === 'UT-BOT', 'buy -> CALL mapping');
+  ok(sig.finalSignal === 'BUY' && sig.engine === 'UT-BOT', 'buy -> BUY mapping (CFD vocab)');
   ok(sig.audit.event === 'buy' && sig.audit.key === 1 && sig.audit.atrPeriod === 3, 'audit carries indicator vocabulary');
 }
 

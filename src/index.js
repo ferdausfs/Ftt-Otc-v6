@@ -41,12 +41,11 @@ export default {
       console.warn('scheduled: unrecognised cron "' + cron + '", running result checker');
     }
     const t = await scheduledTracker(env);
-    // Result notifications ride the same tick, after resolution.
+    // CFD mode (2026-09-19): the tracker only drains legacy pending records
+    // into the stats ledger — results are NEVER messaged. The indicator's
+    // sole output is the BUY/SELL event; no WIN/LOSS notifications exist.
     if (t && Array.isArray(t.resolved) && t.resolved.length > 0) {
-      const { pushResultToSubscribers } = await import('./handlers/push.js');
-      for (const r of t.resolved) {
-        if (r.record) await pushResultToSubscribers({ ...r.record, result: r.result }, env);
-      }
+      console.log('scheduled: resolved ' + t.resolved.length + ' legacy pending record(s) silently (CFD mode: no result push)');
     }
   },
 

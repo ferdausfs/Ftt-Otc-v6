@@ -57,7 +57,7 @@ function isDuplicateRecord(newRec, prevRec) {
 }
 
 /**
- * Persist a decided signal (CALL/PUT). Returns { deduped } — a deduped record
+ * Persist a decided signal (BUY/SELL; CFD mode — no expiry, no pending). Returns { deduped } — a deduped record
  * must NOT push to subscribers (it is a re-poll of a live setup).
  */
 export async function saveSignal(record, env) {

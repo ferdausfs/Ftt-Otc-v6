@@ -9,9 +9,11 @@
  *   - durable lastAttempt + delivered24h diagnostics for /health
  *
  * formatSignalText (FTT3) was retired with the FTT3 live path. The live
- * format is formatUtBotText — deliberately DIFFERENT from any FTT3 message:
- * it names the indicator, shows the event vocabulary (BUY/SELL), the
- * trailing stop, and the exact event-candle close time.
+ * format is formatUtBotText — CFD style (2026-09-19): the message contains
+ * ONLY what the indicator itself produces — the BUY/SELL event, the event
+ * candle close time, the entry close, and the trailing stop the indicator
+ * draws. No expiry, no win/loss, no result messages (fixed-time logic is
+ * retired); each added indicator will speak only its own output.
  */
 
 const PUSH_LOCK_PREFIX = 'pushLock:';
@@ -94,37 +96,32 @@ async function sendTelegram(env, chatId, text) {
 }
 
 /**
- * Human-readable UT Bot event text (plain, no markdown).
+ * Human-readable UT Bot event text (plain, no markdown, CFD style).
  *
- * Distinct from the retired FTT3 format — a subscriber must be able to tell
- * at a glance which engine sent the message. Layout:
+ * Only the indicator's own output — what a TradingView user sees on the
+ * chart: the flip direction, the pair/timeframe, the event candle close
+ * time, the entry (candle close) and the trailing stop line:
  *
- *   UT BOT BUY - BTC/USD (5min)
- *   Event candle closed: 2026-09-18T10:35:00.000Z
- *   Entry: 61234.5
- *   Trailing stop: 61001.2 (prev 61150.8)
- *   ATR(10) x1: 123.45
- *   id sig_xxx
+ *   UT BOT BUY - BTC/USD (15min)
+ *   Candle closed: 2026-09-19 07:15 UTC
+ *   Entry: 81321.4
+ *   Trailing stop: 81339.1
  */
 export function formatUtBotText(sig) {
   const a = sig.audit || {};
   const lines = [
     'UT BOT ' + (a.event === 'buy' ? 'BUY' : 'SELL') + ' - ' + sig.pair
       + (a.timeframe ? ' (' + a.timeframe + ')' : ''),
-    'Event candle closed: ' + (sig.entryTime || sig.timestamp || ''),
-    'Entry: ' + sig.entryPrice,
   ];
-  if (a.stop != null) {
-    const prev = a.stopPrev != null ? ' (prev ' + a.stopPrev + ')' : '';
-    lines.push('Trailing stop: ' + a.stop + prev);
-  }
-  if (a.atr != null)
-    lines.push('ATR(' + (a.atrPeriod != null ? a.atrPeriod : '?') + ') x' + (a.key != null ? a.key : '?') + ': ' + a.atr);
-  lines.push('id ' + sig.signalId);
+  const closed = sig.entryTime || sig.timestamp || '';
+  if (closed)
+    lines.push('Candle closed: ' + String(closed).replace('T', ' ').replace(/\.\d+Z$/, ' UTC'));
+  if (sig.entryPrice != null) lines.push('Entry: ' + sig.entryPrice);
+  if (a.stop != null) lines.push('Trailing stop: ' + a.stop);
   return lines.join('\n');
 }
 
-/** Human-readable result text (result tracking unchanged; rebranded). */
+/** Retired with CFD mode: results are tracked in the ledger only, never messaged. */
 export function formatResultText(record) {
   const move = record.exitPrice != null && record.entryPrice != null
     ? ' (entry ' + record.entryPrice + ' -> exit ' + record.exitPrice + ')'
@@ -175,7 +172,7 @@ export async function pushSignalToSubscribers(sig, env) {
       catch (e) { return { id, user: null }; }
     }));
     const targets = users.filter(u => isAutoEnabled(u.user)).map(u => u.id);
-    const text = sig.text || formatSignalText(sig);
+    const text = sig.text || formatUtBotText(sig);
     const { sent, errors } = await tryPush({ ...sig, text }, targets, env, sig.direction);
     await recordPushAttempt(env, {
       kind: 'signal', ok: true, signalId: sig.signalId, pair: sig.pair, direction: sig.direction,

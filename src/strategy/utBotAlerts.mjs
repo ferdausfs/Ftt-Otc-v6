@@ -231,14 +231,16 @@ export function lastClosedIndexTf(candles, nowMs, tfMs) {
 }
 
 /**
- * Map an event to the binary-options vocabulary used by the worker's history
- * and result pipeline (buy → CALL, sell → PUT). The indicator's own
- * vocabulary (buy/sell, stop, atr, nLoss, pos) rides in `audit` untouched.
+ * Map an event to the CFD vocabulary (buy → BUY, sell → SELL). Signals carry
+ * NO expiry — a CFD setup stays valid until the indicator flips to the
+ * opposite event (user requirement 2026-09-19: no fixed-time result logic).
+ * The indicator's own vocabulary (buy/sell, stop, atr, nLoss, pos) rides in
+ * `audit` untouched.
  */
 export function eventToSignal(event, pair, extra = {}) {
   return {
     engine: 'UT-BOT',
-    finalSignal: event.type === 'buy' ? 'CALL' : 'PUT',
+    finalSignal: event.type === 'buy' ? 'BUY' : 'SELL',
     reason: event.type === 'buy' ? 'UT_BOT_BUY_CROSS' : 'UT_BOT_SELL_CROSS',
     pair,
     market: extra.market || 'FOREX',
@@ -262,8 +264,8 @@ export function eventToSignal(event, pair, extra = {}) {
     },
     entryPrice: event.price,
     entryTime: extra.timestamp,
-    expiryMinutes: extra.expiryMinutes,
-    expiryTime: extra.expiryTime,
+    expiryMinutes: null,
+    expiryTime: null,
     atrPercentile: null,
   };
 }

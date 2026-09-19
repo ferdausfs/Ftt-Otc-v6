@@ -10,7 +10,8 @@
  *   2. computeUtBot() — exact Pine port (trailing stop, crossovers, events)
  *   3. emit every NEW buy/sell event whose candle closed after the stored
  *      last-scan close-time (idempotent across ticks and manual calls):
- *      history save -> Telegram push via the proven push plumbing
+ *      history save -> Telegram push via the proven push plumbing (CFD style:
+ *      BUY/SELL events only, no expiry/result messaging)
  *   4. write the latest snapshot (decision + full audit) to the latest: cache
  *
  * Event timing = candle CLOSE confirmation — the moment the TradingView
@@ -130,14 +131,14 @@ function buildResult(pair, assetType, candles, i, tf, tfMs, cfg, series, lastSca
   // NOTE: when lastScanT is set and newest closed candle was already
   // processed, newestEvent stays null even if series.buy[i] fired then —
   // the decision reflects "new pending signal", not history.
-  const decision = newestEvent && newestEvent.type === 'buy' ? 'CALL'
-    : newestEvent && newestEvent.type === 'sell' ? 'PUT' : 'NO_TRADE';
+  const decision = newestEvent && newestEvent.type === 'buy' ? 'BUY'
+    : newestEvent && newestEvent.type === 'sell' ? 'SELL' : 'NO_TRADE';
 
   const signal = {
     engine: CONFIG.ENGINE,
     finalSignal: decision,
-    reason: decision === 'CALL' ? 'UT_BOT_BUY_CROSS'
-      : decision === 'PUT' ? 'UT_BOT_SELL_CROSS' : 'UT_BOT_NO_EVENT',
+    reason: decision === 'BUY' ? 'UT_BOT_BUY_CROSS'
+      : decision === 'SELL' ? 'UT_BOT_SELL_CROSS' : 'UT_BOT_NO_EVENT',
     pair,
     market: assetType === ASSET_TYPE.CRYPTO ? 'CRYPTO' : 'FOREX',
     timeframe: tf,
@@ -165,8 +166,9 @@ function buildResult(pair, assetType, candles, i, tf, tfMs, cfg, series, lastSca
   if (decision !== 'NO_TRADE') {
     signal.entryPrice = candle.c;
     signal.entryTime = new Date(closeT).toISOString();
-    signal.expiryMinutes = cfg.expiryMinutes;
-    signal.expiryTime = new Date(closeT + cfg.expiryMinutes * 60000).toISOString();
+    // CFD mode: NO expiry. The setup is valid until the indicator flips to
+    // the opposite event — expiryMinutes/expiryTime stay null, so no pending
+    // record is written and the result tracker never produces WIN/LOSS.
   }
   return {
     pair,
@@ -205,8 +207,6 @@ export async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
           market: getAssetType(pair) === ASSET_TYPE.CRYPTO ? 'CRYPTO' : 'FOREX',
           a: cfg.a, c: cfg.c,
           timeframe: cfg.timeframe,
-          expiryMinutes: cfg.expiryMinutes,
-          expiryTime: new Date(event.closeT + cfg.expiryMinutes * 60000).toISOString(),
         });
         const record = {
           id: mintSignalId(),

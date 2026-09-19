@@ -19,6 +19,14 @@
  */
 import { scheduledScan } from '../src/handlers/scan.js';
 import { handleUtBotConfigPost, handleUtBotConfigGet } from '../src/handlers/utbotConfig.js';
+import { isForexMarketOpen } from '../src/utils/session.js';
+import { CONFIG } from '../src/config.js';
+
+// Fixture bars must carry the LIVE default timeframe — keep this in sync with
+// CONFIG.UTBOT.DEFAULT_TIMEFRAME (hardcoding 5min here broke when the live
+// default moved to 15min: the newest fixture bar looked "unclosed").
+const TF_MS_BY_TF = { '1min': 60000, '5min': 300000, '15min': 900000 };
+const TF = TF_MS_BY_TF[CONFIG.UTBOT.DEFAULT_TIMEFRAME] || 300000;
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -45,8 +53,7 @@ function mkKV() {
   };
 }
 
-// ── candle builder: 300 five-minute bars ending in a BUY cross ─────────────
-const TF = 300000;
+// ── candle builder: 300 default-timeframe bars ending in a BUY cross ───────
 const T0 = 1_760_000_000_000; // arbitrary epoch, aligned later to "now"
 function buildSeries(n, buyAtLast) {
   // Deterministic wiggle; optional engineered cross at the final bar.
@@ -65,7 +72,20 @@ function buildSeries(n, buyAtLast) {
   return C;
 }
 const N = 300;
-const S1 = buildSeries(N, true);    // last bar = strong breakout -> BUY
+/** Series with a GUARANTEED BUY at the last bar: 4 deep-decline bars put the
+ *  trailing stop short above price, the breakout bar then crosses it. */
+function buildBuySeries(n) {
+  const C = buildSeries(n, false).map(c => ({ ...c }));
+  let px = C[n - 6].c;
+  for (let i = n - 5; i < n - 1; i++) {
+    px = px - 2.5;
+    C[i] = { t: C[i].t, o: C[i - 1].c, h: Math.max(C[i - 1].c, px) + 0.2, l: Math.min(C[i - 1].c, px) - 0.2, c: px };
+  }
+  const ob = C[n - 2].c;
+  C[n - 1] = { t: C[n - 1].t, o: ob, h: ob + 13, l: ob - 0.2, c: ob + 12 };
+  return C;
+}
+const S1 = buildBuySeries(N);       // last bar = engineered breakout -> BUY
 const S2next = S1.slice(0, N - 1).concat([buildSeries(N, false)[N - 1]]); // same history, plain last bar
 // For S3: one more candle after the buy bar (no event) — cursor advances.
 const S3 = S1.concat([{ t: T0 + N * TF, o: S1[N - 1].c, h: S1[N - 1].c + 0.3, l: S1[N - 1].c - 0.3, c: S1[N - 1].c + 0.1 }]);
@@ -125,11 +145,13 @@ async function main() {
     Date.now = () => nowMs;
     try {
       const r = await runScan(env, ctxMock, nowMs);
-      ok(r.ok === 8 && r.processed === 8, 'S1 scan processed 8/8 pairs ok');
+      const expectPairs = isForexMarketOpen() ? 8 : 4;   // weekend/CI: crypto only (real-clock forex gate)
+      ok(r.ok === expectPairs && r.processed === expectPairs, 'S1 scan processed all active pairs (' + expectPairs + ')');
       const hist = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
       ok(Array.isArray(hist) && hist.length === 1, 'S1 exactly 1 history record (fresh deploy emits newest candle only)');
-      ok(hist && hist[0].direction === 'CALL' && hist[0].engine === 'UT-BOT', 'S1 record CALL / UT-BOT');
+      ok(hist && hist[0].direction === 'BUY' && hist[0].engine === 'UT-BOT', 'S1 record BUY / UT-BOT (CFD vocab)');
       ok(hist && hist[0].indicators.event === 'buy', 'S1 audit carries buy event');
+      ok(hist && hist[0].expiryTime === null && hist[0].expiryMinutes === null, 'S1 CFD record carries NO expiry (no pending, no result)');
       const lastAttempt = await env.SIGNAL_CACHE.get('push:lastAttempt', 'json');
       ok(lastAttempt && lastAttempt.ok === true && lastAttempt.sent === 1, 'S1 telegram push delivered to 1 subscriber');
       const cursor = await env.SIGNAL_CACHE.get('utbot:lastscan:BTC_USD');
@@ -139,7 +161,7 @@ async function main() {
       const r2 = await runScan(env, ctxMock, nowMs);
       const hist2 = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
       ok(hist2.length === 1, 'S2 re-run emits nothing (idempotent)');
-      ok(r2.ok === 8, 'S2 re-run still processes all pairs');
+      ok(r2.ok === expectPairs, 'S2 re-run still processes all pairs (' + expectPairs + ')');
 
       // ── S3: a new candle with a new event emits exactly once more ───────
       // (craft: the extra candle is a breakdown bar closing far below the
@@ -155,7 +177,7 @@ async function main() {
       const r3 = await runScan(env, ctxMock);
       const hist3 = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
       ok(hist3.length === 2, 'S3 second event adds exactly 1 record (got ' + hist3.length + ')');
-      ok(hist3[0].direction === 'PUT', 'S3 second event is the breakdown SELL');
+      ok(hist3[0].direction === 'SELL', 'S3 second event is the breakdown SELL (CFD vocab)');
       ok(Date.now() === S3ev[S3ev.length - 1].t + TF, 'S3 clock advanced one period');
     } finally {
       Date.now = realNow;
