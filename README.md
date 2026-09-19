@@ -62,7 +62,7 @@ the precomputed fast path.
 ```
 src/strategy/indicators.mjs   EMA / MACD / Wilder ATR / median / percentile
 src/strategy/engine.mjs       THE strategy: C1→C2→C3 + expiry tiers
-src/handlers/scan.js          */5 scanner + on-demand /api/signal
+src/handlers/scan.js          */15 scanner + on-demand /api/signal
 src/history/store.js          history save (30-min dedup) + expiry result checker
 src/handlers/push.js          Telegram subscriber push (plain text, push-lock)
 src/fetch/candles.js          TwelveData fetch + KV cache + key rotation
@@ -97,7 +97,7 @@ not add filters to rescue the number — that is what this repo's history taught
 `/api/batch?pairs=...` · `/api/pairs` · `/api/history?pair=...` ·
 `/api/stats` · `/api/report?id=...&result=WIN|LOSS|TIE|UNKNOWN`
 
-Crons: `*/5` signal scanner (aligned to 5m closes), `*/2` result checker
+Crons: `*/15` signal scanner (aligned to 15m closes), `*/2` result checker
 (resolves expiries against the 1m feed; ties are stored as TIE, missing candles
 as EXPIRY_GAP — both excluded from win/loss stats).
 

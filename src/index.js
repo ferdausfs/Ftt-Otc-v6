@@ -10,9 +10,9 @@
  * scripts/utbot_tests.mjs + scripts/utbot_tv_diff.mjs.
  *
  * Crons:
- *   * /5 -> signal scanner (UT Bot events on candle closes; 1min-timeframe
- *          pairs surface events on the next tick)
- *   * /2 -> result checker (resolves expired signals against the 1m feed)
+ *   * /15 -> signal scanner (UT Bot events on 15-minute candle closes;
+ *           1min/5min-timeframe pairs surface events on the next tick)
+ *   * /2  -> result checker (resolves expired signals against the 1m feed)
  */
 
 import { CORS_HEADERS, applyCors } from './utils/cors.js';
@@ -31,7 +31,7 @@ import { scheduledTracker } from './history/store.js';
 export default {
   async scheduled(event, env, ctx) {
     const cron = event && event.cron;
-    if (cron === '*/5 * * * *') {
+    if (cron === '*/15 * * * *') {
       // Awaited on purpose: nested waitUntil can freeze the isolate before
       // Telegram sendMessage completes (lesson from the previous engine).
       await scheduledScan(env, ctx);

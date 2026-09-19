@@ -1,6 +1,6 @@
 /**
- * FTT3 — /health, /api/pairs, /api/history, /api/report.
- * Slim on purpose: the engine is src/strategy/engine.mjs; this file only
+ * UT-BOT — /health, /api/pairs, /api/history, /api/report.
+ * Slim on purpose: the engine is src/strategy/utBotAlerts.mjs; this file only
  * reports worker status and serves stored history.
  */
 
@@ -13,7 +13,6 @@ import { readQuota } from '../history/quota.js';
 import { getScanCacheStats } from './latest.js';
 import { getPushStats } from './push.js';
 import { readHistory, computeStats } from '../history/store.js';
-import { EXPIRY_TIERS } from '../strategy/engine.mjs';
 
 export async function handleHealth(env) {
   const keyCount = getApiKeys(env).length;
@@ -28,12 +27,17 @@ export async function handleHealth(env) {
     engine: {
       name: CONFIG.ENGINE,
       conditions: [
-        'C1 bias: EMA(20) vs EMA(50) on the last closed 15m candle',
-        'C2 confirmation: MACD(12,26,9) line crosses signal on the last closed 5m candle, in C1 direction',
-        'C3 entry gate: 1m ATR(14) >= its trailing median over the last 100 closed 1m candles',
+        'UT Bot Alerts (exact TradingView port, defaults a=1, c=10): trailing-stop flip on candle close',
+        'buy = close crosses above trailing stop, sell = close crosses below (close-confirmed, no repaint)',
+        'scan cadence: every 15 minutes; events emitted on the 15-minute candle close boundary',
       ],
-      expiryTiers: EXPIRY_TIERS,
-      verdict: 'OOS backtest FAIL (50.5% WR < 55.6% breakeven) — deployed as audited data collector, see results/FTT3_BACKTEST_REPORT.md',
+      defaults: {
+        timeframe: CONFIG.UTBOT.DEFAULT_TIMEFRAME,
+        a: CONFIG.UTBOT.DEFAULT_A,
+        c: CONFIG.UTBOT.DEFAULT_C,
+        expiryMinutes: CONFIG.UTBOT.DEFAULT_EXPIRY_MINUTES,
+      },
+      verdict: 'exact behavioral match to TradingView — proven by scripts/utbot_tests.mjs + scripts/utbot_tv_diff.mjs; win-rate framing does not apply',
     },
     timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, status: keyCount > 0 ? 'ready' : 'NO KEYS' },

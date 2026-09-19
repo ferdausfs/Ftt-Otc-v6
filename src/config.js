@@ -36,7 +36,7 @@ export const CONFIG = {
   // config store (utbot:config), written by the app's toggle UI.
   UTBOT: {
     TIMEFRAMES: ['1min', '5min', '15min'],
-    DEFAULT_TIMEFRAME: '5min',
+    DEFAULT_TIMEFRAME: '15min',
     DEFAULT_A: 1,
     DEFAULT_C: 10,
     DEFAULT_EXPIRY_MINUTES: 5,   // record-keeping/result tracking only —
@@ -66,15 +66,15 @@ export const SCAN_PAIRS = [
   'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
 ];
 
-/** every-5-minutes scanner settings (cadence unchanged; the engine now emits
- *  UT Bot events on candle closes instead of FTT3 5m-boundary conditions). */
+/** every-15-minutes scanner settings (cadence = the 15-min cron; the engine
+ *  emits UT Bot events on candle closes instead of FTT3 boundary conditions). */
 export const SCAN_CONFIG = {
   KV_LATEST_PREFIX: 'latest:',
-  LATEST_TTL_SECONDS: 600,        // 10 min = 2x cron interval
+  LATEST_TTL_SECONDS: 1800,       // 30 min = 2x cron interval
   BATCH_SIZE: 4,                  // parallel pairs per batch
   BATCH_DELAY_MS: 400,
   MAX_SCAN_DURATION_MS: 55000,    // hard stop per cron tick
-  SCAN_INTERVAL_SECONDS: 300,     // mirrors the */5 cron
+  SCAN_INTERVAL_SECONDS: 900,     // mirrors the */15 cron
 };
 
 /** Signal history + result checking (KV layout unchanged from the old worker). */

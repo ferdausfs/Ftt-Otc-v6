@@ -1,5 +1,5 @@
 /**
- * UT Bot Alerts — cron scanner (every-5-minutes, aligned to candle closes)
+ * UT Bot Alerts — cron scanner (every-15-minutes, aligned to candle closes)
  * + on-demand evaluation. THE LIVE SIGNAL PATH (FTT3 retired — see
  * src/strategy/engine.mjs for the retired engine, kept for the audit record).
  *
@@ -14,9 +14,9 @@
  *   4. write the latest snapshot (decision + full audit) to the latest: cache
  *
  * Event timing = candle CLOSE confirmation — the moment the TradingView
- * marker stops flickering and becomes final. Events on a 1min-timeframe pair
- * surface on the next 5-minute tick (up to 4 min late); 5min/15min pairs are
- * exact to their boundary.
+ * marker stops flickering and becomes final. Events on a 1min/5min-
+ * timeframe pair surface on the next 15-minute tick (up to 14 min late);
+ * 15min pairs are exact to their boundary.
  */
 
 import { CONFIG, SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
@@ -121,7 +121,7 @@ function buildResult(pair, assetType, candles, i, tf, tfMs, cfg, series, lastSca
   // Pending events = every event whose candle closed strictly after the last
   // processed close-time. Missing state (fresh deploy) -> only the newest
   // closed candle is eligible (never replay history). Covers multi-event
-  // gaps (e.g. a 1min-timeframe pair between */5 ticks).
+  // gaps (e.g. a 1min-timeframe pair between */15 ticks).
   const pendingEvents = series.events.filter(e =>
     lastScanT === null ? e.i === i : e.closeT > lastScanT && e.closeT <= closeT);
 
@@ -248,7 +248,7 @@ export async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
   }
 }
 
-/** every-5-minutes cron entry. */
+/** every-15-minutes cron entry. */
 export async function scheduledScan(env, ctx) {
   const startTime = Date.now();
   if (!env || !env.SIGNAL_CACHE) return { ok: 0, failed: 0, aborted: true };
