@@ -32,7 +32,7 @@ import { sanitizePair, getAssetType } from './utils/pairs.js';
 import { ASSET_TYPE, VALID_FOREX_CURRENCIES, CRYPTO_BASES, CRYPTO_QUOTES, CONFIG, SCAN_PAIRS } from './config.js';
 import { checkRateLimit } from './middleware/rateLimit.js';
 import { handleHealth, handlePairs, handleHistory, handleStats, handleReport } from './handlers/health.js';
-import { handleSignal, handleBatch, scheduledScan } from './handlers/scan.js';
+import { handleSignal, handleBatch, scheduledScan, runScanWatchdog } from './handlers/scan.js';
 import { handleLatest } from './handlers/latest.js';
 import {
   handleUtBotConfigGet, handleUtBotConfigPost,
@@ -170,6 +170,12 @@ export default {
     } catch (error) {
       console.error('Fatal:', error);
       return applyCors(jsonResponse({ error: true, message: 'Internal server error' }, 500));
+    } finally {
+      // Cron-resilience watchdog: if the platform cron goes silent again, any
+      // HTTP request self-heals the scan (lock-guarded, no-op when fresh).
+      if (request.method !== 'OPTIONS' && ctx && typeof ctx.waitUntil === 'function') {
+        try { ctx.waitUntil(runScanWatchdog(env, ctx)); } catch (e) { /* never break the response */ }
+      }
     }
   },
 };

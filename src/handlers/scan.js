@@ -431,3 +431,51 @@ export async function handleStats(url, env) {
   for (const p of SCAN_PAIRS) all[p] = await computeStats(p, env);
   return jsonResponse({ engine: CONFIG.ENGINE, pairs: all, timestamp: new Date().toISOString() });
 }
+
+// ── scan watchdog (cron resilience) ─────────────────────────────────────────
+// The cron trigger is platform-managed and has been observed going SILENT
+// while the worker itself stayed healthy (2026-09-20: scheduled invocations
+// stopped at 07:00 UTC; engine/fetch/push all fine). The watchdog gives the
+// scan a second way to run: ANY fetch-path request (bot tap, app poll,
+// health check) opportunistically runs a catch-up scheduledScan when the
+// newest scan cursor is stale. Correctness under concurrency is inherited
+// from the existing layers: saveSignal() dedupes re-polls and the push lock
+// (30 min per chat+pair+direction) swallows duplicate deliveries.
+
+const WD_LOCK_KEY = 'scan:watchdog:lock';
+const WD_LOCK_TTL_S = 600;        // 10 min — one catch-up per lock window
+// Probe cursors on always-on markets (crypto advances every candle; forex
+// cursors legitimately idle on weekends).
+const WD_PROBE_PAIRS = ['BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD'];
+// Healthy cadence = a scan lands within ~1 min after every 15-min boundary.
+// Two full periods stale means the cron did not run.
+const WD_STALE_MS = 31 * 60 * 1000;
+
+/**
+ * Fire-and-forget from the fetch handler (ctx.waitUntil). Never throws,
+ * never blocks the response, no-ops quickly while the cron is healthy.
+ */
+export async function runScanWatchdog(env, ctx, now = Date.now()) {
+  if (!env || !env.SIGNAL_CACHE) return { ran: false, reason: 'no KV' };
+  try {
+    const locked = await env.SIGNAL_CACHE.get(WD_LOCK_KEY);
+    if (locked) return { ran: false, reason: 'locked' };
+
+    let newest = 0;
+    for (const p of WD_PROBE_PAIRS) {
+      const t = await getLastScanT(env, p);
+      if (t && t > newest) newest = t;
+    }
+    if (now - newest <= WD_STALE_MS) return { ran: false, reason: 'fresh', newest };
+
+    await env.SIGNAL_CACHE.put(WD_LOCK_KEY, String(now), { expirationTtl: WD_LOCK_TTL_S });
+    console.warn('scan watchdog: newest cursor ' + (newest ? new Date(newest).toISOString() : 'none')
+      + ' is stale -> catch-up scheduledScan');
+    const r = await scheduledScan(env, ctx);
+    console.warn('scan watchdog: catch-up done ' + JSON.stringify({ ok: r.ok, failed: r.failed }));
+    return { ran: true, result: r };
+  } catch (e) {
+    console.warn('scan watchdog error: ' + e.message);
+    return { ran: false, reason: 'error: ' + e.message };
+  }
+}
