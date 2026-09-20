@@ -1,20 +1,30 @@
 /**
- * Telegram bot control panel — inline-keyboard UI over the SAME config
- * store the scanner reads (utbot:config in SIGNAL_CACHE, written through
- * utbotConfig.js mergePairPatch). Single source of truth: a button press
- * changes what the next 15-minute tick actually scans/computes.
+ * Telegram bot control panel — TradingView-style settings UI over the SAME
+ * config store the scanner reads (utbot:config in SIGNAL_CACHE, written
+ * through utbotConfig.js mergePairPatch). Single source of truth: a button
+ * press changes what the next 15-minute tick actually scans/computes.
  *
- * What the panel covers (user request: pairs, indicators, params — all
- * editable from the bot):
- *   Pairs       every pair the worker knows (SCAN_PAIRS) with a scanning
- *               on/off toggle + "all on / all off"
- *   Indicators  per indicator (registry ids) ON/OFF — scope = one pair or
- *               all pairs at once
- *   Params      registry-driven editors: UT Bot a/c, MKR kernel/bandwidth;
- *               a future registry indicator's params become editable with
- *               ZERO bot-side code (menus render from ind.params[])
- *   Timeframe   1min/5min/15min per pair or all pairs
- *   Status      live text view of the whole config + push state
+ * UI model (user request: "ui ta emon koro TV te jemon — indicator full
+ * panel diya, drop down kore" — like the TradingView settings dialog):
+ *   Pair picker   one button per scanned pair (scanning state marked) +
+ *                 All ON / All OFF
+ *   Pair panel    ONE message per pair listing EVERY input with its current
+ *                 value, like the TV indicator settings dialog:
+ *                   Scanning: ON/OFF            (tap = flip)
+ *                   Timeframe: 15min            (tap = dropdown)
+ *                   [x] UT Bot Alerts           (tap = checkbox toggle)
+ *                       Key Value (a) = 1       (tap = dropdown)
+ *                       ATR Period (c) = 10     (tap = dropdown)
+ *                   [x] Multi Kernel Regression (tap = checkbox toggle)
+ *                       Kernel = Laplace        (tap = 17-option dropdown)
+ *                       Bandwidth = 14          (tap = dropdown)
+ *   Dropdowns     rendered from the registry's params[] descriptors — a
+ *                 future indicator's inputs become panel-editable with
+ *                 ZERO bot-side code.
+ *   Status        full live config + push state text view.
+ *
+ * Everything the user changed stays visible in the panel text, so "ki ki
+ * set korsi" is always one glance away.
  *
  * Transport:
  *   POST /api/telegram/webhook  — Telegram calls this. Verified by the
@@ -104,8 +114,10 @@ async function isOwnerChat(env, chatId) {
 
 const ON = '\u25CF';    // filled circle  — enabled
 const OFF = '\u25CB';   // hollow circle  — disabled
-const PART = '\u25D0';  // half circle    — partially enabled (all-pairs scope)
 const CUR = '\u203A';   // single right-angle quote — current selection
+const CHECK_ON = '\u2611';   // ballot box with check — input enabled (TV checkbox)
+const CHECK_OFF = '\u2610';  // empty ballot box      — input disabled
+const DRP = '\u25BE';        // small down triangle — marks dropdown buttons
 
 function isCrypto(pair) { return getAssetType(pair) === ASSET_TYPE.CRYPTO; }
 
@@ -129,177 +141,110 @@ function paramValue(pairCfg, indId, p) {
     : pairCfg[p.key];
 }
 
-/** Formatted "current value" summary across a scope's pairs. */
-function paramSummary(cfg, scope, indId, p) {
-  const targets = scopeTargets(scope) || [];
-  const vals = new Set();
-  for (const t of targets) {
-    const v = paramValue(cfg.pairs[t], indId, p);
-    if (v !== undefined && v !== null) vals.add(String(v));
-  }
-  if (vals.size === 0) return 'default';
-  if (vals.size === 1) return [...vals][0];
-  return 'mixed (' + [...vals].slice(0, 4).join(', ') + (vals.size > 4 ? ', ...' : '') + ')';
-}
+// ── TV-style views ──────────────────────────────────────────────────────────
+// The panel mimics the TradingView indicator settings dialog: ONE message
+// per pair listing EVERY input with its current value; tapping an input
+// opens a dropdown (option list, current value marked) in the same message.
+// The user always sees the complete state in one screen.
 
-function backRow(targets) { return targets; }
+const DIV = '--------------------------------';
 
-// ── menus (text + inline keyboards) ─────────────────────────────────────────
-
-function mainMenuView(env, cfg, webhookNote) {
+/** Pair picker = the menu root. State marker shows scanning on/off. */
+function pairPickerView(cfg, note) {
   const nOn = SCAN_PAIRS.filter(p => cfg.pairs[p] && cfg.pairs[p].enabled).length;
   const text = [
-    'Ftt-Otc-v6 control panel (' + CONFIG.VERSION + ')',
+    'FTT panel - ' + CONFIG.VERSION,
     'Scanning: ' + nOn + '/' + SCAN_PAIRS.length + ' pairs every 15 minutes',
-    'Indicators: ' + INDICATORS.map(i => i.name).join(', '),
-    webhookNote ? webhookNote : '',
-  ].filter(Boolean).join('\n');
-  const kb = [
-    [{ text: 'Pairs (' + nOn + '/' + SCAN_PAIRS.length + ' scanning)', callback_data: 'm:pairs' }],
-    [
-      { text: 'Indicators', callback_data: 'm:ind' },
-      { text: 'Params', callback_data: 'm:prm' },
-    ],
-    [
-      { text: 'Timeframe', callback_data: 'm:tf' },
-      { text: 'Status', callback_data: 'm:status' },
-    ],
-  ];
-  return { text, kb };
-}
-
-function pairsMenuView(cfg) {
-  const text = [
-    'Pairs - tap to toggle scanning',
-    'ON = scanned on every tick, OFF = skipped entirely (no fetch).',
+    note || 'Tap a pair to open its full settings panel.',
   ].join('\n');
-  const kb = SCAN_PAIRS.map(p => {
-    const on = !!(cfg.pairs[p] && cfg.pairs[p].enabled);
-    return [{
-      text: (on ? ON : OFF) + ' ' + p + (isCrypto(p) ? '  [crypto]' : '  [forex]'),
-      callback_data: 'pt:' + p,
-    }];
-  });
+  const kb = [];
+  for (let i = 0; i < SCAN_PAIRS.length; i += 2) {
+    const row = [];
+    const mk = p => (cfg.pairs[p] && cfg.pairs[p].enabled ? ON : OFF) + ' ' + p;
+    row.push({ text: mk(SCAN_PAIRS[i]), callback_data: 'P:' + SCAN_PAIRS[i] });
+    if (SCAN_PAIRS[i + 1]) row.push({ text: mk(SCAN_PAIRS[i + 1]), callback_data: 'P:' + SCAN_PAIRS[i + 1] });
+    kb.push(row);
+  }
   kb.push([
     { text: 'All ON', callback_data: 'pa:on' },
     { text: 'All OFF', callback_data: 'pa:off' },
   ]);
-  kb.push(backRow([{ text: 'Back', callback_data: 'm:main' }]));
+  kb.push([
+    { text: 'Status', callback_data: 'm:status' },
+    { text: 'Refresh', callback_data: 'pp' },
+  ]);
   return { text, kb };
 }
 
-function indScopeMenuView() {
-  const text = 'Indicators - pick a scope to toggle them on/off.';
-  const kb = [[{ text: 'All pairs', callback_data: 'is:all' }]];
-  for (let i = 0; i < SCAN_PAIRS.length; i += 2) {
-    const row = [{ text: SCAN_PAIRS[i], callback_data: 'is:' + SCAN_PAIRS[i] }];
-    if (SCAN_PAIRS[i + 1]) row.push({ text: SCAN_PAIRS[i + 1], callback_data: 'is:' + SCAN_PAIRS[i + 1] });
-    kb.push(row);
-  }
-  kb.push(backRow([{ text: 'Back', callback_data: 'm:main' }]));
-  return { text, kb };
-}
+function fmtVal(v) { return (v === undefined || v === null) ? 'default' : String(v); }
 
-function indListMenuView(cfg, scope) {
-  const text = 'Indicators - ' + scopeLabel(scope)
-    + '\nTap an indicator to switch it ON or OFF.';
-  const targets = scopeTargets(scope) || [];
-  const kb = [];
+/**
+ * The full per-pair settings panel — every indicator, every input, current
+ * values inline (text) AND as buttons (dropdowns). This is the one screen
+ * that answers "ki ki set korsi" at a glance.
+ */
+function pairPanelView(cfg, pair, note) {
+  const pc = cfg.pairs[pair] || {};
+  const lines = [
+    'SETTINGS - ' + pair + (isCrypto(pair) ? '  [crypto]' : '  [forex]'),
+    'Scanning: ' + (pc.enabled ? 'ON' : 'OFF') + ' | Timeframe: ' + (pc.timeframe || '?'),
+    DIV,
+  ];
+  const kb = [
+    [{ text: 'Scanning: ' + (pc.enabled ? 'ON' : 'OFF'), callback_data: 'pt:' + pair }],
+    [{ text: 'Timeframe: ' + (pc.timeframe || '?') + ' ' + DRP, callback_data: 'td:' + pair }],
+  ];
   for (const ind of INDICATORS) {
-    let onCount = 0;
-    for (const t of targets) {
-      const ic = cfg.pairs[t] && cfg.pairs[t].indicators && cfg.pairs[t].indicators[ind.id];
-      if (ic && ic.enabled) onCount++;
-    }
-    const mark = onCount === 0 ? OFF : onCount === targets.length ? ON : PART;
-    const suffix = scope === 'all' ? ' (' + onCount + '/' + targets.length + ')' : (onCount ? '  ON' : '  OFF');
-    kb.push([{ text: mark + ' ' + ind.name + suffix, callback_data: 'ir:' + scope + ':' + ind.id }]);
-  }
-  kb.push(backRow([
-    { text: 'Scope', callback_data: 'm:ind' },
-    { text: 'Main', callback_data: 'm:main' },
-  ]));
-  return { text, kb };
-}
-
-function paramsRootMenuView() {
-  const text = 'Params - pick an indicator to edit its inputs.';
-  const kb = INDICATORS.map(ind => [{ text: ind.name, callback_data: 'ps:' + ind.id }]);
-  kb.push(backRow([{ text: 'Back', callback_data: 'm:main' }]));
-  return { text, kb };
-}
-
-function paramsScopeMenuView(ind) {
-  const text = 'Params - ' + ind.name + ' - pick a scope.';
-  const kb = [[{ text: 'All pairs', callback_data: 'pe:' + ind.id + ':all' }]];
-  for (let i = 0; i < SCAN_PAIRS.length; i += 2) {
-    const row = [{ text: SCAN_PAIRS[i], callback_data: 'pe:' + ind.id + ':' + SCAN_PAIRS[i] }];
-    if (SCAN_PAIRS[i + 1]) row.push({ text: SCAN_PAIRS[i + 1], callback_data: 'pe:' + ind.id + ':' + SCAN_PAIRS[i + 1] });
-    kb.push(row);
-  }
-  kb.push(backRow([{ text: 'Back', callback_data: 'm:prm' }]));
-  return { text, kb };
-}
-
-function paramEditorMenuView(cfg, ind, scope) {
-  const lines = ['Params - ' + ind.name, 'Scope: ' + scopeLabel(scope)];
-  for (const p of (ind.params || [])) {
-    lines.push(p.label + ': ' + paramSummary(cfg, scope, ind.id, p));
-  }
-  const kb = [];
-  for (const p of (ind.params || [])) {
-    if (p.kind === 'enum') {
-      const perRow = p.perRow || 1;
-      for (let i = 0; i < (p.options || []).length; i += perRow) {
-        const row = [];
-        for (const opt of (p.options || []).slice(i, i + perRow)) {
-          const cur = paramSummary(cfg, scope, ind.id, p);
-          row.push({
-            text: (cur === opt ? CUR + ' ' : '') + opt,
-            callback_data: 'pv:' + ind.id + ':' + scope + ':' + p.key + ':' + opt,
-          });
-        }
-        kb.push(row);
-      }
-    } else {
-      const cur = paramSummary(cfg, scope, ind.id, p);
-      const row = (p.presets || []).map(v => ({
-        text: (cur === String(v) ? CUR + ' ' : '') + v,
-        callback_data: 'pv:' + ind.id + ':' + scope + ':' + p.key + ':' + v,
-      }));
-      row.push({ text: 'Custom...', callback_data: 'aw:' + ind.id + ':' + scope + ':' + p.key });
-      kb.push(row);
+    const ic = pc.indicators && pc.indicators[ind.id];
+    const on = !!(ic && ic.enabled);
+    lines.push((on ? CHECK_ON : CHECK_OFF) + ' ' + ind.name);
+    kb.push([{ text: (on ? CHECK_ON : CHECK_OFF) + ' ' + ind.name, callback_data: 'tg:' + pair + ':' + ind.id }]);
+    for (const p of (ind.params || [])) {
+      const v = fmtVal(paramValue(pc, ind.id, p));
+      lines.push('    ' + p.label + ' = ' + v);
+      kb.push([{ text: '    ' + p.label + ': ' + v + ' ' + DRP, callback_data: 'dr:' + pair + ':' + ind.id + ':' + p.key }]);
     }
   }
-  kb.push(backRow([
-    { text: 'Scope', callback_data: 'ps:' + ind.id },
-    { text: 'Main', callback_data: 'm:main' },
-  ]));
+  lines.push(DIV);
+  lines.push('Tap a line to change it.' + (note ? ' ' + note : ''));
+  kb.push([
+    { text: 'Change pair', callback_data: 'pp' },
+    { text: 'Refresh', callback_data: 'P:' + pair },
+  ]);
+  kb.push([{ text: 'Status', callback_data: 'm:status' }]);
   return { text: lines.join('\n'), kb };
 }
 
-function tfScopeMenuView() {
-  const text = 'Timeframe - pick a scope, then the candle timeframe.';
-  const kb = [[{ text: 'All pairs', callback_data: 'tx:all' }]];
-  for (let i = 0; i < SCAN_PAIRS.length; i += 2) {
-    const row = [{ text: SCAN_PAIRS[i], callback_data: 'tx:' + SCAN_PAIRS[i] }];
-    if (SCAN_PAIRS[i + 1]) row.push({ text: SCAN_PAIRS[i + 1], callback_data: 'tx:' + SCAN_PAIRS[i + 1] });
-    kb.push(row);
+/** Dropdown for one input: every allowed option, current one marked. */
+function paramDropdownView(cfg, pair, ind, p) {
+  const curStr = fmtVal(paramValue(cfg.pairs[pair], ind.id, p));
+  const text = [
+    ind.name + ' - ' + p.label + ' ' + DRP,
+    pair + ' current: ' + curStr,
+  ].concat(p.kind === 'enum' ? [] : ['Allowed range: ' + p.min + ' to ' + p.max
+    + (p.kind === 'int' ? ' (whole number)' : '')]).join('\n');
+  const kb = [];
+  const options = p.kind === 'enum' ? (p.options || []) : (p.presets || []);
+  for (const opt of options) {
+    const isCur = opt === curStr || Number(opt) === Number(curStr);
+    kb.push([{ text: (isCur ? CUR + ' ' : '') + opt, callback_data: 'dv:' + pair + ':' + ind.id + ':' + p.key + ':' + opt }]);
   }
-  kb.push(backRow([{ text: 'Back', callback_data: 'm:main' }]));
+  if (p.kind !== 'enum') {
+    kb.push([{ text: 'Custom value...', callback_data: 'dc:' + pair + ':' + ind.id + ':' + p.key }]);
+  }
+  kb.push([{ text: 'Back to panel', callback_data: 'P:' + pair }]);
   return { text, kb };
 }
 
-function tfSetMenuView(cfg, scope) {
-  const targets = scopeTargets(scope) || [];
-  const vals = new Set(targets.map(t => cfg.pairs[t] && cfg.pairs[t].timeframe));
-  const cur = vals.size === 1 ? [...vals][0] : 'mixed';
-  const text = 'Timeframe - ' + scopeLabel(scope) + ' (current: ' + cur + ')';
-  const kb = [CONFIG.UTBOT.TIMEFRAMES.map(tf => ({
-    text: (cur === tf ? CUR + ' ' : '') + tf,
-    callback_data: 'tset:' + scope + ':' + tf,
-  }))];
-  kb.push(backRow([{ text: 'Back', callback_data: 'm:tf' }]));
+/** Timeframe dropdown for one pair. */
+function tfDropdownView(cfg, pair) {
+  const cur = cfg.pairs[pair] && cfg.pairs[pair].timeframe;
+  const text = 'Timeframe ' + DRP + '\n' + pair + ' current: ' + (cur || '?');
+  const kb = CONFIG.UTBOT.TIMEFRAMES.map(tf => [{
+    text: (tf === cur ? CUR + ' ' : '') + tf,
+    callback_data: 'ts:' + pair + ':' + tf,
+  }]);
+  kb.push([{ text: 'Back to panel', callback_data: 'P:' + pair }]);
   return { text, kb };
 }
 
@@ -440,22 +385,19 @@ async function setTimeframe(env, scope, tf) {
 
 // ── custom-value input flow ─────────────────────────────────────────────────
 
-async function requestCustomInput(env, chatId, msgId, indId, scope, key) {
+async function requestCustomInput(env, chatId, msgId, pair, indId, key) {
   const ind = INDICATOR_BY_ID[indId];
   const p = ind && (ind.params || []).find(x => x.key === key);
   if (!ind || !p || p.kind === 'enum') return { ok: false, error: 'no numeric parameter' };
   const rec = {
-    indId, scope, key, label: p.label, kind: p.kind, min: p.min, max: p.max, msgId,
+    v: 2, pair, indId, key, label: p.label, kind: p.kind, min: p.min, max: p.max, msgId,
     at: new Date().toISOString(),
   };
   await env.SIGNAL_CACHE.put(KV_AWAIT_PREFIX + chatId, JSON.stringify(rec), { expirationTtl: 600 });
-  const text = 'Send a number for ' + p.label + ' - ' + scopeLabel(scope)
+  const text = 'Send a number for ' + p.label + ' - ' + pair
     + '\nAllowed range: ' + p.min + ' to ' + p.max + (p.kind === 'int' ? ' (whole number)' : '')
     + '\n/reset to cancel.';
-  const kb = [[
-    { text: 'Back', callback_data: 'pe:' + indId + ':' + scope },
-    { text: 'Main', callback_data: 'm:main' },
-  ]];
+  const kb = [[{ text: 'Back to panel', callback_data: 'P:' + pair }]];
   return { ok: true, text, kb };
 }
 
@@ -467,8 +409,13 @@ async function applyCustomInput(env, chatId, text) {
     await env.SIGNAL_CACHE.delete(KV_AWAIT_PREFIX + chatId).catch(() => {});
     return null;
   }
+  if (!rec || !rec.pair || !rec.indId) {
+    // Legacy pre-panel record (scope-based): drop it silently.
+    await env.SIGNAL_CACHE.delete(KV_AWAIT_PREFIX + chatId).catch(() => {});
+    return null;
+  }
   const cleaned = String(text).replace(/[^0-9.\-]/g, '');
-  const r = await setParam(env, rec.indId, rec.scope, rec.key, cleaned);
+  const r = await setParam(env, rec.indId, rec.pair, rec.key, cleaned);
   if (!r.ok) {
     // Keep the pending record so the owner can just send another number.
     return {
@@ -485,21 +432,20 @@ async function applyCustomInput(env, chatId, text) {
 
 const HELP_TEXT = [
   'Ftt-Otc-v6 bot - commands:',
-  '/menu - open the control panel (pairs, indicators, params, timeframe)',
+  '/menu - open the panel (tap a pair to see its full settings panel)',
+  '/panel <PAIR> - open one pair settings panel directly (e.g. /panel EUR/USD)',
   '/status - full config + push state',
-  '/pairs - pair scanning toggles',
-  '/indicators - indicator on/off switches',
-  '/params - indicator input editors',
-  '/timeframe - candle timeframe per pair',
+  '/pairs - pair list (same as /menu)',
   '/scan - scan all enabled pairs now',
   '/scan <PAIR> - scan one pair now (e.g. /scan EUR/USD)',
   '/reset - cancel a pending value input',
   '/id - show this chat id',
   '/help - this text',
   '',
-  'Signal messages stay exactly what the indicators print - UT Bot says',
-  'BUY/SELL, Multi Kernel Regression says UP/DOWN. This panel only',
-  'controls what gets scanned and computed.',
+  'The panel works like the TradingView settings dialog: every input for',
+  'every indicator is listed with its current value; tap a line and pick',
+  'from the dropdown. Signal messages stay exactly what the indicators',
+  'print - UT Bot says BUY/SELL, Multi Kernel Regression says UP/DOWN.',
 ].join('\n');
 
 async function onMessage(env, ctx, msg) {
@@ -516,7 +462,7 @@ async function onMessage(env, ctx, msg) {
       if (!owner) {
         await env.SIGNAL_CACHE.put(KV_OWNER, chatId);
         const cfg = await getUtBotConfig(env);
-        const v = mainMenuView(env, cfg, 'Panel claimed for this chat.');
+        const v = pairPickerView(cfg, 'Panel claimed for this chat. Tap a pair to open its settings panel.');
         await sendMessage(env, chatId, v.text, v.kb);
         return;
       }
@@ -525,7 +471,7 @@ async function onMessage(env, ctx, msg) {
         return;
       }
       const cfg = await getUtBotConfig(env);
-      const v = mainMenuView(env, cfg);
+      const v = pairPickerView(cfg);
       await sendMessage(env, chatId, v.text, v.kb);
       return;
     }
@@ -550,22 +496,19 @@ async function onMessage(env, ctx, msg) {
     }
     if (cmd === '/pairs') {
       const cfg = await getUtBotConfig(env);
-      const v = pairsMenuView(cfg);
+      const v = pairPickerView(cfg);
       await sendMessage(env, chatId, v.text, v.kb);
       return;
     }
-    if (cmd === '/indicators') {
-      const v = indScopeMenuView();
-      await sendMessage(env, chatId, v.text, v.kb);
-      return;
-    }
-    if (cmd === '/params') {
-      const v = paramsRootMenuView();
-      await sendMessage(env, chatId, v.text, v.kb);
-      return;
-    }
-    if (cmd === '/timeframe') {
-      const v = tfScopeMenuView();
+    if (cmd === '/panel' || cmd === '/indicators' || cmd === '/params' || cmd === '/timeframe') {
+      const cfg = await getUtBotConfig(env);
+      const arg = cmd === '/panel' ? sp[1] : null;
+      let pair = arg ? sanitizePair(arg) : null;
+      if (!pair || !SCAN_PAIRS.includes(pair)) {
+        pair = SCAN_PAIRS.find(p => cfg.pairs[p] && cfg.pairs[p].enabled) || SCAN_PAIRS[0];
+      }
+      const v = pairPanelView(cfg, pair,
+        cmd === '/panel' ? null : 'Tip: /panel <PAIR> jumps straight to a pair.');
       await sendMessage(env, chatId, v.text, v.kb);
       return;
     }
@@ -620,9 +563,8 @@ async function onMessage(env, ctx, msg) {
     if (r && r.ok) {
       await sendMessage(env, chatId, 'Set ' + r.toast);
       const cfg = await getUtBotConfig(env);
-      const ind = INDICATOR_BY_ID[r.rec.indId];
-      if (ind) {
-        const v = paramEditorMenuView(cfg, ind, r.rec.scope);
+      if (cfg.pairs[r.rec.pair]) {
+        const v = pairPanelView(cfg, r.rec.pair);
         await editMenu(env, chatId, r.rec.msgId, v.text, v.kb).catch(() => {});
       }
     } else if (r) {
@@ -630,7 +572,7 @@ async function onMessage(env, ctx, msg) {
     }
     return;
   }
-  await sendMessage(env, chatId, 'Send /menu to open the control panel.');
+  await sendMessage(env, chatId, 'Send /menu to open the panel.');
 }
 
 async function onCallback(env, ctx, cb) {
@@ -652,94 +594,111 @@ async function onCallback(env, ctx, cb) {
   const parts = data.split(':');
   const op = parts[0];
 
+  // Router ops (callback_data <= 64 bytes everywhere):
+  //   m:main | m:status      nav
+  //   pp                     pair picker
+  //   P:<pair>               full settings panel for one pair
+  //   pt:<pair>              toggle pair scanning
+  //   pa:on|off              all pairs scanning
+  //   tg:<pair>:<indId>      toggle indicator enabled (panel checkbox)
+  //   dr:<pair>:<indId>:<key>   open input dropdown
+  //   dv:<pair>:<indId>:<key>:<value>   set input value -> back to panel
+  //   dc:<pair>:<indId>:<key>   custom numeric input
+  //   td:<pair>              timeframe dropdown
+  //   ts:<pair>:<tf>         set timeframe -> back to panel
+  const pairArg = (i) => sanitizePair(parts[i] || '');
+
   if (op === 'm') {
-    const which = parts[1];
-    if (which === 'main') return finish(null, mainMenuView(env, cfg));
-    if (which === 'pairs') return finish(null, pairsMenuView(cfg));
-    if (which === 'ind') return finish(null, indScopeMenuView());
-    if (which === 'prm') return finish(null, paramsRootMenuView());
-    if (which === 'tf') return finish(null, tfScopeMenuView());
-    if (which === 'status') return finish(null, await statusView(env, cfg));
-    return finish(null, mainMenuView(env, cfg), 'Unknown section');
+    if (parts[1] === 'status') return finish(null, await statusView(env, cfg));
+    return finish(null, pairPickerView(cfg));
+  }
+
+  if (op === 'pp') return finish(null, pairPickerView(cfg));
+
+  if (op === 'P') {
+    const pair = pairArg(1);
+    if (!pair || !SCAN_PAIRS.includes(pair)) return finish(null, pairPickerView(cfg), 'Unknown pair');
+    return finish(null, pairPanelView(cfg, pair));
   }
 
   if (op === 'pt') {
-    const pair = sanitizePair(parts[1] || '');
-    if (!pair || !SCAN_PAIRS.includes(pair)) return finish(null, pairsMenuView(cfg), 'Unknown pair');
+    const pair = pairArg(1);
+    if (!pair || !SCAN_PAIRS.includes(pair)) return finish(null, pairPickerView(cfg), 'Unknown pair');
     const r = await togglePairScan(env, pair);
     const fresh = await getUtBotConfig(env);
-    return finish(null, pairsMenuView(fresh), r.ok ? r.toast : r.error);
+    return finish(null, pairPanelView(fresh, pair), r.ok ? r.toast : r.error);
   }
 
   if (op === 'pa') {
     const r = await setAllPairsScan(env, parts[1] === 'on');
     const fresh = await getUtBotConfig(env);
-    return finish(null, pairsMenuView(fresh), r.ok ? r.toast : r.error);
+    return finish(null, pairPickerView(fresh), r.ok ? r.toast : r.error);
   }
 
-  if (op === 'is') {
-    const scope = parts.slice(1).join(':');
-    if (!scopeTargets(scope)) return finish(null, indScopeMenuView(), 'Unknown scope');
-    return finish(null, indListMenuView(cfg, scope));
-  }
-
-  if (op === 'ir') {
-    const indId = parts[parts.length - 1];
-    const scope = parts.slice(1, parts.length - 1).join(':');
-    const r = await toggleIndicator(env, scope, indId);
+  if (op === 'tg') {
+    const pair = pairArg(1);
+    const indId = parts[2];
+    if (!pair || !SCAN_PAIRS.includes(pair) || !INDICATOR_BY_ID[indId]) {
+      return finish(null, pairPickerView(cfg), 'Unknown target');
+    }
+    const r = await toggleIndicator(env, pair, indId);
     const fresh = await getUtBotConfig(env);
-    return finish(null, indListMenuView(fresh, scope), r.ok ? r.toast : r.error);
+    return finish(null, pairPanelView(fresh, pair), r.ok ? r.toast : r.error);
   }
 
-  if (op === 'ps') {
-    const ind = INDICATOR_BY_ID[parts[1]];
-    if (!ind) return finish(null, paramsRootMenuView(), 'Unknown indicator');
-    return finish(null, paramsScopeMenuView(ind));
+  if (op === 'dr') {
+    const pair = pairArg(1);
+    const ind = INDICATOR_BY_ID[parts[2]];
+    const p = ind && (ind.params || []).find(x => x.key === parts[3]);
+    if (!pair || !SCAN_PAIRS.includes(pair) || !ind || !p) {
+      return finish(null, pairPickerView(cfg), 'Unknown input');
+    }
+    return finish(null, paramDropdownView(cfg, pair, ind, p));
   }
 
-  if (op === 'pe') {
-    const ind = INDICATOR_BY_ID[parts[1]];
-    const scope = parts.slice(2).join(':');
-    if (!ind || !scopeTargets(scope)) return finish(null, paramsRootMenuView(), 'Unknown editor');
-    return finish(null, paramEditorMenuView(cfg, ind, scope));
-  }
-
-  if (op === 'pv') {
-    const indId = parts[1];
-    const scope = parts[2];
+  if (op === 'dv') {
+    const pair = pairArg(1);
+    const indId = parts[2];
     const key = parts[3];
     const value = parts.slice(4).join(':');
-    const r = await setParam(env, indId, scope, key, value);
+    if (!pair || !SCAN_PAIRS.includes(pair) || !INDICATOR_BY_ID[indId]) {
+      return finish(null, pairPickerView(cfg), 'Unknown input');
+    }
+    const r = await setParam(env, indId, pair, key, value);
     const fresh = await getUtBotConfig(env);
-    const ind = INDICATOR_BY_ID[indId];
-    const view = ind && scopeTargets(scope) ? paramEditorMenuView(fresh, ind, scope) : paramsRootMenuView();
-    return finish(null, view, r.ok ? r.toast : r.error);
+    return finish(null, pairPanelView(fresh, pair), r.ok ? r.toast : r.error);
   }
 
-  if (op === 'aw') {
-    const indId = parts[1];
-    const scope = parts[2];
+  if (op === 'dc') {
+    const pair = pairArg(1);
+    const indId = parts[2];
     const key = parts[3];
-    const r = await requestCustomInput(env, chatId, msgId, indId, scope, key);
-    if (!r.ok) return finish(null, paramsRootMenuView(), r.error);
+    if (!pair || !SCAN_PAIRS.includes(pair) || !INDICATOR_BY_ID[indId]) {
+      return finish(null, pairPickerView(cfg), 'Unknown input');
+    }
+    const r = await requestCustomInput(env, chatId, msgId, pair, indId, key);
+    if (!r.ok) return finish(null, pairPanelView(cfg, pair), r.error);
     return finish(null, { text: r.text, kb: r.kb });
   }
 
-  if (op === 'tx') {
-    const scope = parts.slice(1).join(':');
-    if (!scopeTargets(scope)) return finish(null, tfScopeMenuView(), 'Unknown scope');
-    return finish(null, tfSetMenuView(cfg, scope));
+  if (op === 'td') {
+    const pair = pairArg(1);
+    if (!pair || !SCAN_PAIRS.includes(pair)) return finish(null, pairPickerView(cfg), 'Unknown pair');
+    return finish(null, tfDropdownView(cfg, pair));
   }
 
-  if (op === 'tset') {
-    const scope = parts[1];
+  if (op === 'ts') {
+    const pair = pairArg(1);
     const tf = parts[2];
-    const r = await setTimeframe(env, scope, tf);
+    if (!pair || !SCAN_PAIRS.includes(pair)) return finish(null, pairPickerView(cfg), 'Unknown pair');
+    const r = await setTimeframe(env, pair, tf);
     const fresh = await getUtBotConfig(env);
-    return finish(null, tfSetMenuView(fresh, scope), r.ok ? r.toast : r.error);
+    return finish(null, pairPanelView(fresh, pair), r.ok ? r.toast : r.error);
   }
 
-  return finish(null, mainMenuView(env, cfg), 'Unknown action');
+  // Anything else (buttons from older panel versions still sitting in the
+  // chat): land the user on the current picker instead of erroring.
+  return finish(null, pairPickerView(cfg, 'This button is from an older panel - tap a pair below.'), 'Menu updated');
 }
 
 // ── webhook receiver + registration ─────────────────────────────────────────
