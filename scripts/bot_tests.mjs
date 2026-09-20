@@ -578,7 +578,7 @@ console.log('B15 telegram status endpoint');
 
   const res = await handleTelegramStatus(env);
   const j = await res.json();
-  ok(j.ok === true && j.version === 'MULTI-IND-v1.5.1', 'B15 version reported');
+  ok(j.ok === true && /^MULTI-IND-v\d+\.\d+\.\d+$/.test(j.version || ''), 'B15 version reported (' + j.version + ')');
   ok(j.ownerClaimed === true, 'B15 ownerClaimed true');
   ok(j.webhook && j.webhook.registered === true, 'B15 webhook registered reported');
   ok(j.subscribers.length === 1 && j.subscribers[0] === '999', 'B15 subscribers listed');

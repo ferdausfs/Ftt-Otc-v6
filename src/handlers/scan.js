@@ -295,6 +295,7 @@ async function emitEvents(pair, cfg, pending, env) {
         sig.signalId = record.id;
         items.push({
           ind,
+          name: ind.name,   // belt-and-braces: formatter must never print "undefined"
           sig,
           record,
           label: ind.eventLabel(event.type),
