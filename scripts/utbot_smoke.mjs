@@ -226,12 +226,21 @@ async function main() {
       ok(postJson.ok === true && postJson.config.pairs['BTC/USD'].enabled === false, 'S5 POST merge-write disables BTC/USD');
       ok(postJson.config.pairs['ETH/USD'].enabled === true, 'S5 other pairs untouched (merge, not replace)');
 
+      // v1.5.0: the accepted universe is the full pair catalog — DOGE/USD is
+      // now a VALID pair. Genuinely invalid input = OTC (real markets only)
+      // or currencies outside the sanitizer vocabularies.
       const badReq = new Request('https://w/api/utbot/config', {
         method: 'POST',
-        body: JSON.stringify({ pairs: { 'DOGE/USD': { enabled: true } } }),
+        body: JSON.stringify({ pairs: { 'EUR/USD-OTC': { enabled: true } } }),
       });
       const badRes = await handleUtBotConfigPost(badReq, env);
-      ok(badRes.status === 400, 'S5 unknown pair rejected 400');
+      ok(badRes.status === 400, 'S5 OTC pair rejected 400');
+      const badReq2 = new Request('https://w/api/utbot/config', {
+        method: 'POST',
+        body: JSON.stringify({ pairs: { 'XXX/YYY': { enabled: true } } }),
+      });
+      const badRes2 = await handleUtBotConfigPost(badReq2, env);
+      ok(badRes2.status === 400, 'S5 unknown-currency pair rejected 400');
 
       const getRes = await handleUtBotConfigGet(env);
       const cfgJson = await getRes.json();

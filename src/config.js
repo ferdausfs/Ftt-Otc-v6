@@ -12,7 +12,7 @@
 
 export const CONFIG = {
   ENGINE: 'UT-BOT',              // primary engine (history ledger back-compat)
-  VERSION: 'MULTI-IND-v1.4.0',
+  VERSION: 'MULTI-IND-v1.5.0',
 
   API_BASE_URL: 'https://api.twelvedata.com',
   REQUEST_TIMEOUT: 12000,
@@ -75,6 +75,16 @@ export const SCAN_PAIRS = [
   'BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD',
   'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD',
 ];
+
+/**
+ * Pairs seeded ENABLED in the KV config store — the audited 8. The bot's
+ * full universe is much larger (src/utils/pairCatalog.js: majors, minors,
+ * exotics, crypto — everything TwelveData serves and the sanitizer accepts);
+ * those extra pairs are seeded enabled:false and switched on from the
+ * Telegram panel (Select Pair / Search). Keeping the default scan set fixed
+ * protects the TwelveData quota: only user-enabled pairs consume credits.
+ */
+export const DEFAULT_ENABLED_PAIRS = SCAN_PAIRS.slice();
 
 /** every-15-minutes scanner settings (cadence = the 15-min cron; the engine
  *  emits UT Bot events on candle closes instead of FTT3 boundary conditions). */

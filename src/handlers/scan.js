@@ -30,6 +30,7 @@
 
 import { CONFIG, SCAN_PAIRS, SCAN_CONFIG, ASSET_TYPE } from '../config.js';
 import { sanitizePair, getAssetType } from '../utils/pairs.js';
+import { CATALOG_PAIRS } from '../utils/pairCatalog.js';
 import { isForexMarketOpen } from '../utils/session.js';
 import { fetchCandlesWithCache, fetchCandles } from '../fetch/candles.js';
 import { lastClosedIndexTf, TF_MS } from '../strategy/utBotAlerts.mjs';
@@ -81,6 +82,19 @@ export function selectActivePairs(pairs = SCAN_PAIRS, forexOpen = isForexMarketO
     active.push(pair);
   }
   return active;
+}
+
+/**
+ * Enabled pairs straight from the config store (catalog order first, custom
+ * search-added pairs after). The universe is NOT limited to the default 8 —
+ * pairs switched on from the Telegram panel are scanned exactly the same.
+ */
+export function enabledPairsFromConfig(cfg) {
+  const pairs = (cfg && cfg.pairs) || {};
+  const keys = CATALOG_PAIRS.filter(p => pairs[p]).concat(
+    Object.keys(pairs).filter(p => !CATALOG_PAIRS.includes(p)).sort(),
+  );
+  return keys.filter(p => pairs[p] && pairs[p].enabled === true);
 }
 
 /**
@@ -314,7 +328,10 @@ async function emitEvents(pair, cfg, pending, env) {
 export async function scanOnePair(pair, generationId, env, ctx, opts = {}) {
   try {
     const cfg = (await getUtBotConfig(env)).pairs[pair];
-    if (!cfg || cfg.enabled !== true) return null;   // per-pair gate (app toggle)
+    // Per-pair gate (app/bot toggle). opts.force previews a disabled pair
+    // (bot "Scan now"): evaluate WITHOUT pushing and without recording
+    // events, so nothing reaches subscribers for a pair that is off.
+    if (!cfg || (cfg.enabled !== true && !opts.force)) return null;
 
     const now = opts.now || Date.now();
     const lastScanT = await getLastScanT(env, pair);
@@ -352,7 +369,8 @@ export async function scheduledScan(env, ctx) {
   const generationId = 'gen_' + Date.now().toString(36);
   const cfg = await getUtBotConfig(env);
   // Config gate first: disabled pairs are skipped entirely (no fetch).
-  const enabledPairs = SCAN_PAIRS.filter(p => cfg.pairs[p] && cfg.pairs[p].enabled === true);
+  // Universe = every config pair (catalog + custom), not just the default 8.
+  const enabledPairs = enabledPairsFromConfig(cfg);
   const activePairs = selectActivePairs(enabledPairs);
   let ok = 0, failed = 0, processed = 0;
 

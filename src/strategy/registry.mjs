@@ -54,6 +54,7 @@ export const INDICATORS = [
   {
     id: 'utbot',
     name: 'UT Bot Alerts',
+    icon: '\uD83D\uDCC8',
     engineTag: 'UT-BOT',
     defaultCfg: { enabled: true },
     compute(candles, cfg, meta) {
@@ -79,15 +80,16 @@ export const INDICATORS = [
     // TradingView inputs: Key Value (a) and ATR Period (c). Pair-level
     // config keys (utbot:config -> pairs.<PAIR>.a / .c).
     params: [
-      { key: 'a', label: 'Key Value (a)', kind: 'number', min: 0.1, max: 20,
+      { key: 'a', label: 'Key Value (a)', icon: '\uD83D\uDD11', kind: 'number', min: 0.1, max: 20,
         presets: [0.5, 1, 1.5, 2, 3], path: 'pair' },
-      { key: 'c', label: 'ATR Period (c)', kind: 'int', min: 1, max: 200,
+      { key: 'c', label: 'ATR Period (c)', icon: '\uD83D\uDCCF', kind: 'int', min: 1, max: 200,
         presets: [5, 7, 9, 10, 14, 20], path: 'pair' },
     ],
   },
   {
     id: 'mkr',
     name: 'Multi Kernel Regression',
+    icon: '\uD83D\uDCCA',
     engineTag: 'MKR',
     defaultCfg: { enabled: true, kernel: 'Laplace', bandwidth: 14 },
     compute(candles, cfg, meta) {
@@ -123,9 +125,9 @@ export const INDICATORS = [
     // TradingView inputs: Kernel select + Bandwidth. Indicator-level config
     // keys (utbot:config -> pairs.<PAIR>.indicators.mkr.<key>).
     params: [
-      { key: 'kernel', label: 'Kernel', kind: 'enum', options: MKR_KERNELS,
-        perRow: 2, path: 'ind' },
-      { key: 'bandwidth', label: 'Bandwidth', kind: 'int', min: 1, max: 200,
+      { key: 'kernel', label: 'Kernel', icon: '\uD83C\uDF08', kind: 'enum', options: MKR_KERNELS,
+        perRow: 1, path: 'ind' },
+      { key: 'bandwidth', label: 'Bandwidth', icon: '\u2194\uFE0F', kind: 'int', min: 1, max: 200,
         presets: [7, 10, 14, 20, 28, 50], path: 'ind' },
     ],
   },

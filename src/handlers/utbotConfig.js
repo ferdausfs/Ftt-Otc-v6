@@ -37,8 +37,9 @@
  * secret. The response never echoes the secret.
  */
 
-import { CONFIG, SCAN_PAIRS } from '../config.js';
+import { CONFIG, DEFAULT_ENABLED_PAIRS } from '../config.js';
 import { sanitizePair } from '../utils/pairs.js';
+import { CATALOG_PAIRS, isKnownPair } from '../utils/pairCatalog.js';
 import { jsonResponse } from '../utils/helpers.js';
 import { INDICATORS } from '../strategy/registry.mjs';
 import { MKR_KERNELS } from '../strategy/multiKernelRegression.mjs';
@@ -90,6 +91,18 @@ export function defaultPairConfig() {
   };
 }
 
+/**
+ * Seed config for one universe pair: TradingView defaults everywhere, but
+ * scanning OFF unless the pair is in the audited default set (quota guard —
+ * extra catalog pairs are switched on explicitly from the bot panel).
+ */
+export function seedPairConfig(pair) {
+  return {
+    ...defaultPairConfig(),
+    enabled: DEFAULT_ENABLED_PAIRS.includes(pair),
+  };
+}
+
 function sanitizePairConfig(raw) {
   const d = defaultPairConfig();
   if (!raw || typeof raw !== 'object') return d;
@@ -110,10 +123,10 @@ function sanitizePairConfig(raw) {
   return out;
 }
 
-/** Read the config store, merged over defaults for every scanned pair. */
+/** Read the config store, merged over defaults for the FULL pair universe. */
 export async function getUtBotConfig(env) {
   const pairs = {};
-  for (const p of SCAN_PAIRS) pairs[p] = defaultPairConfig();
+  for (const p of CATALOG_PAIRS) pairs[p] = seedPairConfig(p);
   let stored = null;
   if (env && env.SIGNAL_CACHE) {
     try { stored = await env.SIGNAL_CACHE.get(CONFIG.UTBOT.KV_CONFIG_KEY, 'json'); }
@@ -122,7 +135,11 @@ export async function getUtBotConfig(env) {
   if (stored && typeof stored === 'object' && stored.pairs && typeof stored.pairs === 'object') {
     for (const key of Object.keys(stored.pairs)) {
       const pair = sanitizePair(key);
-      if (pair && pairs[pair] !== undefined) pairs[pair] = sanitizePairConfig(stored.pairs[key]);
+      if (!pair || !isKnownPair(pair)) continue;   // OTC / junk never re-enters
+      // Custom pairs (added via panel search) persist even though they are
+      // not in the curated catalog.
+      if (pairs[pair] === undefined) pairs[pair] = seedPairConfig(pair);
+      pairs[pair] = sanitizePairConfig(stored.pairs[key]);
     }
   }
   return { version: 1, updatedAt: stored && stored.updatedAt ? stored.updatedAt : null, pairs };
@@ -168,9 +185,12 @@ export async function mergePairPatch(env, patchPairs) {
   const updates = {};
   for (const key of Object.keys(patchPairs)) {
     const pair = sanitizePair(key);
-    if (!pair || current.pairs[pair] === undefined) {
+    if (!pair || !isKnownPair(pair)) {
       return { ok: false, error: 'unknown pair: "' + key + '"' };
     }
+    // Search-added pairs are not seeded yet — create them on first patch
+    // (enabled:false unless in the audited default set, same as the store).
+    if (current.pairs[pair] === undefined) current.pairs[pair] = seedPairConfig(pair);
     const base = current.pairs[pair];
     const patch = patchPairs[key] && typeof patchPairs[key] === 'object' ? patchPairs[key] : {};
     const merged = { ...base, ...patch };
