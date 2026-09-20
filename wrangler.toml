@@ -2,6 +2,11 @@ name = "fttotcv6"
 main = "src/index.js"
 compatibility_date = "2025-01-01"
 
+[vars]
+# The worker's own public URL — used for Telegram webhook self-registration
+# (ensureTelegramWebhook compares getWebhookInfo against WORKER_URL).
+WORKER_URL = "https://fttotcv6.umuhammadiswa.workers.dev"
+
 [[kv_namespaces]]
 binding = "SIGNAL_CACHE"
 id = "f553a3f10915478fa1b8165dd58ff6ea"

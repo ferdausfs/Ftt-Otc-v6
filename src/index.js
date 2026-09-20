@@ -18,6 +18,12 @@
  *   every 15 min -> signal scanner (events on 15-minute candle closes;
  *           1min/5min-timeframe pairs surface on the next tick). The old
  *           2-minute result checker is retired — results are never messaged.
+ *
+ * Telegram bot UI (src/handlers/telegramBot.js):
+ *   POST /api/telegram/webhook — inline-keyboard control panel (pairs,
+ *           indicators, params, timeframe). Self-registered by the worker
+ *           on each scan tick via ensureTelegramWebhook() and verifiable
+ *           through /api/telegram/status.
  */
 
 import { CORS_HEADERS, applyCors } from './utils/cors.js';
@@ -31,12 +37,21 @@ import { handleLatest } from './handlers/latest.js';
 import {
   handleUtBotConfigGet, handleUtBotConfigPost,
 } from './handlers/utbotConfig.js';
+import {
+  handleTelegramUpdate, handleTelegramSetup, handleTelegramStatus, ensureTelegramWebhook,
+} from './handlers/telegramBot.js';
 import { scheduledTracker } from './history/store.js';
 
 export default {
   async scheduled(event, env, ctx) {
     const cron = event && event.cron;
     if (cron === '*/15 * * * *') {
+      // Self-heal the Telegram webhook first (cheap: one getWebhookInfo
+      // call when already registered). Never let it break the scan.
+      try {
+        const wh = await ensureTelegramWebhook(env);
+        if (!wh.ok) console.warn('webhook ensure failed: ' + (wh.error || wh.reason));
+      } catch (e) { console.warn('webhook ensure threw: ' + e.message); }
       // Awaited on purpose: nested waitUntil can freeze the isolate before
       // Telegram sendMessage completes (lesson from the previous engine).
       await scheduledScan(env, ctx);
@@ -101,6 +116,17 @@ export default {
           ? await handleUtBotConfigPost(request, env)
           : await handleUtBotConfigGet(env);
 
+      } else if (path === '/api/telegram/webhook' && request.method === 'POST') {
+        // No rate limit, no CORS — Telegram's servers call this, verified
+        // by the secret-token header inside the handler.
+        response = await handleTelegramUpdate(request, env, ctx);
+
+      } else if (path === '/api/telegram/setup') {
+        response = await handleTelegramSetup(request, env);
+
+      } else if (path === '/api/telegram/status') {
+        response = await handleTelegramStatus(env);
+
       } else if (path === '/api/batch') {
         response = await handleBatch(url, env, ctx);
 
@@ -127,6 +153,9 @@ export default {
             latestOne: '/api/signals/latest?pair=BTC/USD',
             batch: '/api/batch?pairs=EUR/USD,BTC/USD',
             utbotConfig: '/api/utbot/config (GET read, POST merge-write; per-indicator toggles under pairs.<PAIR>.indicators)',
+            telegramWebhook: '/api/telegram/webhook (POST, Telegram-only, secret-header verified)',
+            telegramSetup: '/api/telegram/setup?key=<one-time key> (registers webhook + seeds panel owner)',
+            telegramStatus: '/api/telegram/status (webhook/owner diagnostics, no secrets)',
             pairs: '/api/pairs',
             history: '/api/history?pair=EUR/USD&limit=20',
             stats: '/api/stats?pair=EUR/USD',

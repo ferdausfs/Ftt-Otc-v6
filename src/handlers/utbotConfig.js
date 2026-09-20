@@ -150,6 +150,58 @@ export async function handleUtBotConfigGet(env) {
 }
 
 /**
+ * Programmatic merge-write used by BOTH the HTTP handler and the Telegram
+ * bot UI (src/handlers/telegramBot.js). Patches are partial per-pair
+ * entries merged over current values; the nested `indicators` object is
+ * deep-merged per indicator id so a partial patch like
+ * { indicators: { mkr: { enabled: false } } } never resets a previously
+ * stored mkr.bandwidth back to default (a plain shallow spread would).
+ *
+ * @returns {{ ok: true, config: object } | { ok: false, error: string }}
+ */
+export async function mergePairPatch(env, patchPairs) {
+  if (!env || !env.SIGNAL_CACHE) return { ok: false, error: 'no KV' };
+  if (!patchPairs || typeof patchPairs !== 'object' || Object.keys(patchPairs).length === 0) {
+    return { ok: false, error: 'empty patch' };
+  }
+  const current = await getUtBotConfig(env);
+  const updates = {};
+  for (const key of Object.keys(patchPairs)) {
+    const pair = sanitizePair(key);
+    if (!pair || current.pairs[pair] === undefined) {
+      return { ok: false, error: 'unknown pair: "' + key + '"' };
+    }
+    const base = current.pairs[pair];
+    const patch = patchPairs[key] && typeof patchPairs[key] === 'object' ? patchPairs[key] : {};
+    const merged = { ...base, ...patch };
+    // Deep-merge indicators one level: indicators.<id>.<key>.
+    if ('indicators' in patch || 'indicators' in base) {
+      const ids = new Set([
+        ...Object.keys(base.indicators || {}),
+        ...Object.keys(patch.indicators || {}),
+      ]);
+      const ind = {};
+      for (const id of ids) {
+        ind[id] = {
+          ...(base.indicators && base.indicators[id] ? base.indicators[id] : {}),
+          ...(patch.indicators && patch.indicators[id] && typeof patch.indicators[id] === 'object'
+            ? patch.indicators[id] : {}),
+        };
+      }
+      merged.indicators = ind;
+    }
+    updates[pair] = sanitizePairConfig(merged);
+  }
+  const next = { version: 1, updatedAt: new Date().toISOString(), pairs: { ...current.pairs, ...updates } };
+  try {
+    await env.SIGNAL_CACHE.put(CONFIG.UTBOT.KV_CONFIG_KEY, JSON.stringify(next));
+  } catch (e) {
+    return { ok: false, error: 'KV write failed: ' + e.message };
+  }
+  return { ok: true, config: next };
+}
+
+/**
  * POST /api/utbot/config — merge-write per-pair entries.
  * Body: { pairs: { "BTC/USD": { enabled: false }, ... } } (partial entries
  * are merged over current values; unknown pairs rejected; full objects
@@ -157,28 +209,18 @@ export async function handleUtBotConfigGet(env) {
  */
 export async function handleUtBotConfigPost(request, env) {
   if (!authorized(request, env)) return jsonResponse({ error: true, message: 'unauthorized' }, 401);
-  if (!env || !env.SIGNAL_CACHE) return jsonResponse({ error: true, message: 'no KV' }, 503);
   let body = null;
   try { body = await request.json(); } catch (e) { body = null; }
   if (!body || typeof body !== 'object' || !body.pairs || typeof body.pairs !== 'object') {
     return jsonResponse({ error: true, message: 'body must be { pairs: { "<PAIR>": { enabled|timeframe|a|c|indicators } } }' }, 400);
   }
-  const current = await getUtBotConfig(env);
-  const updates = {};
-  for (const key of Object.keys(body.pairs)) {
-    const pair = sanitizePair(key);
-    if (!pair || current.pairs[pair] === undefined) {
-      return jsonResponse({ error: true, message: 'unknown pair: "' + key + '"' }, 400);
-    }
-    updates[pair] = sanitizePairConfig({ ...current.pairs[pair], ...body.pairs[key] });
+  const r = await mergePairPatch(env, body.pairs);
+  if (!r.ok) {
+    const status = r.error.startsWith('unknown pair') ? 400
+      : r.error === 'no KV' ? 503 : 500;
+    return jsonResponse({ error: true, message: r.error }, status);
   }
-  const next = { version: 1, updatedAt: new Date().toISOString(), pairs: { ...current.pairs, ...updates } };
-  try {
-    await env.SIGNAL_CACHE.put(CONFIG.UTBOT.KV_CONFIG_KEY, JSON.stringify(next));
-  } catch (e) {
-    return jsonResponse({ error: true, message: 'KV write failed: ' + e.message }, 500);
-  }
-  return jsonResponse({ ok: true, engine: CONFIG.ENGINE, config: next });
+  return jsonResponse({ ok: true, engine: CONFIG.ENGINE, config: r.config });
 }
 
 // ── event-emission idempotency state ────────────────────────────────────────

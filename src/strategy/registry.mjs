@@ -30,10 +30,25 @@
  *   detail(audit)         one-line detail for combined Telegram messages
  *   snapshot(series, i, icfg)
  *               per-candle state for the latest-cache / API responses
+ *   params[]              editable-parameter descriptors for the Telegram
+ *               bot UI (src/handlers/telegramBot.js renders menus from
+ *               these — a future indicator's params become editable in
+ *               the bot with zero bot-side code):
+ *                 key      config key (pair-level for path 'pair',
+ *                          indicators.<id>.<key> for path 'ind')
+ *                 label    human name shown on the button row
+ *                 kind     'number' | 'int' | 'enum'
+ *                 min/max  numeric bounds (inclusive)
+ *                 presets  quick-pick button values (optional)
+ *                 options  enum values (kind 'enum')
+ *                 path     'pair' (pairs.<PAIR>.<key>) | 'ind'
+ *                          (pairs.<PAIR>.indicators.<id>.<key>)
+ *
+ * The scanner/pipeline never reads `params` — it is bot-UI metadata only.
  */
 
 import { computeUtBot, eventToSignal } from './utBotAlerts.mjs';
-import { computeMultiKernelRegression, mkrEventToSignal } from './multiKernelRegression.mjs';
+import { computeMultiKernelRegression, mkrEventToSignal, MKR_KERNELS } from './multiKernelRegression.mjs';
 
 export const INDICATORS = [
   {
@@ -61,6 +76,14 @@ export const INDICATORS = [
       if (!audit || audit.stop === undefined || audit.stop === null) return '';
       return 'trailing stop ' + audit.stop;
     },
+    // TradingView inputs: Key Value (a) and ATR Period (c). Pair-level
+    // config keys (utbot:config -> pairs.<PAIR>.a / .c).
+    params: [
+      { key: 'a', label: 'Key Value (a)', kind: 'number', min: 0.1, max: 20,
+        presets: [0.5, 1, 1.5, 2, 3], path: 'pair' },
+      { key: 'c', label: 'ATR Period (c)', kind: 'int', min: 1, max: 200,
+        presets: [5, 7, 9, 10, 14, 20], path: 'pair' },
+    ],
   },
   {
     id: 'mkr',
@@ -97,6 +120,14 @@ export const INDICATORS = [
       return 'kernel MA ' + audit.value
         + (audit.kernel ? ' (' + audit.kernel + ' x' + audit.bandwidth + ')' : '');
     },
+    // TradingView inputs: Kernel select + Bandwidth. Indicator-level config
+    // keys (utbot:config -> pairs.<PAIR>.indicators.mkr.<key>).
+    params: [
+      { key: 'kernel', label: 'Kernel', kind: 'enum', options: MKR_KERNELS,
+        perRow: 2, path: 'ind' },
+      { key: 'bandwidth', label: 'Bandwidth', kind: 'int', min: 1, max: 200,
+        presets: [7, 10, 14, 20, 28, 50], path: 'ind' },
+    ],
   },
 ];
 
