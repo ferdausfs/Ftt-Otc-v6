@@ -1,18 +1,23 @@
 /**
- * FTT Signal Worker UT-BOT-v1.0.0 — entry point.
+ * FTT Signal Worker MULTI-IND-v1.2.0 — entry point.
  *
- * Engine: UT Bot Alerts (src/strategy/utBotAlerts.mjs) — an exact port of the
- * TradingView indicator (defaults a=1, c=10, Heikin Ashi off), emitting
- * buy/sell events on candle closes. The retired FTT3 engine stays in the
- * repo for the audit record (src/strategy/engine.mjs) but is no longer part
- * of the live path. Backtest win-rate framing does NOT apply to this engine:
- * the bar is exact behavioral match to TradingView, proven by
- * scripts/utbot_tests.mjs + scripts/utbot_tv_diff.mjs.
+ * Indicators (src/strategy/registry.mjs — the plug-in seam):
+ *   - UT Bot Alerts (src/strategy/utBotAlerts.mjs) — exact port of the
+ *     TradingView indicator (defaults a=1, c=10), buy/sell on candle closes.
+ *     Bar-by-bar match to TradingView proven by scripts/utbot_tests.mjs +
+ *     scripts/utbot_tv_diff.mjs.
+ *   - Multi Kernel Regression [ChartPrime] (src/strategy/
+ *     multiKernelRegression.mjs) — non-repaint port, Up/Down labels on the
+ *     kernel-MA slope flip. Proven by scripts/mkr_tests.mjs.
  *
- * Crons:
- *   * /15 -> signal scanner (UT Bot events on 15-minute candle closes;
- *           1min/5min-timeframe pairs surface events on the next tick)
- *   * /2  -> result checker (resolves expired signals against the 1m feed)
+ * CFD style (2026-09-19/20): each indicator speaks ONLY its own output in
+ * its own words; signals carry NO expiry and produce NO WIN/LOSS messages.
+ * Indicators firing on the same closed candle share one combined message.
+ *
+ * Cron:
+ *   every 15 min -> signal scanner (events on 15-minute candle closes;
+ *           1min/5min-timeframe pairs surface on the next tick). The old
+ *           2-minute result checker is retired — results are never messaged.
  */
 
 import { CORS_HEADERS, applyCors } from './utils/cors.js';
@@ -37,13 +42,10 @@ export default {
       await scheduledScan(env, ctx);
       return;
     }
-    if (cron && cron !== '*/2 * * * *') {
-      console.warn('scheduled: unrecognised cron "' + cron + '", running result checker');
-    }
+    // Any other cron (legacy */2 is retired from wrangler.toml): silently
+    // drain any stale pre-CFD pending records — NEVER message results.
+    if (cron) console.warn('scheduled: unrecognised cron "' + cron + '", legacy pending drain');
     const t = await scheduledTracker(env);
-    // CFD mode (2026-09-19): the tracker only drains legacy pending records
-    // into the stats ledger — results are NEVER messaged. The indicator's
-    // sole output is the BUY/SELL event; no WIN/LOSS notifications exist.
     if (t && Array.isArray(t.resolved) && t.resolved.length > 0) {
       console.log('scheduled: resolved ' + t.resolved.length + ' legacy pending record(s) silently (CFD mode: no result push)');
     }
@@ -117,14 +119,14 @@ export default {
       } else {
         response = jsonResponse({
           status: 'ok',
-          message: 'FTT Signal Worker ' + CONFIG.VERSION + ' — UT Bot Alerts (exact TradingView port), no OTC',
+          message: 'FTT Signal Worker ' + CONFIG.VERSION + ' — UT Bot Alerts + Multi Kernel Regression (CFD style, no expiry/results)',
           endpoints: {
             health: '/',
             signal: '/api/signal?pair=EUR/USD',
             latestAll: '/api/signals/latest',
             latestOne: '/api/signals/latest?pair=BTC/USD',
             batch: '/api/batch?pairs=EUR/USD,BTC/USD',
-            utbotConfig: '/api/utbot/config (GET read, POST merge-write)',
+            utbotConfig: '/api/utbot/config (GET read, POST merge-write; per-indicator toggles under pairs.<PAIR>.indicators)',
             pairs: '/api/pairs',
             history: '/api/history?pair=EUR/USD&limit=20',
             stats: '/api/stats?pair=EUR/USD',

@@ -11,8 +11,8 @@
  */
 
 export const CONFIG = {
-  ENGINE: 'UT-BOT',
-  VERSION: 'UT-BOT-v1.0.0',
+  ENGINE: 'UT-BOT',              // primary engine (history ledger back-compat)
+  VERSION: 'MULTI-IND-v1.2.0',
 
   API_BASE_URL: 'https://api.twelvedata.com',
   REQUEST_TIMEOUT: 12000,
@@ -23,24 +23,23 @@ export const CONFIG = {
   // 300 bars = UT Bot lead-in depth (see CONFIG.UTBOT.WINDOW_BARS).
   FETCH_LIMITS: { '1min': 300, '5min': 300, '15min': 300 },
   // KV cache TTL per interval (seconds). 1min stays just under one candle so
-  // the */2 result checker always sees a fresh last candle.
+  // manual re-polls always see a fresh last candle.
   CACHE_TTL: { '1min': 50, '5min': 240, '15min': 840 },
 
   // Rate limiting (middleware/rateLimit.js — unchanged plumbing).
   RATE_LIMIT_WINDOW_SECONDS: 60,
   RATE_LIMIT_MAX_REQUESTS: 30,
 
-  // ── UT Bot Alerts (live engine) ──────────────────────────────────────────
+  // ── UT Bot Alerts (primary indicator) ─────────────────────────────────────
   // Indicator defaults = TradingView defaults (a=1 Key Value, c=10 ATR
   // period, Heikin Ashi out of scope). Per-pair overrides come from the KV
   // config store (utbot:config), written by the app's toggle UI.
+  // CFD mode: NO expiry anywhere — a setup stands until the indicator flips.
   UTBOT: {
     TIMEFRAMES: ['1min', '5min', '15min'],
     DEFAULT_TIMEFRAME: '15min',
     DEFAULT_A: 1,
     DEFAULT_C: 10,
-    DEFAULT_EXPIRY_MINUTES: 5,   // record-keeping/result tracking only —
-                                 // NOT part of the indicator logic
     KV_CONFIG_KEY: 'utbot:config',
     KV_LASTSCAN_PREFIX: 'utbot:lastscan:',
     // Window depth: the Wilder ATR / trailing-stop recursion is path-
@@ -50,6 +49,17 @@ export const CONFIG = {
     WINDOW_BARS: 300,
     LAG_RETRIES: 3,              // same boundary-lag retry contract as before
     LAG_SLEEP_MS: 5000,
+  },
+
+  // ── Multi Kernel Regression [ChartPrime] (second indicator) ──────────────
+  // Non-repaint port (src/strategy/multiKernelRegression.mjs): kernel-
+  // weighted MA of the last `bandwidth` closes; labels "Up"/"Down" on the
+  // MA's slope flip (ta.crossover/crossunder vs its own prior value).
+  // Defaults = TradingView defaults (Laplace, bandwidth 14, source close).
+  MKR: {
+    DEFAULT_KERNEL: 'Laplace',
+    DEFAULT_BANDWIDTH: 14,
+    DEFAULT_DEVIATIONS: 2.0,
   },
 };
 
@@ -77,16 +87,18 @@ export const SCAN_CONFIG = {
   SCAN_INTERVAL_SECONDS: 900,     // mirrors the */15 cron
 };
 
-/** Signal history + result checking (KV layout unchanged from the old worker). */
+/** Signal history ledger (KV layout unchanged; results are never messaged). */
 export const HISTORY_CONFIG = {
   MAX_SIGNALS_PER_PAIR: 500,
   WIN_RATE_LOOKBACK: 20,
-  RESULT_CHECK_DELAY: 90,         // seconds after expiryTime before first check
   KV_SIGNAL_PREFIX: 'sig:',
   KV_STATS_PREFIX: 'stats:',
   KV_PENDING_PREFIX: 'pending:',
   PENDING_TTL_MS: 2 * 60 * 60 * 1000,
   PENDING_MAX_CHECKS: 10,         // transient-fetch retry budget before UNKNOWN
+  // Legacy only: the pre-CFD checker is retired (no */2 cron); the tracker
+  // drains any stale pending:<id> records silently if ever invoked.
+  RESULT_CHECK_DELAY: 90,
 };
 
 // ── Asset vocabularies (unchanged — the pair sanitizer depends on these) ────

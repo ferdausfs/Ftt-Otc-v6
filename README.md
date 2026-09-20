@@ -134,9 +134,13 @@ behavioral match to TradingView's own indicator output, verified bar-by-bar:
 (`h=true`) is NOT implemented — the port computes the `h=false` raw-close path
 only, which is the indicator's default. Enable per pair via
 `/api/utbot/config` (GET read / POST merge-write; per-pair `enabled`,
-`timeframe` 1min/5min/15min, `a`, `c`, `expiryMinutes`). `expiryMinutes`
-only drives the existing result-tracking records — it is not part of the
-indicator logic. Signals correspond to TradingView **bar-close confirmation**
+`timeframe` 1min/5min/15min, `a`, `c`, and per-indicator toggles under
+`indicators` — e.g. `indicators.mkr.{enabled,kernel,bandwidth}` for the
+Multi Kernel Regression [ChartPrime] port). CFD mode: there is NO expiry and
+NO win/loss tracking — a setup stands until the indicator flips to the
+opposite event, and each indicator speaks only its own output (UT Bot says
+BUY/SELL; MKR says UP/DOWN; simultaneous events share one combined Telegram
+message). Signals correspond to TradingView **bar-close confirmation**
 (the marker as it stands once the candle closes; intrabar flicker of the live
 bar is deliberately not reproduced). Events on a 1min-timeframe pair surface
-on the next 5-minute scan tick.
+on the next 15-minute scan tick.

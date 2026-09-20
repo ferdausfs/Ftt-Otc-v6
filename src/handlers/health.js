@@ -26,18 +26,34 @@ export async function handleHealth(env) {
     version: CONFIG.VERSION,
     engine: {
       name: CONFIG.ENGINE,
-      conditions: [
-        'UT Bot Alerts (exact TradingView port, defaults a=1, c=10): trailing-stop flip on candle close',
-        'buy = close crosses above trailing stop, sell = close crosses below (close-confirmed, no repaint)',
-        'scan cadence: every 15 minutes; events emitted on the 15-minute candle close boundary',
+      indicators: [
+        {
+          id: 'utbot',
+          name: 'UT Bot Alerts',
+          conditions: [
+            'exact TradingView port (defaults a=1, c=10): trailing-stop flip on candle close',
+            'buy = close crosses above trailing stop, sell = close crosses below (close-confirmed, no repaint)',
+            'exact behavioral match to TradingView — scripts/utbot_tests.mjs + scripts/utbot_tv_diff.mjs',
+          ],
+          defaults: { a: CONFIG.UTBOT.DEFAULT_A, c: CONFIG.UTBOT.DEFAULT_C },
+        },
+        {
+          id: 'mkr',
+          name: 'Multi Kernel Regression [ChartPrime]',
+          conditions: [
+            'non-repaint port: kernel-weighted MA of the last `bandwidth` closes (defaults Laplace, bandwidth 14)',
+            'labels Up/Down on the MA slope flip (ta.crossover/crossunder vs its own prior value), close-confirmed',
+            'proven by scripts/mkr_tests.mjs (weights, values, cross semantics, no-lookahead)',
+          ],
+          defaults: { kernel: CONFIG.MKR.DEFAULT_KERNEL, bandwidth: CONFIG.MKR.DEFAULT_BANDWIDTH },
+        },
       ],
+      messaging: 'CFD style — each indicator speaks only its own output (BUY/SELL, UP/DOWN); simultaneous events share one combined message; no expiry, no win/loss anywhere',
+      scanCadence: 'every 15 minutes; events emitted on the 15-minute candle close boundary',
       defaults: {
         timeframe: CONFIG.UTBOT.DEFAULT_TIMEFRAME,
-        a: CONFIG.UTBOT.DEFAULT_A,
-        c: CONFIG.UTBOT.DEFAULT_C,
-        expiryMinutes: CONFIG.UTBOT.DEFAULT_EXPIRY_MINUTES,
       },
-      verdict: 'exact behavioral match to TradingView — proven by scripts/utbot_tests.mjs + scripts/utbot_tv_diff.mjs; win-rate framing does not apply',
+      verdict: 'exact behavioral match to TradingView for both indicators; win-rate framing does not apply',
     },
     timestamp: new Date().toISOString(),
     apiKeys: { configured: keyCount, status: keyCount > 0 ? 'ready' : 'NO KEYS' },

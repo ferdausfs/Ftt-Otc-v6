@@ -10,20 +10,25 @@
  *     version: 1,
  *     updatedAt: ISO,
  *     pairs: {
- *       "BTC/USD": { enabled: true, timeframe: "5min", a: 1, c: 10,
- *                    expiryMinutes: 5 },
+ *       "BTC/USD": {
+ *         enabled: true, timeframe: "15min", a: 1, c: 10,
+ *         indicators: {
+ *           utbot: { enabled: true },
+ *           mkr:   { enabled: true, kernel: "Laplace", bandwidth: 14 },
+ *         },
+ *       },
  *       ...
  *     }
  *   }
  *   utbot:lastscan:<PAIR> -> close-time (ms) of the newest closed candle
  *     already processed for event emission (event idempotency across
- *     cron ticks and manual /api/signal calls).
+ *     cron ticks and manual /api/signal calls; SHARED by all indicators —
+ *     they all read the same candle boundary for a pair).
  *
- * Defaults ( TradingView indicator defaults): enabled=true on first deploy,
- * timeframe 5min, a=1, c=10, expiryMinutes=5. expiryMinutes is RECORD
- * KEEPING only (result tracking via the existing every-2-minutes checker) —
- * it is NOT
- * part of the indicator logic, which remains an exact port.
+ * Defaults (TradingView indicator defaults): enabled=true on first deploy,
+ * timeframe 15min, a=1, c=10, every registry indicator enabled with its own
+ * defaults. CFD mode: there is NO expiry anywhere — a setup stands until
+ * the indicator flips to the opposite event.
  *
  * Auth posture: reads are public. Writes (POST) require the secret when
  * env.UTBOT_ADMIN_SECRET is configured (?secret= or x-utbot-secret header);
@@ -35,8 +40,45 @@
 import { CONFIG, SCAN_PAIRS } from '../config.js';
 import { sanitizePair } from '../utils/pairs.js';
 import { jsonResponse } from '../utils/helpers.js';
+import { INDICATORS } from '../strategy/registry.mjs';
+import { MKR_KERNELS } from '../strategy/multiKernelRegression.mjs';
 
 const TFS = CONFIG.UTBOT.TIMEFRAMES;
+
+/** Per-indicator default config, from the registry + CONFIG constants. */
+export function defaultIndicatorConfigs() {
+  const out = {};
+  for (const ind of INDICATORS) {
+    out[ind.id] = { ...ind.defaultCfg };
+  }
+  if (out.mkr) {
+    out.mkr.kernel = CONFIG.MKR.DEFAULT_KERNEL;
+    out.mkr.bandwidth = CONFIG.MKR.DEFAULT_BANDWIDTH;
+  }
+  return out;
+}
+
+function sanitizeIndicatorConfigs(raw) {
+  const d = defaultIndicatorConfigs();
+  if (!raw || typeof raw !== 'object') return d;
+  const out = d;
+  // Per-indicator enabled gate (unknown ids ignored — registry is the source).
+  for (const id of Object.keys(d)) {
+    const r = raw[id];
+    if (!r || typeof r !== 'object') continue;
+    if (typeof r.enabled === 'boolean') out[id].enabled = r.enabled;
+    else if (r.enabled === 'true') out[id].enabled = true;
+    else if (r.enabled === 'false') out[id].enabled = false;
+  }
+  // MKR params (TradingView inputs: kernel select + bandwidth int >= 1).
+  const m = raw.mkr;
+  if (m && typeof m === 'object') {
+    if (MKR_KERNELS.includes(m.kernel)) out.mkr.kernel = m.kernel;
+    const bw = Math.trunc(Number(m.bandwidth));
+    if (Number.isFinite(bw) && bw >= 1 && bw <= 200) out.mkr.bandwidth = bw;
+  }
+  return out;
+}
 
 export function defaultPairConfig() {
   return {
@@ -44,7 +86,7 @@ export function defaultPairConfig() {
     timeframe: CONFIG.UTBOT.DEFAULT_TIMEFRAME,
     a: CONFIG.UTBOT.DEFAULT_A,
     c: CONFIG.UTBOT.DEFAULT_C,
-    expiryMinutes: CONFIG.UTBOT.DEFAULT_EXPIRY_MINUTES,
+    indicators: defaultIndicatorConfigs(),
   };
 }
 
@@ -60,8 +102,11 @@ function sanitizePairConfig(raw) {
   if (Number.isFinite(a) && a >= 0.1 && a <= 20) out.a = a;
   const c = Math.trunc(Number(raw.c));
   if (Number.isFinite(c) && c >= 1 && c <= 200) out.c = c;
-  const em = Math.trunc(Number(raw.expiryMinutes));
-  if (Number.isFinite(em) && em >= 1 && em <= 240) out.expiryMinutes = em;
+  out.indicators = sanitizeIndicatorConfigs(
+    raw.indicators && typeof raw.indicators === 'object'
+      ? { ...d.indicators, ...raw.indicators }
+      : raw.indicators,
+  );
   return out;
 }
 
@@ -116,7 +161,7 @@ export async function handleUtBotConfigPost(request, env) {
   let body = null;
   try { body = await request.json(); } catch (e) { body = null; }
   if (!body || typeof body !== 'object' || !body.pairs || typeof body.pairs !== 'object') {
-    return jsonResponse({ error: true, message: 'body must be { pairs: { "<PAIR>": { enabled|timeframe|a|c|expiryMinutes } } }' }, 400);
+    return jsonResponse({ error: true, message: 'body must be { pairs: { "<PAIR>": { enabled|timeframe|a|c|indicators } } }' }, 400);
   }
   const current = await getUtBotConfig(env);
   const updates = {};

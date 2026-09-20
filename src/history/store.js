@@ -46,6 +46,10 @@ function entriesClose(a, b) {
 
 function isDuplicateRecord(newRec, prevRec) {
   if (!prevRec) return false;
+  // Different indicators never dedupe against each other: UT Bot BUY and
+  // MKR Up firing on the SAME candle are two distinct signals (same
+  // direction + same close price + same timestamp by construction).
+  if ((prevRec.engine || '') !== (newRec.engine || '')) return false;
   if (prevRec.direction !== newRec.direction) return false;
   if (!entriesClose(newRec.entryPrice, prevRec.entryPrice)) return false;
   try {

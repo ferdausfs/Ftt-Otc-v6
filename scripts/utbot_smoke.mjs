@@ -14,6 +14,9 @@
  *   S5 POST config merge-write validation (unknown pair rejected, valid write)
  *   S6 no-lookahead at the live boundary: an event on the NEWEST CLOSED
  *      candle is emitted; the still-open candle never influences anything
+ *   S7 UT Bot + Multi Kernel Regression firing on the SAME closed candle ->
+ *      one combined Telegram message; one history record per indicator;
+ *      idempotent re-run emits nothing for either engine
  *
  * Run: node scripts/utbot_smoke.mjs
  */
@@ -73,8 +76,10 @@ function buildSeries(n, buyAtLast) {
 }
 const N = 300;
 /** Series with a GUARANTEED BUY at the last bar: 4 deep-decline bars put the
- *  trailing stop short above price, the breakout bar then crosses it. */
-function buildBuySeries(n) {
+ *  trailing stop short above price, the breakout bar then crosses it.
+ *  boom=20 additionally flips the MKR kernel-MA slope on the SAME bar
+ *  (probed: boom=12 flips UT Bot only; boom=20 flips both) — used by S7. */
+function buildBuySeries(n, boom = 12) {
   const C = buildSeries(n, false).map(c => ({ ...c }));
   let px = C[n - 6].c;
   for (let i = n - 5; i < n - 1; i++) {
@@ -82,7 +87,7 @@ function buildBuySeries(n) {
     C[i] = { t: C[i].t, o: C[i - 1].c, h: Math.max(C[i - 1].c, px) + 0.2, l: Math.min(C[i - 1].c, px) - 0.2, c: px };
   }
   const ob = C[n - 2].c;
-  C[n - 1] = { t: C[n - 1].t, o: ob, h: ob + 13, l: ob - 0.2, c: ob + 12 };
+  C[n - 1] = { t: C[n - 1].t, o: ob, h: ob + boom + 1, l: ob - 0.2, c: ob + boom };
   return C;
 }
 const S1 = buildBuySeries(N);       // last bar = engineered breakout -> BUY
@@ -134,6 +139,15 @@ async function main() {
     const env = { SIGNAL_CACHE: mkKV(), BOT_KV: mkKV(), BOT_TOKEN: 't', TWELVEDATA_API_KEY: 'mock-key' };
     env.BOT_KV._m.set('auto_users', JSON.stringify(['777']));
     env.BOT_KV._m.set('u:777', JSON.stringify({ autoEnabled: true }));
+    // This block proves the UT Bot path — disable MKR for every pair via the
+    // real config POST (exercises the per-indicator sanitize + merge-write).
+    const mkrOff = { pairs: {} };
+    for (const p of ['BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD']) {
+      mkrOff.pairs[p] = { indicators: { mkr: { enabled: false } } };
+    }
+    const offRes = await handleUtBotConfigPost(
+      new Request('https://w/api/utbot/config', { method: 'POST', body: JSON.stringify(mkrOff) }), env);
+    ok((await offRes.json()).ok === true, 'S1 per-indicator config write (MKR disabled for all pairs)');
     const realFetch = globalThis.fetch;
     const shared = {};
     for (const p of ['BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD']) shared[p] = S1;
@@ -222,12 +236,56 @@ async function main() {
       const getRes = await handleUtBotConfigGet(env);
       const cfgJson = await getRes.json();
       ok(cfgJson.pairs['BTC/USD'].enabled === false && cfgJson.defaults.a === 1 && cfgJson.defaults.c === 10, 'S5 GET returns merged config + TV defaults');
+      ok(cfgJson.pairs['BTC/USD'].indicators && cfgJson.pairs['BTC/USD'].indicators.mkr.enabled === true, 'S5 per-indicator defaults merged (MKR on)');
+      ok(cfgJson.defaults.indicators.mkr.kernel === 'Laplace' && cfgJson.defaults.indicators.mkr.bandwidth === 14, 'S5 MKR TradingView defaults exposed');
+      ok(cfgJson.defaults.expiryMinutes === undefined, 'S5 no expiry anywhere (CFD mode)');
 
       // scan with 7 pairs disabled -> only ETH/USD fetched
       const scanMod = await import('../src/handlers/scan.js');
       const r = await scanMod.scheduledScan(env, ctxMock);
       ok(r.ok === 1 && r.processed === 1, 'S4 disabled pairs skipped (1 pair processed)');
       ok(f._calls() > 0 && (await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json')) === null, 'S4 no records for disabled pair');
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = realFetch;
+    }
+  }
+
+  // ── S7: UT Bot + MKR fire on the SAME closed candle -> ONE combined message
+  {
+    const env = { SIGNAL_CACHE: mkKV(), BOT_KV: mkKV(), BOT_TOKEN: 't', TWELVEDATA_API_KEY: 'mock-key' };
+    env.BOT_KV._m.set('auto_users', JSON.stringify(['777']));
+    env.BOT_KV._m.set('u:777', JSON.stringify({ autoEnabled: true }));
+    const realFetch = globalThis.fetch;
+    const S7 = buildBuySeries(N, 20);   // breakout flips BOTH indicators on the last bar
+    const shared = {};
+    for (const p of ['BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD']) shared[p] = S7;
+    globalThis.fetch = mockFetch(shared);
+    const nowMs = S7[N - 1].t + TF;
+    const realNow = Date.now;
+    Date.now = () => nowMs;
+    try {
+      const scanMod = await import('../src/handlers/scan.js');
+      const r = await scanMod.scheduledScan(env, ctxMock);
+      const expectPairs = isForexMarketOpen() ? 8 : 4;
+      ok(r.ok === expectPairs, 'S7 scan processed all active pairs (' + expectPairs + ')');
+      const hist = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
+      const ut = (hist || []).filter(x => x.engine === 'UT-BOT');
+      const mk = (hist || []).filter(x => x.engine === 'MKR');
+      ok(ut.length === 1 && mk.length === 1, 'S7 both indicators recorded on the same candle (UT-BOT + MKR)');
+      ok(ut[0] && ut[0].direction === 'BUY' && mk[0] && mk[0].direction === 'BUY', 'S7 CFD directions BUY/BUY');
+      ok(ut[0].timestamp === mk[0].timestamp, 'S7 both events stamp the same candle close');
+      ok(mk[0].indicators.event === 'up' && mk[0].indicators.kernel === 'Laplace' && mk[0].indicators.bandwidth === 14, 'S7 MKR audit carries native event + params');
+      ok(mk[0].expiryTime === null && mk[0].expiryMinutes === null, 'S7 MKR record carries NO expiry');
+      ok(ut[0].expiryTime === null && ut[0].expiryMinutes === null, 'S7 UT Bot record carries NO expiry');
+      const lastAttempt = await env.SIGNAL_CACHE.get('push:lastAttempt', 'json');
+      ok(lastAttempt && lastAttempt.ok === true && lastAttempt.sent === 1, 'S7 combined message delivered to the subscriber');
+      const cursor = await env.SIGNAL_CACHE.get('utbot:lastscan:BTC_USD');
+      ok(Number(cursor) === nowMs, 'S7 cursor = newest closed candle close-time');
+      // idempotent re-run: nothing new for either engine
+      await scanMod.scheduledScan(env, ctxMock);
+      const hist2 = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
+      ok(hist2.length === 2, 'S7 re-run emits nothing (idempotent across indicators)');
     } finally {
       Date.now = realNow;
       globalThis.fetch = realFetch;

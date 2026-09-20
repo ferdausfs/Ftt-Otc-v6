@@ -9,11 +9,16 @@
  *   - durable lastAttempt + delivered24h diagnostics for /health
  *
  * formatSignalText (FTT3) was retired with the FTT3 live path. The live
- * format is formatUtBotText — CFD style (2026-09-19): the message contains
- * ONLY what the indicator itself produces — the BUY/SELL event, the event
- * candle close time, the entry close, and the trailing stop the indicator
- * draws. No expiry, no win/loss, no result messages (fixed-time logic is
- * retired); each added indicator will speak only its own output.
+ * formats are per-indicator (CFD style, 2026-09-19/20): each indicator
+ * speaks ONLY its own output in its own words —
+ *   formatUtBotText        UT Bot Alerts  -> "UT BOT BUY - <pair> (tf)"
+ *   formatMkrText          Multi Kernel Regression [ChartPrime]
+ *                          -> "MULTI KERNEL REGRESSION UP - <pair> (tf)"
+ *   formatCombinedText     several indicators firing on the SAME closed
+ *                          candle -> one message listing each line
+ * No expiry, no win/loss, no result messages (fixed-time logic is
+ * retired); a future indicator adds its own formatter here and the
+ * pipeline picks it up by registry id.
  */
 
 const PUSH_LOCK_PREFIX = 'pushLock:';
@@ -95,6 +100,11 @@ async function sendTelegram(env, chatId, text) {
   }
 }
 
+/** Shared plain-text line: "Candle closed: 2026-09-20 10:15 UTC". */
+function closedLine(iso) {
+  return 'Candle closed: ' + String(iso).replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+}
+
 /**
  * Human-readable UT Bot event text (plain, no markdown, CFD style).
  *
@@ -115,9 +125,69 @@ export function formatUtBotText(sig) {
   ];
   const closed = sig.entryTime || sig.timestamp || '';
   if (closed)
-    lines.push('Candle closed: ' + String(closed).replace('T', ' ').replace(/\.\d+Z$/, ' UTC'));
+    lines.push(closedLine(closed));
   if (sig.entryPrice != null) lines.push('Entry: ' + sig.entryPrice);
   if (a.stop != null) lines.push('Trailing stop: ' + a.stop);
+  return lines.join('\n');
+}
+
+/**
+ * Human-readable Multi Kernel Regression event text (plain, no markdown).
+ * The indicator's own output is the "Up"/"Down" label it draws on the
+ * kernel-MA slope flip, plus the MA line value itself:
+ *
+ *   MULTI KERNEL REGRESSION UP - EUR/USD (15min)
+ *   Candle closed: 2026-09-20 10:15 UTC
+ *   Close: 1.08654
+ *   Kernel MA: 1.08641 (Laplace x14)
+ */
+export function formatMkrText(sig) {
+  const a = sig.audit || {};
+  const lines = [
+    'MULTI KERNEL REGRESSION ' + (a.event === 'up' ? 'UP' : 'DOWN') + ' - ' + sig.pair
+      + (a.timeframe ? ' (' + a.timeframe + ')' : ''),
+  ];
+  const closed = sig.entryTime || sig.timestamp || '';
+  if (closed)
+    lines.push(closedLine(closed));
+  if (sig.entryPrice != null) lines.push('Close: ' + sig.entryPrice);
+  if (a.value != null) {
+    const tag = a.kernel ? ' (' + a.kernel + ' x' + a.bandwidth + ')' : '';
+    lines.push('Kernel MA: ' + a.value + tag);
+  }
+  return lines.join('\n');
+}
+
+/** Per-indicator message formatters, keyed by registry id. */
+export const SIGNAL_FORMATTERS = {
+  utbot: formatUtBotText,
+  mkr: formatMkrText,
+};
+
+/**
+ * Combined message for several indicators firing on the SAME closed candle
+ * (user requirement: "jodi ekta sathe dey, seta signal e bolbe" — when they
+ * fire together, the signal says it). Each line is the indicator's own
+ * label, no interpretation:
+ *
+ *   SIGNALS - EUR/USD (15min)
+ *   Candle closed: 2026-09-20 10:15 UTC
+ *   UT Bot Alerts: BUY | trailing stop 1.08590
+ *   Multi Kernel Regression: UP | kernel MA 1.08641 (Laplace x14)
+ *   Entry: 1.08654
+ */
+export function formatCombinedText(items) {
+  // items: [{ name, label, detail, sig }] — built by the scanner.
+  const first = items[0].sig;
+  const lines = [
+    'SIGNALS - ' + first.pair + (first.timeframe ? ' (' + first.timeframe + ')' : ''),
+  ];
+  const closed = first.entryTime || first.timestamp || '';
+  if (closed) lines.push(closedLine(closed));
+  for (const it of items) {
+    lines.push(it.name + ': ' + it.label + (it.detail ? ' | ' + it.detail : ''));
+  }
+  if (first.entryPrice != null) lines.push('Entry: ' + first.entryPrice);
   return lines.join('\n');
 }
 
