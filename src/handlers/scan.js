@@ -149,7 +149,11 @@ export async function evaluatePair(pair, env, ctx, now = Date.now(), pairCfg = n
       continue;
     }
 
-    const outputs = runIndicators(candles, cfg, { tfMs });
+    const outputs = runIndicators(candles, cfg, {
+      tfMs,
+      lastClosed: i,                    // MKR tv mode: curve uses closed candles only
+      fresh: lastScanT === null,         // fresh deploy -> no history backfill
+    });
     return buildResult(pair, assetType, candles, i, tf, tfMs, cfg, outputs, lastScanT);
   }
 }
@@ -166,7 +170,13 @@ function buildResult(pair, assetType, candles, i, tf, tfMs, cfg, outputs, lastSc
   const pending = [];
   for (const out of outputs) {
     for (const e of out.series.events) {
-      const isNew = lastScanT === null ? e.i === i : e.closeT > lastScanT && e.closeT <= closeT;
+      // Event gate: events may carry gateT (the close of the candle that made
+      // them KNOWABLE — MKR tv-mode labels confirm one candle after the bar
+      // TV anchors them to); everything else gates on its own closeT.
+      // Fresh deploy (lastScanT null): only events knowable at the newest
+      // closed boundary — never replay history.
+      const gate = e.gateT != null ? e.gateT : e.closeT;
+      const isNew = lastScanT === null ? gate === closeT : gate > lastScanT && gate <= closeT;
       if (isNew) pending.push({ id: out.id, ind: out.ind, event: e });
     }
   }
@@ -321,7 +331,10 @@ async function emitEvents(pair, cfg, pending, env) {
     }
     // Await the push (scan ticks are awaited — nested waitUntil could
     // freeze the isolate before sendMessage completes; proven lesson).
-    await pushSignalToSubscribers({ signalId, pair, direction: directionTag, text }, env);
+    // lockTag keeps per-indicator pushes independent: a MKR Up must never
+    // be suppressed by a UT Bot BUY lock on the same pair+direction.
+    const lockTag = items.length === 1 ? items[0].ind.id : 'combo';
+    await pushSignalToSubscribers({ signalId, pair, direction: directionTag, text, lockTag }, env);
   }
 }
 

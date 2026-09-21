@@ -12,7 +12,7 @@
 
 export const CONFIG = {
   ENGINE: 'UT-BOT',              // primary engine (history ledger back-compat)
-  VERSION: 'MULTI-IND-v1.6.0',
+  VERSION: 'MULTI-IND-v1.7.0',
 
   API_BASE_URL: 'https://api.twelvedata.com',
   REQUEST_TIMEOUT: 12000,
@@ -21,7 +21,9 @@ export const CONFIG = {
   TIMEFRAME_MAP: { '1min': '1min', '5min': '5min', '15min': '15min' },
   // Candle windows fetched per scan (cache-keyed by pair+tf+limit).
   // 300 bars = UT Bot lead-in depth (see CONFIG.UTBOT.WINDOW_BARS).
-  FETCH_LIMITS: { '1min': 300, '5min': 300, '15min': 300 },
+  // 520 rows: MKR tv mode re-fits over the newest 500 CLOSED candles
+  // (script max_bars_back = 500) — same call count, bigger window.
+  FETCH_LIMITS: { '1min': 520, '5min': 520, '15min': 520 },
   // KV cache TTL per interval (seconds). 1min stays just under one candle so
   // manual re-polls always see a fresh last candle.
   CACHE_TTL: { '1min': 50, '5min': 240, '15min': 840 },

@@ -1,69 +1,61 @@
 /**
  * Multi Kernel Regression [ChartPrime] — port of the TradingView Pine v5
- * indicator, NON-REPAINT path only (the script's Repaint input = false).
+ * indicator, BOTH branches, each byte-matched to the official source
+ * (frozen copy: src/strategy/reference/multi-kernel-regression-chartprime.pine,
+ * fetched from tradingview.com/script/o4YRa7e8 2026-09-21):
  *
- * Reference (frozen; the ONLY source of truth for this module) — the pasted
- * ChartPrime script, non-repaint branch:
- *
- *   repaint     = input.bool(true, "Repaint")            // PORT USES false
+ *   repaint     = input.bool(true, "Repaint")            // DEFAULT true, HIDDEN input
  *   kernel      = input.string("Laplace", "Kernel Select", [...17 kernels])
  *   bandwidth   = input.int(14, 'Bandwidth', 1)
  *   source      = input.source(close, 'Source')
  *   deviations  = input.float(2.0, 'Deviation', 0, 100, 0.25)
  *
- *   precalculate_nrp(bandwidth, kernel)=>
- *       for i = 0 to bandwidth - 1
- *           j = math.pow(i, 2) / (math.pow(bandwidth, 2))
- *           weight = kernel(j, 1, kernel)        // NOTE: bandwidth 1 here
- *           weights.push(weight); sumw += weight
+ * ── MODE 'tv' (repaint=true — what the user's chart SHOWS) ──────────────────
+ * computeMkrTv(). The script precalculates w(d) = kernel(d, bandwidth) for
+ * bar distances d = -499..499, then on every barstate.islast re-fits the
+ * whole visible curve: estimate at offset i (0 = newest bar) is
+ *   M(i) = sum_j source[j] * w(i-j) / sum_j w(i-j),   j = 0..min(bar_index,499)
+ * a TWO-SIDED kernel smoother (for Laplace, w decays as exp(-|d|/B)), which
+ * is why the chart line is far smoother than any 14-bar causal average.
+ * Labels — the indicator's ONLY trading output — come from consecutive
+ * curve deltas (loop runs newest -> oldest, delta(i) = M(i) - M(i-1)):
+ *   delta(i) > 0 and delta(i-1) < 0  ->  "Up"   at offset i-1 (local MIN)
+ *   delta(i) < 0 and delta(i-1) > 0  ->  "Down" at offset i-1 (local MAX)
+ * An extremum is only knowable once TWO curve points exist to its right, so
+ * a label at bar b appears when bar b+1 closes — the bot's detection bar.
+ * Because the curve re-fits every bar, TV redraws its whole label set each
+ * bar (the script erases labels on barstate.isconfirmed and re-adds them on
+ * the next islast). The bot mirrors that exactly: every tick re-enumerates
+ * the CURRENT curve's extremums; history dedup (same engine + direction +
+ * entry candle) makes re-detections idempotent, so a label is delivered the
+ * first tick it exists — never twice, never before TV could show it.
  *
- *   (every bar, non-repaint branch)
- *   float sum = 0.0
- *   for i = 0 to bandwidth - 1
- *       weight = weights.get(i)
- *       sum += nz(source[i]) * weight
- *   nrp_sum := sum / sumw
- *   direction = nrp_sum - nrp_sum[1] > 0
+ * Timing contract: events are computed from CLOSED candles only (meta
+ * .lastClosed = last closed index; the forming candle never enters the
+ * curve). Each event carries:
+ *   closeT  close of the LABEL candle (what TV anchors the label to; used
+ *           for grouping, history and the message's candle line)
+ *   gateT   close of the DETECTION candle (when the label became knowable;
+ *           used by the scanner's pending-event gate)
+ * Caveat inherited from the indicator itself: a very fresh label can still
+ * shift/vanish on TV as the next bar re-fits the curve; the bot does not
+ * unsend (CFD lifecycle needs immutable flips).
  *
- *   // labels (the indicator's ONLY trading output):
- *   if ta.crossover(nrp_sum, nrp_sum[1])  -> label "Up"   (bullish)
- *   if ta.crossunder(nrp_sum, nrp_sum[1]) -> label "Down" (bearish)
+ * ── MODE 'nrp' (repaint=false — the script's own stable mode) ───────────────
+ * computeMultiKernelRegression(). One-sided kernel-weighted MA of the last
+ * `bandwidth` closes with precalculated weights
+ *   weight(i) = kernel((i/B)^2, 1)
+ * and labels on ta.crossover/crossunder(nrp_sum, nrp_sum[1]) — flips fire at
+ * the flip bar's own close (no detection delay). Kept byte-compatible with
+ * the previous port (54 passing mkr_tests); selectable via config
+ * indicators.mkr.mode = 'nrp'.
  *
- *   // deviation band (display-only; enable input defaults to false):
- *   for i = 0 to bandwidth - 1: sumsq += (source[i] - nrp_sum[i])^2
- *   nrp_stdev := sqrt(sumsq / (bandwidth - 1)) * deviations
- *
- * Why the non-repaint branch (and NOT the script default repaint=true):
- * the repaint branch redraws the whole 500-bar curve from barstate.islast
- * and ERASES every label on barstate.isconfirmed — its labels move/vanish
- * retroactively, so no bot can act on them. The non-repaint branch is the
- * script's own stable mode: nrp_sum is a plain kernel-weighted moving
- * average of the last `bandwidth` closes, labels confirm on candle close
- * and never change. On TradingView, set "Repaint" = false to see exactly
- * what this module computes.
- *
- * Pine semantics reproduced deliberately:
- *   K1  weight argument: x = (i/bandwidth)^2, evaluated at bandwidth = 1
- *       (the script passes kernel(j, 1, kernel) — do NOT "simplify" to
- *       kernel(i, bandwidth): for kernels like Laplace the two differ).
- *   K2  nz(source[i], 0): closes before the start of the fetched window
- *       contribute 0 with the FULL sumw (Pine's literal early-bar
- *       behavior). Irrelevant in production (300-bar window, events only
- *       read at the tail) but kept for exactness.
- *   K3  ta.crossover(a, b) with b = nrp_sum[1]:
- *       a[i] > b[i]  AND  a[i-1] <= b[i-1]
- *       -> v[i] > v[i-1] AND v[i-1] <= v[i-2]. Equality on the middle bar
- *       DOES allow a cross (matches UT Bot's P1 convention).
- *   K4  Events are emitted only for bars with a FULL kernel window
- *       (i >= bandwidth-1): earlier bars depend on the window edge, which
- *       no live chart ever shows. The MA itself is a pure (non-recursive)
- *       weighted average, so once the window is full the values are exact
- *       regardless of history depth — no UT-Bot-style lead-in decay.
- *   K5  Defaults = TradingView defaults: kernel Laplace, bandwidth 14,
- *       source close, deviations 2.0. Overrides are a config concern.
- *
- * Timing contract (no-lookahead): value at bar i depends ONLY on candles
- * with index <= i. Signal timing = candle CLOSE confirmation.
+ * Shared Pine semantics (both modes):
+ *   K1  the 17 kernel functions are verbatim (see kernelFn)
+ *   K2  nz() zero-fill for pre-window bars — nrp only; irrelevant in
+ *       production (full windows) but kept for exactness
+ *   K5  defaults = TradingView defaults: kernel Laplace, bandwidth 14,
+ *       source close, deviations 2.0
  *
  * Candle shape everywhere: { t, o, h, l, c } — t = OPEN time in ms UTC.
  */
@@ -252,6 +244,146 @@ export function computeMultiKernelRegression(candles, opts = {}, meta = {}) {
   return { value, stdev, dirUp, up, down, events, params: { kernel, bandwidth: B, deviations } };
 }
 
+// ── MODE 'tv' — the chart's default repaint branch, ported exactly ─────────
+
+export const MKR_MODE_TV = 'tv';
+export const MKR_MODE_NRP = 'nrp';
+export const MKR_MODES = [MKR_MODE_TV, MKR_MODE_NRP];
+const MKR_TV_MAX_WINDOW = 500;   // script: max_bars_back = 500, loops cap at 499
+// Deliverability window: a label is only a LIVE signal while its candle is
+// within the newest 120 closed candles (30h on 15min, 10h on 5min, 2h on
+// 1min). The frozen two-sided fit carries extremums indefinitely (TV shows
+// them when you scroll back) — they are chart history, not tradeable
+// signals, and must never fire as bot messages days later.
+const MKR_TV_EMIT_WINDOW = 120;
+
+/**
+ * The script's repaint estimator (what the user's TradingView chart draws).
+ *
+ * Port of `precalculate` + the `barstate.islast` block of the official
+ * source: w(d) = kernel(d, bandwidth) for signed distances, curve value at
+ * offset i = sum_j source[j] * w(i-j) / sum_j w(i-j) over the newest
+ * min(bars, 500) CLOSED candles, labels on consecutive-delta sign flips.
+ *
+ * @param {Array} candles ascending { t,o,h,l,c }
+ * @param {object} [opts] { kernel, bandwidth, deviations }
+ * @param {object} [meta] { tfMs, lastClosed } — lastClosed = index of the
+ *   last CLOSED candle; when omitted every candle is treated as closed.
+ * @returns same series shape as computeMultiKernelRegression (value, stdev,
+ *   dirUp, up, down, events, params) plus { mode: 'tv' }.
+ */
+export function computeMkrTv(candles, opts = {}, meta = {}) {
+  const kernel = opts.kernel === undefined ? MKR_KERNEL_DEFAULT : String(opts.kernel);
+  const bandwidth = opts.bandwidth === undefined ? MKR_BANDWIDTH_DEFAULT
+    : Math.trunc(Number(opts.bandwidth));
+  if (!Number.isFinite(bandwidth) || bandwidth < 1) {
+    throw new Error('multiKernelRegression tv: bandwidth must be >= 1');
+  }
+  const deviations = opts.deviations === undefined ? MKR_DEVIATIONS_DEFAULT : Number(opts.deviations);
+  const f = kernelFn(kernel);
+
+  // Closed-candle discipline: the forming candle never enters the curve.
+  const lastClosed = Number.isFinite(meta.lastClosed)
+    ? Math.min(Math.trunc(meta.lastClosed), candles.length - 1)
+    : candles.length - 1;
+  const nWin = lastClosed + 1;                       // candles inside the fit
+  const N = Math.min(nWin - 1, MKR_TV_MAX_WINDOW - 1); // max offset (script: min(bar_index, 499))
+
+  // w(d) = kernel(d, bandwidth) for signed d = i - j (script: precalculate).
+  const w = new Float64Array(2 * N + 1);
+  const wAt = d => w[d + N];
+  for (let d = -N; d <= N; d++) w[d + N] = f(d, bandwidth);
+
+  // src[j] = source (close) at offset j; j = 0 is the newest closed candle.
+  const src = new Float64Array(N + 1);
+  for (let j = 0; j <= N; j++) src[j] = candles[lastClosed - j].c;
+
+  // The curve + weighted stdev (script: sum/sumw, sqrt(sumsq/sumw - cur^2)).
+  const M = new Float64Array(N + 1);
+  const SD = new Float64Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    let sum = 0, sumsq = 0, sumw = 0;
+    for (let j = 0; j <= N; j++) {
+      const weight = wAt(i - j);
+      sum += src[j] * weight;
+      sumsq += src[j] * src[j] * weight;
+      sumw += weight;
+    }
+    M[i] = sum / sumw;
+    SD[i] = Math.sqrt(Math.max(sumsq / sumw - M[i] * M[i], 0)) * deviations;
+  }
+
+  let tfMs = meta.tfMs;
+  if (!tfMs && candles.length >= 2) tfMs = Math.max(1, candles[1].t - candles[0].t);
+
+  // Labels: exact script conditions on consecutive deltas (local min -> Up,
+  // local max -> Down, anchored at the extremum bar = offset i-1). The
+  // extremum at offset i-1 needs the curve point at offset i, so on the
+  // live chart it is knowable at the close of the offset-0 candle -> gateT.
+  // Delta comparisons carry a 1e-12-relative epsilon: bit-identical closes
+  // (repeated quotes) make the mathematically-flat curve jitter by ~1e-16
+  // relative in float64, which must never fabricate a label. Real flips are
+  // >= 1e-8 relative — five orders of magnitude above the guard.
+  const eps = 1e-12 * Math.max(1, Math.abs(M[0]));
+  const gateT = tfMs ? candles[lastClosed].t + tfMs : undefined;
+  const events = [];
+  for (let i = 2; i <= N; i++) {
+    const dPrev = M[i - 1] - M[i - 2];   // previous_price_delta (newer pair)
+    const dCur = M[i] - M[i - 1];        // delta (older pair)
+    if ((dCur > eps && dPrev < -eps) || (dCur < -eps && dPrev > eps)) {
+      const off = i - 1;                       // extremum offset (label bar)
+      // Fresh deploy (no stored scan cursor): emit only the label that is
+      // knowable right now (offset 1) — never backfill chart history.
+      if (meta.fresh && off !== 1) continue;
+      // Emit window: frozen extremums far back are chart history, not
+      // live signals (see MKR_TV_EMIT_WINDOW above).
+      if (off > MKR_TV_EMIT_WINDOW) continue;
+      const barIdx = lastClosed - off;
+      events.push({
+        i: barIdx,
+        t: candles[barIdx].t,
+        closeT: tfMs ? candles[barIdx].t + tfMs : undefined,
+        gateT,
+        type: dCur > 0 ? 'up' : 'down',        // local min -> Up, local max -> Down
+        price: candles[barIdx].c,
+        value: M[off],
+        valuePrev: M[off - 1],
+        stdev: SD[off],
+        offset: off,
+      });
+    }
+  }
+  events.reverse();   // oldest first (pipeline ordering convention)
+
+  // Series arrays in full bar-index space (undefined outside the 500-bar
+  // window) so the registry snapshot / API shape matches nrp mode.
+  const n = candles.length;
+  const value = new Array(n).fill(undefined);
+  const stdev = new Array(n).fill(undefined);
+  const dirUp = new Array(n).fill(false);
+  const up = new Array(n).fill(false);
+  const down = new Array(n).fill(false);
+  for (let off = 0; off <= N; off++) {
+    const idx = lastClosed - off;
+    value[idx] = M[off];
+    stdev[idx] = SD[off];
+    // forward slope into this bar: newer curve point above older one
+    dirUp[idx] = off >= 1 ? (M[off - 1] - M[off] > 0) : (N >= 1 ? M[0] - M[1] > 0 : false);
+  }
+  for (const e of events) {
+    if (e.type === 'up') up[e.i] = true;
+    else down[e.i] = true;
+  }
+
+  return {
+    value, stdev, dirUp, up, down, events,
+    mode: MKR_MODE_TV,
+    params: { kernel, bandwidth, deviations },
+    lastValue: M[0],
+    lastDelta: N >= 1 ? M[0] - M[1] : undefined,
+  };
+}
+
 // ── Live-worker helpers ──────────────────────────────────────────────────────
 
 /**
@@ -274,6 +406,7 @@ export function mkrEventToSignal(event, pair, extra = {}) {
     audit: {
       event: event.type,                    // native: 'up' | 'down'
       label: event.type === 'up' ? 'Up' : 'Down',
+      mode: extra.mode,                     // 'tv' (chart-default) | 'nrp'
       kernel: extra.kernel,
       bandwidth: extra.bandwidth,
       value: event.value,
@@ -281,6 +414,9 @@ export function mkrEventToSignal(event, pair, extra = {}) {
       stdev: event.stdev,
       timeframe: extra.timeframe,
       eventCandle: { t: event.t, closeT: event.closeT },
+      // tv mode only: the label becomes knowable one candle after the bar
+      // TV anchors it to — this is that detection close (ISO).
+      confirmedAt: event.gateT != null ? new Date(event.gateT).toISOString() : undefined,
       barIndex: event.i,
     },
     entryPrice: event.price,

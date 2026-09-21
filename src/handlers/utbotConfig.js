@@ -42,7 +42,7 @@ import { sanitizePair } from '../utils/pairs.js';
 import { CATALOG_PAIRS, isKnownPair } from '../utils/pairCatalog.js';
 import { jsonResponse } from '../utils/helpers.js';
 import { INDICATORS } from '../strategy/registry.mjs';
-import { MKR_KERNELS } from '../strategy/multiKernelRegression.mjs';
+import { MKR_KERNELS, MKR_MODES } from '../strategy/multiKernelRegression.mjs';
 
 const TFS = CONFIG.UTBOT.TIMEFRAMES;
 
@@ -71,10 +71,11 @@ function sanitizeIndicatorConfigs(raw) {
     else if (r.enabled === 'true') out[id].enabled = true;
     else if (r.enabled === 'false') out[id].enabled = false;
   }
-  // MKR params (TradingView inputs: kernel select + bandwidth int >= 1).
+  // MKR params (TradingView inputs: mode branch + kernel select + bandwidth).
   const m = raw.mkr;
   if (m && typeof m === 'object') {
     if (MKR_KERNELS.includes(m.kernel)) out.mkr.kernel = m.kernel;
+    if (MKR_MODES.includes(m.mode)) out.mkr.mode = m.mode;
     const bw = Math.trunc(Number(m.bandwidth));
     if (Number.isFinite(bw) && bw >= 1 && bw <= 200) out.mkr.bandwidth = bw;
   }

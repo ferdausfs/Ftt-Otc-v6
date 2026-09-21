@@ -71,7 +71,7 @@ ok(tUt.includes('🟢 <b>BUY</b>'), 'green BUY label');
 ok(tUt.includes('Candle closed: 2026-09-20 10:15 UTC'), 'candle close time');
 ok(tUt.includes('💰 Entry: <code>80,411.1</code>'), 'entry clean');
 ok(tUt.includes('🛑 Trailing Stop: <code>80,549.65</code>'), 'stop clean (was 80549.64889428618)');
-ok(tUt.includes('⚙️ a=1 · c=10 · FTT v1.6.0'), 'params footer with version');
+ok(/⚙️ a=1 · c=10 · FTT v\d+\.\d+\.\d+/.test(tUt), 'params footer with version');
 ok(!/undefined/.test(tUt), 'no "undefined" anywhere');
 ok(!/\d{6,}\.\d{4,}/.test(tUt), 'no raw float dump with 4+ decimals');
 ok(/<b>/.test(tUt), 'uses Telegram HTML bold');
@@ -82,7 +82,7 @@ ok(tMkr.includes('📊 <b>MULTI KERNEL REGRESSION</b> · <b>BTC/USD</b> (15min)'
 ok(tMkr.includes('📈 <b>UP</b>'), 'UP label');
 ok(tMkr.includes('🌀 Kernel MA: <code>80,359.35</code> (Laplace ×14)'), 'kernel MA clean + kernel tag');
 ok(tMkr.includes('💰 Close: <code>80,552</code>'), 'close price clean');
-ok(tMkr.includes('⚙️ Laplace · bw=14 · FTT v1.6.0'), 'kernel footer');
+ok(/⚙️ Laplace · bw=14 · FTT v\d+\.\d+\.\d+/.test(tMkr), 'kernel footer');
 const tMkrDown = formatMkrText({ ...mkrSig, audit: { ...mkrSig.audit, event: 'down' } });
 ok(tMkrDown.includes('📉 <b>DOWN</b>'), 'DOWN label red/green aware');
 

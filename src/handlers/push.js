@@ -260,7 +260,14 @@ export function formatMkrText(sig) {
     dirIcon(label) + ' <b>' + label + '</b>',
   ];
   const closed = sig.entryTime || sig.timestamp || '';
-  if (closed) lines.push('⏰ Candle closed: ' + closedLine(closed));
+  if (a.confirmedAt) {
+    // tv mode: TV anchors the label one candle BEFORE it becomes knowable —
+    // show both moments so the message always matches the chart.
+    if (closed) lines.push('📍 Signal candle: ' + closedLine(closed));
+    lines.push('☑️ Confirmed at close: ' + closedLine(a.confirmedAt));
+  } else if (closed) {
+    lines.push('⏰ Candle closed: ' + closedLine(closed));
+  }
   lines.push('');
   if (sig.entryPrice != null) lines.push('💰 Close: <code>' + fmtPrice(sig.entryPrice) + '</code>');
   if (a.value != null) {
@@ -357,6 +364,9 @@ async function tryPush(signal, chatIds, env, lockSuffix) {
   let sent = 0;
   const errors = [];
   for (const chatId of chatIds) {
+    // lockSuffix carries the indicator identity (scan.js: 'utbot'/'mkr'/'combo')
+    // so a MKR Up is never suppressed by a UT Bot BUY lock (and vice versa)
+    // on the same pair+direction within the 30-min idempotency window.
     const lockKey = PUSH_LOCK_PREFIX + chatId + ':' + normPair(signal.pair) + ':' + lockSuffix;
     try {
       const existing = await env.SIGNAL_CACHE.get(lockKey);
@@ -397,7 +407,10 @@ export async function pushSignalToSubscribers(sig, env) {
     }));
     const targets = users.filter(u => isAutoEnabled(u.user)).map(u => u.id);
     const text = sig.text || formatUtBotText(sig);
-    const { sent, errors } = await tryPush({ ...sig, text }, targets, env, sig.direction);
+    // Lock identity = indicator (+direction): a MKR Up and a UT Bot BUY on
+    // the same pair are independent deliveries; scan.js passes lockTag.
+    const lockSuffix = sig.lockTag ? sig.lockTag + ':' + sig.direction : sig.direction;
+    const { sent, errors } = await tryPush({ ...sig, text }, targets, env, lockSuffix);
     await recordPushAttempt(env, {
       kind: 'signal', ok: true, signalId: sig.signalId, pair: sig.pair, direction: sig.direction,
       subscribers: ids.length, targets: targets.length, sent, errors: errors.slice(0, 3),

@@ -48,7 +48,9 @@
  */
 
 import { computeUtBot, eventToSignal } from './utBotAlerts.mjs';
-import { computeMultiKernelRegression, mkrEventToSignal, MKR_KERNELS } from './multiKernelRegression.mjs';
+import {
+  computeMultiKernelRegression, computeMkrTv, mkrEventToSignal, MKR_KERNELS,
+} from './multiKernelRegression.mjs';
 
 export const INDICATORS = [
   {
@@ -91,21 +93,25 @@ export const INDICATORS = [
     name: 'Multi Kernel Regression',
     icon: '\uD83D\uDCCA',
     engineTag: 'MKR',
-    defaultCfg: { enabled: true, kernel: 'Laplace', bandwidth: 14 },
+    // mode 'tv' = the branch the user's TradingView chart actually shows
+    // (Repaint input defaults to true and is hidden from the settings
+    // dialog). 'nrp' = the script's own non-repaint branch.
+    defaultCfg: { enabled: true, mode: 'tv', kernel: 'Laplace', bandwidth: 14 },
     compute(candles, cfg, meta) {
-      return computeMultiKernelRegression(candles, {
-        kernel: cfg.kernel,
-        bandwidth: cfg.bandwidth,
-      }, meta);
+      const common = { kernel: cfg.kernel, bandwidth: cfg.bandwidth, deviations: cfg.deviations };
+      return cfg.mode === 'nrp'
+        ? computeMultiKernelRegression(candles, common, meta)
+        : computeMkrTv(candles, common, meta);
     },
     toSignal(event, pair, icfg, extra = {}) {
       return mkrEventToSignal(event, pair, {
-        ...extra, kernel: icfg.kernel, bandwidth: icfg.bandwidth,
+        ...extra, mode: icfg.mode, kernel: icfg.kernel, bandwidth: icfg.bandwidth,
       });
     },
     snapshot(series, i, icfg) {
       const ev = series.events.find(e => e.i === i);
       return {
+        mode: icfg.mode,
         kernel: icfg.kernel,
         bandwidth: icfg.bandwidth,
         value: series.value[i],
@@ -122,9 +128,11 @@ export const INDICATORS = [
       return 'kernel MA ' + audit.value
         + (audit.kernel ? ' (' + audit.kernel + ' x' + audit.bandwidth + ')' : '');
     },
-    // TradingView inputs: Kernel select + Bandwidth. Indicator-level config
-    // keys (utbot:config -> pairs.<PAIR>.indicators.mkr.<key>).
+    // TradingView inputs: Mode (branch) + Kernel select + Bandwidth.
+    // Indicator-level config keys (utbot:config -> pairs.<PAIR>.indicators.mkr.<key>).
     params: [
+      { key: 'mode', label: 'Mode', icon: '\uD83E\uDDED', kind: 'enum', options: ['tv', 'nrp'],
+        perRow: 2, path: 'ind' },
       { key: 'kernel', label: 'Kernel', icon: '\uD83C\uDF08', kind: 'enum', options: MKR_KERNELS,
         perRow: 1, path: 'ind' },
       { key: 'bandwidth', label: 'Bandwidth', icon: '\u2194\uFE0F', kind: 'int', min: 1, max: 200,
