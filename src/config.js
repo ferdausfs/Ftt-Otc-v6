@@ -12,7 +12,7 @@
 
 export const CONFIG = {
   ENGINE: 'UT-BOT',              // primary engine (history ledger back-compat)
-  VERSION: 'MULTI-IND-v1.7.0',
+  VERSION: 'MULTI-IND-v1.7.1',
 
   API_BASE_URL: 'https://api.twelvedata.com',
   REQUEST_TIMEOUT: 12000,

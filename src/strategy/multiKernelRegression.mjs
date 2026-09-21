@@ -25,10 +25,14 @@
  * a label at bar b appears when bar b+1 closes — the bot's detection bar.
  * Because the curve re-fits every bar, TV redraws its whole label set each
  * bar (the script erases labels on barstate.isconfirmed and re-adds them on
- * the next islast). The bot mirrors that exactly: every tick re-enumerates
- * the CURRENT curve's extremums; history dedup (same engine + direction +
- * entry candle) makes re-detections idempotent, so a label is delivered the
- * first tick it exists — never twice, never before TV could show it.
+ * the next islast). The bot mirrors the chart's LIVE behavior: on every
+ * normal tick ONLY the newest knowable label (offset 1 — knowable at the
+ * very next candle close) is emitted; history dedup (same engine +
+ * direction + entry candle) makes re-detections idempotent, so a label is
+ * delivered exactly once, at the first tick it exists — never twice, never
+ * before TV could show it, and never resurfaced from older offsets as a
+ * fake "fresh" alert. Older offsets pass ONLY through the small downtime
+ * catch-up window (see MKR_TV_EMIT_WINDOW below).
  *
  * Timing contract: events are computed from CLOSED candles only (meta
  * .lastClosed = last closed index; the forming candle never enters the
@@ -40,6 +44,18 @@
  * Caveat inherited from the indicator itself: a very fresh label can still
  * shift/vanish on TV as the next bar re-fits the curve; the bot does not
  * unsend (CFD lifecycle needs immutable flips).
+ *
+ * ── CLASSIFICATION (standing rule — README "Repainting vs causal") ─────────
+ * MKR 'tv' is REPAINTING: the two-sided fit re-shapes older offsets every
+ * bar, so an extremum can "newly" satisfy the sign-flip condition many
+ * hours after its bar. Timeliness beats chart parity (fixed project
+ * decision, never re-litigated): in normal operation only offset-1 labels
+ * are emitted; a backfill window (hard cap MKR_TV_EMIT_WINDOW = 4 candles)
+ * opens exclusively for PROVEN scanner downtime, detected by comparing
+ * meta.lastScanT to meta.now — never on a routine tick. MKR 'nrp' is
+ * CAUSAL / non-repainting: its value at bar N depends only on bars <= N,
+ * flips fire at the flip bar's own close, and no emit-window question
+ * arises for it.
  *
  * ── MODE 'nrp' (repaint=false — the script's own stable mode) ───────────────
  * computeMultiKernelRegression(). One-sided kernel-weighted MA of the last
@@ -250,12 +266,52 @@ export const MKR_MODE_TV = 'tv';
 export const MKR_MODE_NRP = 'nrp';
 export const MKR_MODES = [MKR_MODE_TV, MKR_MODE_NRP];
 const MKR_TV_MAX_WINDOW = 500;   // script: max_bars_back = 500, loops cap at 499
-// Deliverability window: a label is only a LIVE signal while its candle is
-// within the newest 120 closed candles (30h on 15min, 10h on 5min, 2h on
-// 1min). The frozen two-sided fit carries extremums indefinitely (TV shows
-// them when you scroll back) — they are chart history, not tradeable
-// signals, and must never fire as bot messages days later.
-const MKR_TV_EMIT_WINDOW = 120;
+// Downtime catch-up cap, in candles — the ONLY backfill tolerance this
+// repainting branch is allowed. The two-sided fit re-shapes older offsets
+// every bar, so an extremum that "newly" satisfies the sign-flip condition
+// at an old offset is chart history, not a live event; normal operation
+// must never emit it (only offset 1 — knowable at the very next candle
+// close — is a live signal). When the scanner PROVABLY missed ticks (deploy,
+// outage, platform cron silence — detected by comparing the stored lastScanT
+// cursor to now, never on a routine tick), the window widens to 1 + missed
+// candles, hard-capped here: at most a 1-hour backfill on a 15min pair.
+// Beyond that an extremum is frozen chart history and must never fire as a
+// bot message hours later (the 120-candle window this constant once had
+// produced exactly that: an 18h45m "fresh" alert on a 15min pair).
+const MKR_TV_EMIT_WINDOW = 4;
+
+/**
+ * Emission window for this tick, in label-bar offsets from the newest
+ * closed candle.
+ *
+ * Standing rule (timeliness beats chart parity — README "Repainting vs
+ * causal indicators"): a repainting label is only a LIVE signal while it is
+ * the newest knowable detection — offset 1, knowable at the very next
+ * candle close. Older offsets are emitted ONLY when the caller proves
+ * genuine scanner downtime: more than one scan interval elapsed between the
+ * stored lastScanT cursor and now. No proof (meta missing either field), a
+ * fresh deploy, or a routine/manual tick keeps the window at 1. Proven
+ * downtime widens it to 1 + missed candles, hard-capped at
+ * MKR_TV_EMIT_WINDOW.
+ *
+ * @param {object} meta { fresh, now, lastScanT, tfMs }
+ * @param {number} tfMs resolved candle period in ms
+ * @returns {number} maximum emittable label offset (always >= 1)
+ */
+function mkrTvMaxOff(meta, tfMs) {
+  if (meta.fresh) return 1;   // fresh deploy: newest knowable label only
+  const now = Number(meta.now);
+  const lastScanT = Number(meta.lastScanT);
+  // No downtime proof -> fail closed: newest label only.
+  if (!Number.isFinite(now) || !Number.isFinite(lastScanT)
+    || lastScanT <= 0 || !Number.isFinite(tfMs) || tfMs <= 0) return 1;
+  // Candle closes elapsed since the last processed close, minus the one this
+  // tick processes anyway. A routine tick (or an early/manual poll) gives
+  // missed < 1 -> no backfill.
+  const missed = Math.floor((now - lastScanT) / tfMs) - 1;
+  if (missed < 1) return 1;
+  return Math.min(1 + missed, MKR_TV_EMIT_WINDOW);
+}
 
 /**
  * The script's repaint estimator (what the user's TradingView chart draws).
@@ -326,18 +382,21 @@ export function computeMkrTv(candles, opts = {}, meta = {}) {
   // >= 1e-8 relative — five orders of magnitude above the guard.
   const eps = 1e-12 * Math.max(1, Math.abs(M[0]));
   const gateT = tfMs ? candles[lastClosed].t + tfMs : undefined;
+  // Emission window for THIS tick (see mkrTvMaxOff): offset 1 in normal
+  // operation; wider only for proven scanner downtime.
+  const maxOff = mkrTvMaxOff(meta, tfMs);
   const events = [];
   for (let i = 2; i <= N; i++) {
     const dPrev = M[i - 1] - M[i - 2];   // previous_price_delta (newer pair)
     const dCur = M[i] - M[i - 1];        // delta (older pair)
     if ((dCur > eps && dPrev < -eps) || (dCur < -eps && dPrev > eps)) {
       const off = i - 1;                       // extremum offset (label bar)
-      // Fresh deploy (no stored scan cursor): emit only the label that is
-      // knowable right now (offset 1) — never backfill chart history.
-      if (meta.fresh && off !== 1) continue;
-      // Emit window: frozen extremums far back are chart history, not
-      // live signals (see MKR_TV_EMIT_WINDOW above).
-      if (off > MKR_TV_EMIT_WINDOW) continue;
+      // Emission rule (timeliness beats chart parity): only the newest
+      // knowable label is a live signal in normal operation. A repainting
+      // curve re-fits every bar, so an extremum "newly" appearing at an old
+      // offset is chart history resurfacing — never a fresh event. Older
+      // offsets pass only inside the proven-downtime catch-up window.
+      if (off > maxOff) continue;
       const barIdx = lastClosed - off;
       events.push({
         i: barIdx,

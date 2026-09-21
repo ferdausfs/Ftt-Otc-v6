@@ -153,6 +153,8 @@ export async function evaluatePair(pair, env, ctx, now = Date.now(), pairCfg = n
       tfMs,
       lastClosed: i,                    // MKR tv mode: curve uses closed candles only
       fresh: lastScanT === null,         // fresh deploy -> no history backfill
+      now,                               // MKR tv downtime proof: lastScanT vs now
+      lastScanT,                         //   -> catch-up window opens for missed ticks
     });
     return buildResult(pair, assetType, candles, i, tf, tfMs, cfg, outputs, lastScanT);
   }

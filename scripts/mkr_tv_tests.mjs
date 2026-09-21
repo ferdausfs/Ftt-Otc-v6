@@ -10,6 +10,14 @@
  * each label knowable one candle after its bar (gateT), idempotent through
  * history dedup.
  *
+ * Emission rule (stale-alert fix, 2026-09-21): tv mode is REPAINTING, so a
+ * normal tick may deliver ONLY the newest knowable label (offset 1).
+ * Older offsets are emittable solely through the proven-downtime catch-up
+ * window (lastScanT vs now, hard cap 4 candles). T5 pins the regression
+ * (an extremum that first becomes true at offset > 1 during normal
+ * operation must NOT be emitted — the old 120-candle window delivered an
+ * 18h45m-old extremum as "fresh"); T6 pins the downtime window.
+ *
  * Run: node scripts/mkr_tv_tests.mjs
  */
 
@@ -28,12 +36,38 @@ function ok(cond, msg) {
 function section(name) { console.log('\n' + name); }
 
 const TF = 900_000; // 15min
-function mkCandles(closes, t0 = 1_700_000_000_000) {
+const T0 = 1_700_000_000_000;
+function mkCandles(closes, t0 = T0) {
   return closes.map((c, i) => ({ t: t0 + i * TF, o: c, h: c, l: c, c }));
 }
 
 function rampCloses(n, from = 100, step = 0.5) {
   return Array.from({ length: n }, (_, i) => from + step * i);
+}
+
+// gateT of a fixture = close of its newest candle (computeMkrTv anchors
+// every event's detection close there).
+function gateTOf(closes) { return T0 + closes.length * TF; }
+
+// Scan-tick meta against a specific fixture: missed = how many candle
+// closes the scanner provably skipped (0 = routine tick, no backfill).
+function metaFor(closes, missed = 0, extra = {}) {
+  const gateT = gateTOf(closes);
+  return { tfMs: TF, fresh: false, now: gateT + 5_000, lastScanT: gateT - (missed + 1) * TF, ...extra };
+}
+
+// Short sharp V fixtures (probe-verified label offsets, Laplace bw=14):
+function vUpFixture() {   // valley 5 bars from the edge -> Up label at offset 1
+  const down = Array.from({ length: 250 }, (_, i) => 300 - 0.8 * i);
+  const valley = 300 - 0.8 * 249;
+  const up = Array.from({ length: 5 }, (_, i) => valley + 2 * (i + 1));
+  return down.concat(up);
+}
+function vDownFixture() {  // peak 2 bars from the edge -> Down label at offset 1
+  const up = Array.from({ length: 250 }, (_, i) => 100 + 0.7 * i);
+  const peak = 100 + 0.7 * 249;
+  const down = Array.from({ length: 2 }, (_, i) => peak - 5 * (i + 1));
+  return up.concat(down);
 }
 
 section('T1 constant market — curve flat, zero labels');
@@ -51,64 +85,120 @@ section('T2 monotonic ramp — smooth curve, zero labels (no fabricated flips)')
   ok(s.lastDelta > 0, 'curve rising at the last bar');
 }
 
-section('T3 V-shape — exactly one Up at the valley, one candle delayed');
+section('T3 V-shape — one Up at offset 1 (the live "just printed" label)');
 {
-  const down = Array.from({ length: 200 }, (_, i) => 200 - 0.8 * i);   // 200 -> 41
-  const up = Array.from({ length: 99 }, (_, i) => 41 + 0.9 * (i + 1));  // long rising leg
-  const closes = down.concat(up);                                       // valley at idx 199
-  const s = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF });
+  // Sharp reversal 5 bars from the edge: the smoothed curve bottoms at the
+  // second-newest bar, so the label is knowable at the very next close —
+  // exactly what a live TV chart shows as freshly printed. (Short fixture
+  // because the emission rule only ever surfaces offset 1 in normal
+  // operation; the smoothing lag between the raw-price valley and the
+  // curve minimum is ~4 bars on a 5-bar leg.)
+  const closes = vUpFixture();
+  const s = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: false });
   const ups = s.events.filter(e => e.type === 'up');
   const downs = s.events.filter(e => e.type === 'down');
-  ok(ups.length === 1 && downs.length === 0, 'V-shape -> exactly one Up label, no Down');
-  const valleyIdx = 199;
-  ok(Math.abs(ups[0].i - valleyIdx) <= 3, 'label anchored at the valley bar (±3 smoothing bars), got idx ' + ups[0].i);
+  ok(ups.length === 1 && downs.length === 0, 'sharp V -> exactly one Up label, no Down');
+  ok(ups[0].offset === 1, 'label offset = 1 (newest knowable), got ' + ups[0].offset);
+  ok(Math.abs(ups[0].i - 249) <= 5, 'label anchored at the valley bar (±5 smoothing lag), got idx ' + ups[0].i);
   ok(ups[0].gateT - ups[0].closeT === ups[0].offset * TF, 'label candle closes `offset` periods before detection close');
   ok(ups[0].closeT === mkCandles(closes)[ups[0].i].t + TF, 'closeT = label candle close');
+  ok(ups[0].gateT === gateTOf(closes), 'gateT = newest closed candle close (detection boundary)');
 }
 
-section('T4 inverted-V — exactly one Down at the peak');
+section('T4 inverted-V — one Down at offset 1');
 {
-  const up = Array.from({ length: 200 }, (_, i) => 100 + 0.7 * i);
-  const down = Array.from({ length: 99 }, (_, i) => 239.3 - 0.6 * (i + 1));
-  const closes = up.concat(down);   // peak at idx 199
-  const s = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF });
+  const closes = vDownFixture();
+  const s = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: false });
   const downs = s.events.filter(e => e.type === 'down');
-  ok(downs.length === 1 && s.events.length === 1, 'inverted-V -> exactly one Down label');
-  ok(Math.abs(downs[0].i - 199) <= 3, 'Down anchored at the peak bar (±3), got idx ' + downs[0].i);
+  ok(downs.length === 1 && s.events.length === 1, 'sharp inverted-V -> exactly one Down label');
+  ok(downs[0].offset === 1, 'label offset = 1 (newest knowable), got ' + downs[0].offset);
+  ok(Math.abs(downs[0].i - 249) <= 5, 'Down anchored at the peak bar (±5), got idx ' + downs[0].i);
+  ok(downs[0].gateT === gateTOf(closes), 'gateT = newest closed candle close');
 }
 
-section('T5 timing — fresh extremum near the edge is detectable with its gate');
+section('T5 THE BUG REGRESSION — extremum first-true at offset > 1 in normal operation is NEVER emitted');
 {
-  const down = Array.from({ length: 250 }, (_, i) => 300 - 0.8 * i);
-  const up = Array.from({ length: 30 }, (_, i) => 101 + 1.2 * (i + 1)); // valley 30 bars back
-  const closes = down.concat(up);
-  const s = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF });
-  const evs = s.events.filter(e => e.type === 'up');
-  ok(evs.length >= 1, 'valley detected');
-  ok(evs[0].gateT === mkCandles(closes)[closes.length - 1].t + TF, 'gateT = newest closed candle close');
-  ok(evs[0].closeT === mkCandles(closes)[evs[0].i].t + TF, 'closeT anchors the label bar');
-}
-
-section('T6 fresh-deploy guard + emit window — no stale archaeology');
-{
-  // Valley 80 bars back + clear rise: live tick enumerates it (within the
-  // 120-bar emit window); fresh deploy does not.
+  // The reported defect: a valley whose sign-flip condition first becomes
+  // satisfiable ~80 closed candles back (20h on 15min) was delivered as a
+  // "fresh" alert with confirmedAt = the current tick — an 18h45m gap.
+  // Normal operation (routine tick, no missed scans) must emit NOTHING:
+  // the two-sided fit reshapes old offsets every bar, so those extremums
+  // are chart history resurfacing, not live events.
   const down = Array.from({ length: 210 }, (_, i) => 200 - 0.8 * i);
-  const up = Array.from({ length: 80 }, (_, i) => 32 + 0.5 * i); // valley at idx 209 (80 bars back)
+  const up = Array.from({ length: 80 }, (_, i) => 32 + 0.5 * i); // valley ~80 bars back
   const closes = down.concat(up);
+
+  // (a) plain live tick, no downtime meta at all (old T6 shape)
+  const live = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: false });
+  ok(live.events.length === 0, 'offset-80 valley + no-proof meta -> zero events (was: emitted)');
+
+  // (b) routine tick WITH explicit proof meta: now/lastScanT one period apart
+  const tick = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, metaFor(closes, 0));
+  ok(tick.events.length === 0, 'offset-80 valley + normal-tick proof (0 missed) -> zero events');
+
+  // (c) same for a ~30-bar valley (old T5 fixture shape)
+  const down2 = Array.from({ length: 250 }, (_, i) => 300 - 0.8 * i);
+  const up2 = Array.from({ length: 30 }, (_, i) => 101 + 1.2 * (i + 1));
+  const closes2 = down2.concat(up2);
+  const tick2 = computeMkrTv(mkCandles(closes2), { kernel: 'Laplace', bandwidth: 14 }, metaFor(closes2, 0));
+  ok(tick2.events.length === 0, 'offset-30 valley + normal-tick proof -> zero events');
+
+  // (d) frozen archaeology stays frozen even under the maximum downtime window
+  const down3 = Array.from({ length: 150 }, (_, i) => 200 - 0.8 * i);
+  const up3 = Array.from({ length: 140 }, (_, i) => 81 + 0.5 * i); // valley ~140 bars back
+  const closes3 = down3.concat(up3);
+  const outage = computeMkrTv(mkCandles(closes3), { kernel: 'Laplace', bandwidth: 14 }, metaFor(closes3, 10));
+  ok(outage.events.length === 0, 'offset-140 valley + 10 missed ticks -> STILL zero events (beyond cap)');
+
+  // (e) fresh deploy never backfills either
   const fresh = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: true });
   ok(fresh.events.length === 0, 'fresh=true: old valley NOT backfilled');
-  const live = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: false });
-  ok(live.events.some(e => e.type === 'up' && Math.abs(e.i - 209) <= 6), 'fresh=false: recent chart label enumerated');
 }
+
+section('T6 downtime catch-up — backfill ONLY for proven missed ticks, hard cap 4');
 {
-  // Valley 140 bars back (beyond the 120-bar emit window): never delivered,
-  // even on a live tick — it is frozen chart history.
-  const down = Array.from({ length: 150 }, (_, i) => 200 - 0.8 * i);
-  const up = Array.from({ length: 140 }, (_, i) => 81 + 0.5 * i); // valley at idx 149 (offset 140)
-  const closes = down.concat(up);
-  const live = computeMkrTv(mkCandles(closes), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: false });
-  ok(live.events.length === 0, 'emit window: 140-bar-old extremum NOT delivered');
+  // down-label aging: peak 4 bars from the edge -> Down label at offset 2.
+  const peakUp = Array.from({ length: 250 }, (_, i) => 100 + 0.7 * i);
+  const peak = 100 + 0.7 * 249;
+  const off2 = peakUp.concat(Array.from({ length: 4 }, (_, i) => peak - 3 * (i + 1)));
+
+  // (a) scanner missed 1 tick (lastScanT two periods behind): label knowable
+  // during the outage is still fresh enough -> emitted.
+  const caught = computeMkrTv(mkCandles(off2), { kernel: 'Laplace', bandwidth: 14 }, metaFor(off2, 1));
+  ok(caught.events.length === 1 && caught.events[0].type === 'down' && caught.events[0].offset === 2,
+    'missed=1: offset-2 Down delivered (catch-up)');
+
+  // (b) THE SAME fixture on a routine tick: NOT emitted. The window opens
+  // for downtime only, never on every tick.
+  const routine = computeMkrTv(mkCandles(off2), { kernel: 'Laplace', bandwidth: 14 }, metaFor(off2, 0));
+  ok(routine.events.length === 0, 'missed=0 (routine tick): offset-2 Down NOT delivered');
+
+  // (c) manual poll mid-candle: elapsed < 1 period -> no downtime proof.
+  const midGate = gateTOf(off2);
+  const mid = computeMkrTv(mkCandles(off2), { kernel: 'Laplace', bandwidth: 14 },
+    { tfMs: TF, fresh: false, now: midGate - 0.5 * TF, lastScanT: midGate - TF });
+  ok(mid.events.length === 0, 'mid-candle manual poll: no backfill');
+
+  // (d) no-proof meta (caller cannot compare lastScanT to now): fail closed.
+  const noProof = computeMkrTv(mkCandles(off2), { kernel: 'Laplace', bandwidth: 14 }, { tfMs: TF, fresh: false });
+  ok(noProof.events.length === 0, 'missing now/lastScanT: fail closed, no backfill');
+
+  // (e) fresh deploy beats a stale-looking cursor: newest label only.
+  const freshWins = computeMkrTv(mkCandles(off2), { kernel: 'Laplace', bandwidth: 14 }, metaFor(off2, 1, { fresh: true }));
+  ok(freshWins.events.length === 0, 'fresh=true wins over stale lastScanT: no backfill');
+
+  // (f) up-label at offset 4 = exactly the hard cap: delivered at missed=3.
+  const vDown = Array.from({ length: 250 }, (_, i) => 300 - 0.8 * i);
+  const valley = 300 - 0.8 * 249;
+  const off4 = vDown.concat(Array.from({ length: 4 }, (_, i) => valley + 5 * (i + 1)));
+  const atCap = computeMkrTv(mkCandles(off4), { kernel: 'Laplace', bandwidth: 14 }, metaFor(off4, 3));
+  ok(atCap.events.length === 1 && atCap.events[0].type === 'up' && atCap.events[0].offset === 4,
+    'missed=3: offset-4 Up delivered (exactly at the cap)');
+
+  // (g) offset 5 is beyond the cap even with a huge outage: never delivered.
+  const off5 = vDown.concat(Array.from({ length: 4 }, (_, i) => valley + 8 * (i + 1)));
+  const beyond = computeMkrTv(mkCandles(off5), { kernel: 'Laplace', bandwidth: 14 }, metaFor(off5, 10));
+  ok(beyond.events.length === 0, 'missed=10: offset-5 Up NOT delivered (hard cap 4, not 1+missed)');
 }
 
 section('T7 closed-candle discipline — forming candle never enters the curve');

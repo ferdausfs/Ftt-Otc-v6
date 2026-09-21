@@ -144,3 +144,35 @@ message). Signals correspond to TradingView **bar-close confirmation**
 (the marker as it stands once the candle closes; intrabar flicker of the live
 bar is deliberately not reproduced). Events on a 1min-timeframe pair surface
 on the next 15-minute scan tick.
+
+---
+
+# Repainting vs causal indicators — the emission rule (standing, 2026-09-21)
+
+Every indicator added to `src/strategy/registry.mjs` falls into exactly one
+of two categories, classified in its own file header BEFORE porting:
+
+1. **Causal / non-repainting** — its value at bar N depends only on bars
+   <= N and never changes once that bar closes (UT Bot Alerts; MKR `nrp`).
+   Emit exactly at the flip/cross bar's own close. No emit-window question
+   ever arises.
+2. **Repainting** — its value at bar N can still change after bar N+1,
+   N+2, ... close (any two-sided/centered/adaptive smoother — MKR `tv`).
+   Normal operation emits ONLY the newest knowable detection (offset 1,
+   knowable at the very next candle close). A backfill window (hard cap
+   `MKR_TV_EMIT_WINDOW = 4` candles) opens exclusively for PROVEN scanner
+   downtime — the stored `lastScanT` cursor vs `now` showing genuinely
+   missed scan ticks — never on a routine tick.
+
+**Priority, fixed project decision:** "match the TradingView chart
+pixel-for-pixel" never overrides "the alert must correspond to something
+that just happened". For a repainting indicator these conflict by
+definition; timeliness wins, full stop. A signal delivered 18 hours after
+its stated candle is not tradeable regardless of how faithfully it matches
+the chart's redraw (the 120-candle emit window did exactly that — an
+"fresh" alert whose extremum bar was 75 candles old).
+
+Per repainting indicator, two deliverables are mandatory: the file-header
+classification above, and a regression test proving an extremum that first
+becomes true at offset > 1 during normal operation is NOT emitted (see
+`scripts/mkr_tv_tests.mjs` T5/T6 for the pattern).
