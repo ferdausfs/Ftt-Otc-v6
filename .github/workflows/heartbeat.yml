@@ -1,0 +1,47 @@
+name: heartbeat
+
+# External watchdog heartbeat (AGENT_LOG.md 2026-09-22): the platform cron
+# trigger has gone silent before (2026-09-20, ~5h) and the scan watchdog was
+# then only invoked by organic traffic. This workflow pings /watchdog every
+# 5 minutes so runScanWatchdog() runs regardless of user traffic — staleness
+# is detected, the cron trigger is auto-repaired via the CF API, the owner
+# chat gets a Telegram alert, and a catch-up scan heals the gap.
+#
+# NOTE: GitHub scheduled workflows are best-effort (a few minutes of delay is
+# normal) and are auto-disabled after 60 days without repo activity. The
+# worker's Durable Object alarm heartbeat (src/handlers/heartbeatDO.js) is
+# the traffic- and repo-independent layer; registering a free cron-job.org /
+# UptimeRobot monitor on /watchdog is a recommended extra (1-min pings).
+#
+# Every run leaves an audit trail: the /watchdog JSON (watchdog reason,
+# alert + cron-check outcome) is printed into the job log.
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+permissions: {}
+concurrency:
+  group: heartbeat
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping worker /watchdog
+        run: |
+          set +e
+          code=$(curl -sS -m 120 -o /tmp/heartbeat.json -w '%{http_code}' \
+            https://fttotcv6.umuhammadiswa.workers.dev/watchdog)
+          rc=$?
+          echo "HTTP $code (curl rc=$rc)"
+          cat /tmp/heartbeat.json 2>/dev/null
+          echo
+          if [ "$rc" -ne 0 ] || [ "$code" != "200" ]; then
+            echo "::warning::heartbeat ping FAILED (curl_rc=$rc http=$code)"
+            exit 1
+          fi
+          echo "heartbeat ping OK"

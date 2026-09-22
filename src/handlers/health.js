@@ -12,6 +12,7 @@ import { getApiKeys, readRotationIndex } from '../fetch/keys.js';
 import { readQuota } from '../history/quota.js';
 import { getScanCacheStats } from './latest.js';
 import { getPushStats } from './push.js';
+import { getWatchdogState } from './scan.js';
 import { readHistory, computeStats } from '../history/store.js';
 
 export async function handleHealth(env) {
@@ -69,6 +70,7 @@ export async function handleHealth(env) {
       crypto: { status: 'ALWAYS OPEN (24/7)' },
     },
     scan: { pairs: SCAN_PAIRS, intervalSec: 300, cache: scanCache },
+    watchdog: await getWatchdogState(env),
     push: {
       enabled: push.pushEnabled,
       subscribers: push.subscribers ? push.subscribers.length : 0,

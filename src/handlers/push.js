@@ -39,6 +39,9 @@ const LAST_ATTEMPT_KEY = 'push:lastAttempt';
 const DELIVERED_24H_KEY = 'push:delivered24h';
 const TELEGRAM_API = 'https://api.telegram.org';
 const DIVIDER = '━━━━━━━━━━━━━━━━━━';
+// Must match KV_OWNER in telegramBot.js (kept local: telegramBot already
+// imports THIS module — importing it back would create a cycle).
+const ADMIN_OWNER_KEY = 'tg:owner';
 
 export function botToken(env) {
   return env && env.BOT_TOKEN ? String(env.BOT_TOKEN).trim() : '';
@@ -191,6 +194,45 @@ async function sendTelegram(env, chatId, text) {
   } catch (e) {
     return { ok: false, error: e.message };
   }
+}
+
+/**
+ * Operator/admin chat resolution (scan watchdog, cron self-heal, ...).
+ * Order: the panel owner (tg:owner in SIGNAL_CACHE, seeded by the bot setup)
+ * -> the first auto-enabled push subscriber. Never throws.
+ */
+export async function resolveAdminChatIds(env) {
+  const ids = [];
+  try {
+    const owner = env && env.SIGNAL_CACHE ? await env.SIGNAL_CACHE.get(ADMIN_OWNER_KEY) : null;
+    if (owner) ids.push(String(owner).trim());
+  } catch (e) { /* fall through */ }
+  if (ids.length === 0 && env && env.BOT_KV) {
+    try {
+      const idx = await env.BOT_KV.get('auto_users', 'json');
+      for (const id of normalizeAutoUsers(idx)) {
+        const u = await env.BOT_KV.get('u:' + id, 'json').catch(() => null);
+        if (isAutoEnabled(u)) { ids.push(String(id)); break; }
+      }
+    } catch (e) { /* no admins resolvable */ }
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
+/**
+ * One operator-facing alert message (NOT a signal: bypasses the per-pair
+ * signal push locks — an ops alert must never be swallowed by a push lock —
+ * with its own cooldown applied at the call site). Same HTML->plain retry
+ * contract as signal delivery, so a formatting slip can never drop it.
+ */
+export async function sendAdminAlert(env, text) {
+  if (!env) return { ok: false, error: 'no env' };
+  let ids = [];
+  try { ids = await resolveAdminChatIds(env); } catch (e) { return { ok: false, error: e.message }; }
+  if (ids.length === 0) return { ok: false, error: 'no admin chat (seed tg:owner or auto_users)' };
+  const results = [];
+  for (const id of ids) results.push(await sendTelegram(env, id, text));
+  return { ok: results.some(r => r.ok), targets: ids, results };
 }
 
 /* ------------------------------------------------------------------ */

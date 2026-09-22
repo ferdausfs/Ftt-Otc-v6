@@ -1,5 +1,122 @@
 # Ftt-Otc-v6 — Agent Log
 
+## 2026-09-22 — SILENT CRON-TRIGGER FAILURES: independent heartbeat, real-time admin alerting, cron self-heal (v1.8.0, deployed)
+
+**Symptoms that forced this task.** A post-v1.7.1 alert (GBP/USD) carried internally
+consistent timestamps (signal candle and "confirmed at close" exactly one 15-min
+candle apart — the v1.7.1 emit-window fix working) but arrived late in real
+wall-clock time. That is the signature of a SCHEDULING failure, not a data
+failure — the same failure class commit 2599bb0 documented for 2026-09-20
+(scheduled invocations silent ~07:15–11:59 UTC while fetch/push/webhook stayed
+healthy, only discoverable hours later).
+
+**Root-cause investigation (what actually kills or delays scheduled scans here):**
+
+1. **Deploy-time trigger replacement (proven, repo-specific).** `wrangler deploy`
+   REPLACES the worker's entire cron-trigger set with whatever `wrangler.toml`
+   declares at that moment. Git history shows this repo's `crons` array was
+   rewritten SEVEN times (`* * * * *` → `*/2` → `*/2,*/5` → `+ 0 0 * * 1` →
+   `*/2,*/5` → `*/2,*/15` → `*/15` — commits bab444e/a7408fd, f86274b, b5b64ae,
+   d588c79, dfd51f8, 48c6c6e, 09f0676, 7a06d88/b57221a). Every one of those
+   deploys silently deleted whatever triggers the new config omitted. Any future
+   deploy from a branch/config missing `[triggers]` repeats the accident.
+2. **Platform-side trigger silence (observed 2026-09-20).** Not caused by config
+   drift; the Cloudflare API shows the trigger `created_on 2026-09-19,
+   modified_on 2026-09-21 07:27` (a deploy-time modification). For the silent
+   window itself there is no API-reachable execution history — the dashboard's
+   Worker → Cron Triggers "past executions" view and `wrangler tail` during a
+   suspected window are the only direct evidence sources. Next occurrence:
+   run `npx wrangler tail fttotcv6` and check for the ABSENCE of `scheduled`
+   events at :00/:15/:30/:45 while `/health.watchdog.lastRun` keeps showing
+   heartbeat catch-ups — that combination = platform-side silence.
+3. **Probe blindness (new, discovered live during this task's verification).**
+   The watchdog probed a fixed all-crypto cursor set; the owner had disabled
+   every crypto pair from the bot panel, so those cursors froze (01:00 UTC) and
+   read permanently stale — the 07:17Z staleness alert on 2026-09-22 was this
+   false positive. Fixed the same hour: probes now follow the LIVE config
+   (enabled pairs, crypto preferred; all-forex sets idle safely while the forex
+   market is closed) and a market-closed guard refuses to alert/catch-up for a
+   legitimate weekend gap. Regression-tested (W11).
+
+**Implemented (v1.8.0 — all five instruction items; NOT a config ternary):**
+
+- **External heartbeat, traffic-independent:** `.github/workflows/heartbeat.yml`
+  pings `GET /watchdog` every 5 min (the new dedicated endpoint awaits
+  `runScanWatchdog()` and returns the real outcome — every ping leaves an audit
+  line in the Actions log). GitHub scheduled workflows are best-effort (minutes
+  of delay; auto-disabled after 60 repo-idle days) — the worker-side DO alarm
+  below is the repo-independent layer, and a free cron-job.org/UptimeRobot
+  monitor on `/watchdog` is a recommended 1-min-cadence extra.
+- **Durable Object alarm heartbeat** (`src/handlers/heartbeatDO.js`,
+  `HEARTBEAT` binding, SQLite-class migration): re-arms itself every 5 min,
+  runs the watchdog with zero traffic, survives deploys (alarm state persists),
+  retries with backoff on failure, re-arms itself from `scheduled()` and
+  `/watchdog` if the chain ever breaks. A tick log line
+  (`HeartbeatDO alarm tick: ...`) gives `wrangler tail` positive proof the
+  chain is alive. Deploy-verified: the account supports DOs (binding live since
+  `ff78f561`).
+- **Real-time admin alerting:** on staleness the worker now sends a Telegram
+  message to the owner chat (`tg:owner`, fallback first auto-enabled user)
+  BEFORE the catch-up runs — "🚨 SCAN STALENESS DETECTED", cursor age,
+  threshold, cron-trigger diagnosis. Cooldown 1h per incident (drill bypasses
+  the read). Silent incidents are now known in minutes, not from a user's
+  screenshot.
+- **Cron-trigger self-heal** (`src/handlers/cronHeal.js`): the worker reads its
+  own schedule set via the CF API (`GET .../workers/scripts/{script}/schedules`)
+  and PUTs the expected `*/15` set back if missing — counters mechanism (1) at
+  the source. Runs on every staleness event AND proactively once per hour while
+  fresh (a dead trigger hidden by heartbeat catch-ups would otherwise never
+  surface). Needs the worker secrets `CF_API_TOKEN` + `CF_ACCOUNT_ID` (the
+  deploy token; live-verified read+present works, PUT path mocked-tested) and
+  the `WORKER_NAME` var. Without credentials the check degrades cleanly.
+- **`WD_STALE_MS` 31 → 21 min** (one scan period + 6 min completion lag): with
+  the 5-min heartbeat + 5-min DO alarm, staleness is caught ~6–11 min after a
+  missed tick instead of 16–31. Kept > the 15-min cadence to avoid
+  false positives on slightly-late scans.
+- **Drill (repeatable verification, instruction item 5):**
+  `GET /watchdog?drill=1&key=<WATCHDOG_DRILL_KEY>` simulates a stale cursor
+  end-to-end — forced staleness → admin alert (cooldown bypassed) → cron
+  check → catch-up scan → cursor heal. Live-verified twice on 2026-09-22
+  (drill: `ran:true, drill:true, alert.sent:true`; plus one REAL staleness
+  event that healed a genuine gap). The suite covers wrong-key, no-key and
+  cooldown-bypass cases (W9).
+
+**Verification:** suites 533 checks green (watchdog 15 → 55: endpoint e2e,
+alert cooldown, CF repair missing/present/proactive/no-creds, drill, DO alarm,
+config-aware probes). Live: `/health` exposes a `watchdog` block (last run,
+alert/cron-check stamps); live `GET /watchdog` returned the full diagnostic
+result; DO binding active; cron trigger confirmed present via the in-worker
+API check. `MKR_TV_EMIT_WINDOW` and the offset-1 emission rule untouched; no
+data-window constant was widened — staleness now heals by SCHEDULING, exactly
+as instructed.
+
+**Durable Object alarms — migration assessment (per instruction item 4):**
+Cloudflare documents DO alarms as more reliable than Cron Triggers for
+self-scheduling (guaranteed at-least-once, no dashboard dependency). Decision:
+v1.8.0 uses the DO alarm as an ADDITIVE heartbeat, not as the scan scheduler.
+Migrating the core `*/15` loop INTO the DO remains the next step if platform
+cron silence recurs — sketch: the DO owns the 15-min alarm, calls
+`scheduledScan()` directly (same script, no HTTP), retries via alarm backoff;
+risks to weigh before migrating: subrequest/quota accounting inside DO
+contexts, observability (cron execution history is lost), and the
+single-instance serialization the scan currently gets for free from the
+platform scheduler. Not migrated today because the three independent
+invocation paths + auto-repair already bound the worst-case delay to ~6–11
+minutes, and core-loop migration on a live signal bot needs its own
+verification pass.
+
+**Ops runbook:**
+- Simulate staleness anytime: `curl "https://fttotcv6.umuhammadiswa.workers.dev/watchdog?drill=1&key=$WATCHDOG_DRILL_KEY"` (key in `.secrets_env`).
+- Staleness alert meaning: the last scan cursor of the ENABLED pairs exceeded
+  21 min → catch-up already ran; check `/health` → `watchdog.lastRun.cron`:
+  "present" = trigger exists (platform silence or scan failures — use
+  `wrangler tail`), "re-registered" = trigger was missing and is fixed.
+- Heartbeat liveness: GitHub Actions `heartbeat` workflow history; or tail for
+  `HeartbeatDO alarm tick` every ~5 min.
+- Recommended extra: register cron-job.org or UptimeRobot (free) on
+  `GET /watchdog` every 1 min — punctual pings immune to GitHub scheduler
+  delay and the 60-day repo-activity rule.
+
 ## 2026-08-12 — DEPLOY SCRIPT SILENT-FAIL FIX + v6.10.1 LANDS IN WORKER REPO
 
 **Task A:** the v6.10.1 patch (ftt-telegram-bot PR #12, `patches/v6101-push-silent-death.patch`,

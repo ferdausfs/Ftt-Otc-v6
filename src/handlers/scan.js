@@ -39,10 +39,12 @@ import { writeLatest } from '../history/latestCache.js';
 import { saveSignal, computeStats } from '../history/store.js';
 import {
   pushSignalToSubscribers, SIGNAL_FORMATTERS, formatCombinedText, formatUtBotText,
+  sendAdminAlert, escHtml,
 } from './push.js';
 import {
   getUtBotConfig, getLastScanT, setLastScanT,
 } from './utbotConfig.js';
+import { verifyAndRepairCronTrigger } from './cronHeal.js';
 import { jsonResponse } from '../utils/helpers.js';
 
 function mintSignalId() {
@@ -451,45 +453,220 @@ export async function handleStats(url, env) {
 // ── scan watchdog (cron resilience) ─────────────────────────────────────────
 // The cron trigger is platform-managed and has been observed going SILENT
 // while the worker itself stayed healthy (2026-09-20: scheduled invocations
-// stopped at 07:00 UTC; engine/fetch/push all fine). The watchdog gives the
-// scan a second way to run: ANY fetch-path request (bot tap, app poll,
-// health check) opportunistically runs a catch-up scheduledScan when the
-// newest scan cursor is stale. Correctness under concurrency is inherited
-// from the existing layers: saveSignal() dedupes re-polls and the push lock
-// (30 min per chat+pair+direction) swallows duplicate deliveries.
+// stopped at 07:00 UTC; engine/fetch/push all fine). v1.8.0 hardens this
+// from "reactive to organic traffic" to three INDEPENDENT invocation paths:
+//   1. any HTTP request (unchanged),
+//   2. an external heartbeat (GitHub Actions .github/workflows/heartbeat.yml
+//      pings /watchdog every 5 min — traffic-independent),
+//   3. a Durable Object alarm re-arming itself every 5 min inside the worker
+//      (src/handlers/heartbeatDO.js — survives even the heartbeat dying).
+// On staleness the watchdog now ACTS, not just heals (see AGENT_LOG.md):
+//   a. verifies + auto-repairs the cron trigger itself via the CF API
+//      (src/handlers/cronHeal.js — deploys replace the whole trigger set;
+//      config drift has silently deleted schedules in this repo before),
+//   b. sends a Telegram alert to the admin/owner chat IMMEDIATELY (1h
+//      cooldown per incident) — silent incidents are known in real time,
+//      not from a user's confused screenshot,
+//   c. runs the catch-up scheduledScan.
+// Correctness under concurrency is inherited from the existing layers:
+// saveSignal() dedupes re-polls and the push lock (30 min per
+// chat+pair+direction) swallows duplicate deliveries.
 
 const WD_LOCK_KEY = 'scan:watchdog:lock';
 const WD_LOCK_TTL_S = 600;        // 10 min — one catch-up per lock window
-// Probe cursors on always-on markets (crypto advances every candle; forex
-// cursors legitimately idle on weekends).
+// Default probe pairs: always-on markets (crypto advances every candle;
+// forex cursors legitimately idle on weekends). Actual probes are chosen per
+// run from the LIVE config — see wdProbes() for why that matters.
 const WD_PROBE_PAIRS = ['BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD'];
 // Healthy cadence = a scan lands within ~1 min after every 15-min boundary.
-// Two full periods stale means the cron did not run.
-const WD_STALE_MS = 31 * 60 * 1000;
+// One full period + 6 min of completion lag stale = the cron did not run.
+// Lowered from 31 min (v1.5.1) now that /watchdog is pinged every 5 min by
+// the external heartbeat + DO alarm: staleness is caught within ~6-11 min
+// of the missed tick instead of 16-31. Must stay > the 15-min scan cadence
+// or every slightly-late scan would false-positive.
+const WD_STALE_MS = 21 * 60 * 1000;
+// Admin staleness alert: once per hour while an incident persists (the
+// catch-up keeps healing, so a standing outage re-alerts hourly, not
+// every 5-min heartbeat).
+const WD_ALERT_KEY = 'scan:watchdog:alertT';
+const WD_ALERT_COOLDOWN_S = 3600;
+// Proactive cron-trigger verification even when the scan is FRESH — a dead
+// trigger hidden by heartbeat catch-ups must still be found and re-registered.
+const WD_CRONCHECK_KEY = 'scan:croncheck:t';
+const WD_CRONCHECK_COOLDOWN_S = 3600;
+// Last watchdog outcome (diagnostics for /health + /watchdog responses).
+const WD_STATE_KEY = 'scan:watchdog:state';
 
 /**
- * Fire-and-forget from the fetch handler (ctx.waitUntil). Never throws,
- * never blocks the response, no-ops quickly while the cron is healthy.
+ * Probe cursors on pairs that are actually ENABLED right now — disabled
+ * pairs' cursors freeze and would read permanently stale (live-verified
+ * 2026-09-22: the owner disabled every crypto pair from the bot panel, so
+ * the all-crypto defaults read ~6h stale forever -> alert loop). Prefer
+ * enabled crypto pairs (they advance every candle, weekends included); fall
+ * back to the first enabled pairs of any market; defaults last.
  */
-export async function runScanWatchdog(env, ctx, now = Date.now()) {
+async function wdProbes(env) {
+  try {
+    const cfg = await getUtBotConfig(env);
+    const enabled = enabledPairsFromConfig(cfg);
+    if (enabled.length > 0) {
+      const crypto = enabled.filter(p => WD_PROBE_PAIRS.includes(p));
+      return crypto.length > 0 ? crypto : enabled.slice(0, 4);
+    }
+  } catch (e) { /* fall through to defaults */ }
+  return WD_PROBE_PAIRS;
+}
+
+/** Diagnostics for /health — last watchdog run + alert/cron-check stamps. */
+export async function getWatchdogState(env) {
+  const out = {
+    staleThresholdMin: WD_STALE_MS / 60000,
+    invocationPaths: ['http request', 'external heartbeat (/watchdog)', 'durable object alarm'],
+    lastRun: null, lastAlertAt: null, lastCronCheckAt: null, heartbeat: null,
+  };
+  if (!env || !env.SIGNAL_CACHE) return out;
+  try { out.lastRun = await env.SIGNAL_CACHE.get(WD_STATE_KEY, 'json'); } catch (e) { /* skip */ }
+  try {
+    const t = await env.SIGNAL_CACHE.get(WD_ALERT_KEY);
+    out.lastAlertAt = t ? new Date(Number(t)).toISOString() : null;
+  } catch (e) { /* skip */ }
+  try {
+    const t = await env.SIGNAL_CACHE.get(WD_CRONCHECK_KEY);
+    out.lastCronCheckAt = t ? new Date(Number(t)).toISOString() : null;
+  } catch (e) { /* skip */ }
+  // DO alarm breadcrumb (written ~every 15 min, TTL 30 min). Missing/stale =
+  // the alarm chain is dead (it re-bootstraps itself from any scheduled tick
+  // or /watchdog ping).
+  try {
+    const t = await env.SIGNAL_CACHE.get('scan:heartbeat:tick');
+    out.heartbeat = { lastTickAt: t ? new Date(Number(t)).toISOString() : null };
+  } catch (e) { /* skip */ }
+  return out;
+}
+
+/**
+ * Telegram alert to the admin/owner chat. Cooldown 1h per incident (the
+ * drill path bypasses the read but still writes the key). Never throws.
+ */
+async function alertScanStaleness(env, { newest, staleMs, drill, proactive, cron }) {
+  try {
+    if (!drill) {
+      const last = await env.SIGNAL_CACHE.get(WD_ALERT_KEY);
+      if (last) return { sent: false, reason: 'cooldown' };
+    }
+    const ageMin = staleMs == null ? null : Math.round(staleMs / 60000);
+    const when = newest
+      ? new Date(newest).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
+      : null;
+    const cronLine = !cron || cron.checked !== true
+      ? 'cron trigger check unavailable (' + escHtml((cron && cron.reason) || 'no cf credentials') + ')'
+      : cron.present
+        ? 'cron trigger present: ' + escHtml((cron.crons || []).join(', '))
+        : cron.repaired
+          ? 'cron trigger MISSING → re-registered: ' + escHtml((cron.crons || []).join(', '))
+          : 'cron trigger MISSING and re-register FAILED: ' + escHtml(cron.error || '?');
+    const lines = proactive
+      ? [
+        '🛠 <b>CRON TRIGGER AUTO-REPAIR</b>',
+        '',
+        'The worker cron trigger was MISSING from the schedule set and has been restored before any signal was delayed.',
+        '',
+        '🔧 ' + cronLine,
+      ]
+      : [
+        drill ? '🧪 <b>WATCHDOG DRILL</b> — simulated stale scan'
+          : '🚨 <b>SCAN STALENESS DETECTED</b>',
+        '',
+        '⏱️ Last scan cursor: <code>' + (when || 'none') + '</code> (' + ageMin + ' min old, threshold 21 min)',
+        '',
+        '🔧 ' + cronLine,
+        '',
+        '🔄 Catch-up scan running now — missed candles are evaluated with the capped downtime window; duplicate pushes are suppressed.',
+      ];
+    const r = await sendAdminAlert(env, lines.join('\n'));
+    await env.SIGNAL_CACHE.put(WD_ALERT_KEY, String(Date.now()), { expirationTtl: WD_ALERT_COOLDOWN_S });
+    return { sent: r.ok, targets: r.targets, error: r.ok ? null : r.error };
+  } catch (e) {
+    return { sent: false, error: e.message };
+  }
+}
+
+/**
+ * Proactive hourly cron-trigger verification while the scan is FRESH. The
+ * heartbeat keeps scans alive through catch-ups, so a silently-deleted
+ * trigger would otherwise never surface as staleness. Never throws.
+ */
+async function maybeVerifyCronHourly(env, now) {
+  try {
+    const last = await env.SIGNAL_CACHE.get(WD_CRONCHECK_KEY);
+    if (last) return null;
+    await env.SIGNAL_CACHE.put(WD_CRONCHECK_KEY, String(now), { expirationTtl: WD_CRONCHECK_COOLDOWN_S });
+    const cron = await verifyAndRepairCronTrigger(env);
+    if (cron.checked && cron.present === false) {
+      const alert = await alertScanStaleness(env, { cron, proactive: true });
+      return { cron, alert };
+    }
+    return { cron };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+/**
+ * Fire-and-forget from the fetch handler (ctx.waitUntil), awaited from the
+ * /watchdog heartbeat endpoint and the DO alarm. Never throws, no-ops
+ * quickly while the cron is healthy.
+ * opts.forceStale: drill mode — treat the cursor as stale even when fresh
+ * (verifies alerting + healing end-to-end on demand; bypasses lock+cooldown
+ * reads but writes both, so it cannot cause alert spam).
+ */
+export async function runScanWatchdog(env, ctx, now = Date.now(), opts = {}) {
   if (!env || !env.SIGNAL_CACHE) return { ran: false, reason: 'no KV' };
+  const drill = opts.forceStale === true;
   try {
     const locked = await env.SIGNAL_CACHE.get(WD_LOCK_KEY);
-    if (locked) return { ran: false, reason: 'locked' };
+    if (locked && !drill) return { ran: false, reason: 'locked' };
 
+    const probes = await wdProbes(env);
     let newest = 0;
-    for (const p of WD_PROBE_PAIRS) {
+    for (const p of probes) {
       const t = await getLastScanT(env, p);
       if (t && t > newest) newest = t;
     }
-    if (now - newest <= WD_STALE_MS) return { ran: false, reason: 'fresh', newest };
+    const staleMs = now - newest;
+    const stale = staleMs > WD_STALE_MS || drill;
+    if (!stale) {
+      const cronCheck = await maybeVerifyCronHourly(env, now);
+      return { ran: false, reason: 'fresh', newest, cronCheck: cronCheck || undefined };
+    }
+    // A stale cursor is only actionable while one of the probed pairs'
+    // markets is open: an all-forex probe set legitimately idles on weekends
+    // (crypto is 24/7, so a mixed set always judges). Never alert or catch-up
+    // for a market-closed gap.
+    const anyOpen = probes.some(p => getAssetType(p) === ASSET_TYPE.CRYPTO || isForexMarketOpen());
+    if (!anyOpen && !drill) return { ran: false, reason: 'market-closed', newest };
 
     await env.SIGNAL_CACHE.put(WD_LOCK_KEY, String(now), { expirationTtl: WD_LOCK_TTL_S });
     console.warn('scan watchdog: newest cursor ' + (newest ? new Date(newest).toISOString() : 'none')
-      + ' is stale -> catch-up scheduledScan');
+      + ' is ' + Math.round(staleMs / 60000) + 'm old'
+      + (drill ? ' (DRILL — forced)' : ' -> catch-up scheduledScan'));
+
+    // 1) root-cause diagnosis + auto-repair of the trigger itself
+    const cron = await verifyAndRepairCronTrigger(env);
+    // 2) real-time admin alert, BEFORE the catch-up runs
+    const alert = await alertScanStaleness(env, { newest, staleMs, drill, cron });
+    // 3) heal: catch-up scan (missed candles, capped window, dedupe upstream)
     const r = await scheduledScan(env, ctx);
     console.warn('scan watchdog: catch-up done ' + JSON.stringify({ ok: r.ok, failed: r.failed }));
-    return { ran: true, result: r };
+
+    const state = {
+      t: now, ran: true, drill,
+      reason: drill ? 'forced (drill)' : 'stale',
+      newest, staleMs, alert, cron,
+      result: { ok: r.ok, failed: r.failed, processed: r.processed },
+    };
+    try { await env.SIGNAL_CACHE.put(WD_STATE_KEY, JSON.stringify(state), { expirationTtl: 6 * 3600 }); } catch (e) { /* skip */ }
+    return { ran: true, drill, newest, staleMs, alert, cron, result: r };
   } catch (e) {
     console.warn('scan watchdog error: ' + e.message);
     return { ran: false, reason: 'error: ' + e.message };

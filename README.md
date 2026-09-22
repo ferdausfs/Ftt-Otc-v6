@@ -93,13 +93,36 @@ not add filters to rescue the number — that is what this repo's history taught
 
 ## API
 
-`/health` · `/api/signal?pair=BTC/USD` · `/api/signals/latest` ·
+`/health` · `/watchdog` · `/api/signal?pair=BTC/USD` · `/api/signals/latest` ·
 `/api/batch?pairs=...` · `/api/pairs` · `/api/history?pair=...` ·
 `/api/stats` · `/api/report?id=...&result=WIN|LOSS|TIE|UNKNOWN`
 
-Crons: `*/15` signal scanner (aligned to 15m closes), `*/2` result checker
-(resolves expiries against the 1m feed; ties are stored as TIE, missing candles
-as EXPIRY_GAP — both excluded from win/loss stats).
+Crons: `*/15` signal scanner only (aligned to 15m closes; events are emitted
+on candle close, results are never messaged in CFD mode).
+
+## Reliability — cron resilience (v1.8.0)
+
+The platform Cron Trigger has gone silent before (2026-09-20, ~5h) and a
+reactive watchdog is only as good as its triggers, so the scan watchdog
+(`src/handlers/scan.js`) is invoked by THREE independent paths:
+
+1. any HTTP request (unchanged);
+2. an external heartbeat — GitHub Actions `heartbeat.yml` pings
+   `GET /watchdog` every 5 min (a free cron-job.org/UptimeRobot monitor on the
+   same endpoint is a recommended 1-min-cadence extra);
+3. a Durable Object alarm re-arming itself every 5 min
+   (`src/handlers/heartbeatDO.js`) — fires with zero traffic, survives deploys.
+
+When the newest cursor of the ENABLED pairs exceeds `WD_STALE_MS` (21 min),
+the watchdog: verifies + auto-repairs the cron trigger via the CF API
+(`src/handlers/cronHeal.js` — deploys replace the whole trigger set, which has
+silently dropped schedules here before), Telegram-alerts the owner chat in
+real time (1h cooldown per incident), then runs the catch-up scan. Probes
+follow the live config (disabled pairs' frozen cursors can never fake
+staleness) and all-forex probe sets idle safely while the market is closed.
+Simulate the whole chain on demand:
+`/watchdog?drill=1&key=<WATCHDOG_DRILL_KEY>`. Full investigation + runbook:
+`AGENT_LOG.md` (2026-09-22 entry).
 
 ---
 

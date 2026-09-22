@@ -6,6 +6,10 @@ compatibility_date = "2025-01-01"
 # The worker's own public URL — used for Telegram webhook self-registration
 # (ensureTelegramWebhook compares getWebhookInfo against WORKER_URL).
 WORKER_URL = "https://fttotcv6.umuhammadiswa.workers.dev"
+# Script name used by the cron-trigger self-heal check (src/handlers/cronHeal.js
+# reads this worker's own schedule set through the CF API and restores */15 if
+# a deploy/config drift silently dropped it).
+WORKER_NAME = "fttotcv6"
 
 [[kv_namespaces]]
 binding = "SIGNAL_CACHE"
@@ -20,4 +24,18 @@ id = "39653d1f9b5147259cf3791658f131d7"
 
 [triggers]
 # */15 = signal scanner only (CFD mode: no expiry, no result checker).
+# MUST mirror EXPECTED_CRONS in src/handlers/cronHeal.js — the worker
+# self-heals to exactly this set if a deploy ever drops it.
 crons = ["*/15 * * * *"]
+
+# In-worker alarm heartbeat (v1.8.0): a Durable Object alarm re-arms itself
+# every 5 min and runs the scan watchdog — fires with ZERO traffic, survives
+# deploys, and is the most reliable scheduling primitive Cloudflare offers
+# (the platform cron trigger has gone silent before; see AGENT_LOG.md).
+[[durable_objects.bindings]]
+name = "HEARTBEAT"
+class_name = "HeartbeatDO"
+
+[[migrations]]
+tag = "v1-heartbeat"
+new_sqlite_classes = ["HeartbeatDO"]
