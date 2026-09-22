@@ -164,10 +164,11 @@ export default {
           && key === String(env.WATCHDOG_DRILL_KEY).trim();
         watchdogDispatched = true;   // skip the finally-block double-fire
         const wd = await runScanWatchdog(env, ctx, Date.now(), { forceStale: drill });
-        if (ctx && typeof ctx.waitUntil === 'function') {
-          try { ctx.waitUntil(bootstrapHeartbeat(env)); } catch (e) { /* noop */ }
-        }
-        response = jsonResponse({ ok: true, watchdog: wd, drill, timestamp: new Date().toISOString() });
+        // Awaited (cheap: one getAlarm RPC) and surfaced, so the heartbeat
+        // client can see the DO alarm chain is armed on every ping.
+        let hb = null;
+        try { hb = await bootstrapHeartbeat(env); } catch (e) { hb = { error: e.message }; }
+        response = jsonResponse({ ok: true, watchdog: wd, drill, heartbeat: hb, timestamp: new Date().toISOString() });
 
       } else if (path === '/api/pairs') {
         response = handlePairs();

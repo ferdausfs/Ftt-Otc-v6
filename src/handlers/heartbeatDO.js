@@ -14,8 +14,11 @@
  *   - alarm() runs runScanWatchdog() (lock-guarded, no-op when fresh) and
  *     then re-arms itself for the next interval. The re-arm happens AFTER
  *     the check, so a slow catch-up scan can never pile up alarms.
- *   - ping() (RPC, called from scheduled()/the /watchdog route) bootstraps:
- *     arms the first alarm only if none is pending. Cheap: one getAlarm.
+ *   - POST /ping (classic fetch-based DO interface — RPC over bindings would
+ *     require `extends DurableObject`, which drags `cloudflare:workers` into
+ *     the Node test suite; plain classes + fetch keep everything portable)
+ *     bootstraps: arms the first alarm only if none is pending. Cheap: one
+ *     getAlarm.
  *   - If the alarm chain ever dies, the next scheduled tick or /watchdog
  *     ping re-arms it.
  *
@@ -73,16 +76,29 @@ export class HeartbeatDO {
           await this.env.SIGNAL_CACHE.put(HB_TICK_KEY, String(now), { expirationTtl: 1800 });
         }
       }
-    } catch (e) { /* never break the alarm chain over a breadcrumb */ }
+    } catch (e) {
+      console.warn('HeartbeatDO breadcrumb failed: ' + e.message + ' | stack: ' + (e.stack || '').split('\n')[1]);
+    }
   }
 
-  /** RPC bootstrap: arm the first alarm if none is pending. */
-  async ping() {
-    const current = await this.state.storage.getAlarm();
-    if (current === null) {
-      await this.state.storage.setAlarm(Date.now() + HB_FIRST_DELAY_MS);
+  /**
+   * Classic fetch-based DO interface (no RPC): POST /ping bootstraps the
+   * alarm chain — arm the first alarm if none is pending.
+   */
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (request.method === 'POST' && url.pathname === '/ping') {
+      try {
+        const current = await this.state.storage.getAlarm();
+        if (current === null) {
+          await this.state.storage.setAlarm(Date.now() + HB_FIRST_DELAY_MS);
+        }
+        return Response.json({ armed: (await this.state.storage.getAlarm()) !== null });
+      } catch (e) {
+        return Response.json({ error: e.message }, { status: 500 });
+      }
     }
-    return { armed: (await this.state.storage.getAlarm()) !== null };
+    return Response.json({ error: 'not found' }, { status: 404 });
   }
 }
 
@@ -94,7 +110,8 @@ export async function bootstrapHeartbeat(env) {
   if (!env || !env.HEARTBEAT) return null;
   try {
     const stub = env.HEARTBEAT.get(env.HEARTBEAT.idFromName('scan-heartbeat'));
-    return await stub.ping();
+    const res = await stub.fetch('https://heartbeat-do/ping', { method: 'POST' });
+    return await res.json();
   } catch (e) {
     return { error: e.message };
   }

@@ -51,10 +51,17 @@ healthy, only discoverable hours later).
   `HEARTBEAT` binding, SQLite-class migration): re-arms itself every 5 min,
   runs the watchdog with zero traffic, survives deploys (alarm state persists),
   retries with backoff on failure, re-arms itself from `scheduled()` and
-  `/watchdog` if the chain ever breaks. A tick log line
-  (`HeartbeatDO alarm tick: ...`) gives `wrangler tail` positive proof the
-  chain is alive. Deploy-verified: the account supports DOs (binding live since
-  `ff78f561`).
+  `/watchdog` if the chain ever breaks. Implementation note: bootstrap uses
+  the CLASSIC fetch-based DO interface (`POST /ping` inside the DO) because
+  RPC over bindings requires the class to `extends DurableObject` from
+  `cloudflare:workers` — the first live attempt failed with exactly that
+  error, and the fetch interface keeps the Node test suite importable. A
+  liveness breadcrumb (KV `scan:heartbeat:tick`, written ~every 15 min by the
+  alarm itself, TTL 30 min) is surfaced in `/health` as
+  `watchdog.heartbeat.lastTickAt` — DO alarm logs do NOT reliably reach
+  `wrangler tail`, so this is the only positive liveness signal. Deploy +
+  live-verified: binding active, ping `{armed:true}`, tick recorded at
+  2026-09-22T07:54:25Z with zero traffic.
 - **Real-time admin alerting:** on staleness the worker now sends a Telegram
   message to the owner chat (`tg:owner`, fallback first auto-enabled user)
   BEFORE the catch-up runs — "🚨 SCAN STALENESS DETECTED", cursor age,
@@ -81,14 +88,14 @@ healthy, only discoverable hours later).
   event that healed a genuine gap). The suite covers wrong-key, no-key and
   cooldown-bypass cases (W9).
 
-**Verification:** suites 533 checks green (watchdog 15 → 55: endpoint e2e,
-alert cooldown, CF repair missing/present/proactive/no-creds, drill, DO alarm,
-config-aware probes). Live: `/health` exposes a `watchdog` block (last run,
-alert/cron-check stamps); live `GET /watchdog` returned the full diagnostic
-result; DO binding active; cron trigger confirmed present via the in-worker
-API check. `MKR_TV_EMIT_WINDOW` and the offset-1 emission rule untouched; no
-data-window constant was widened — staleness now heals by SCHEDULING, exactly
-as instructed.
+**Verification:** suites 539 checks green (watchdog 15 → 58: endpoint e2e,
+alert cooldown, CF repair missing/present/proactive/no-creds, drill, DO alarm
++ breadcrumb, config-aware probes). Live: `/health` exposes a `watchdog` block
+(last run, alert/cron-check stamps, DO heartbeat tick); live `GET /watchdog`
+returned the full diagnostic result incl. `heartbeat:{armed:true}`; cron
+trigger confirmed present via the in-worker API check. `MKR_TV_EMIT_WINDOW`
+and the offset-1 emission rule untouched; no data-window constant was widened
+— staleness now heals by SCHEDULING, exactly as instructed.
 
 **Durable Object alarms — migration assessment (per instruction item 4):**
 Cloudflare documents DO alarms as more reliable than Cron Triggers for
@@ -111,8 +118,10 @@ verification pass.
   21 min → catch-up already ran; check `/health` → `watchdog.lastRun.cron`:
   "present" = trigger exists (platform silence or scan failures — use
   `wrangler tail`), "re-registered" = trigger was missing and is fixed.
-- Heartbeat liveness: GitHub Actions `heartbeat` workflow history; or tail for
-  `HeartbeatDO alarm tick` every ~5 min.
+- Heartbeat liveness: GitHub Actions `heartbeat` workflow history (dispatch
+  run 35700891294 green on 2026-09-22); or `/health` →
+  `watchdog.heartbeat.lastTickAt` (stale > 30 min = alarm chain dead; any
+  scheduled tick or /watchdog ping re-arms it automatically).
 - Recommended extra: register cron-job.org or UptimeRobot (free) on
   `GET /watchdog` every 1 min — punctual pings immune to GitHub scheduler
   delay and the 60-day repo-activity rule.

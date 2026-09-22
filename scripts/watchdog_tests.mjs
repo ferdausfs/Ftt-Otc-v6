@@ -394,11 +394,12 @@ async function main() {
 
     const storage = mkStorage();
     const dob = new HeartbeatDO({ storage }, env);
-    const armed = await dob.ping();
-    ok(armed.armed === true && storage.alarm !== null, 'ping() arms the first alarm');
+    const pingRes = await dob.fetch(new Request('https://heartbeat-do/ping', { method: 'POST' }));
+    const armed = await pingRes.json();
+    ok(armed.armed === true && storage.alarm !== null, 'POST /ping arms the first alarm');
     const first = storage.alarm;
-    await dob.ping();
-    ok(storage.alarm === first, 'ping() never double-arms (alarm unchanged)');
+    await (await dob.fetch(new Request('https://heartbeat-do/ping', { method: 'POST' }))).json();
+    ok(storage.alarm === first, 'ping never double-arms (alarm unchanged)');
 
     globalThis.fetch = mockFetch(); tdCalls = []; tgSends = []; cfCalls = []; cfSchedules = null;
     await dob.alarm();   // fresh cursors -> watchdog no-op; alarm must re-arm forward
@@ -413,10 +414,10 @@ async function main() {
     ok(hstate.heartbeat && !!hstate.heartbeat.lastTickAt, '/health surfaces the heartbeat tick');
 
     ok(await bootstrapHeartbeat({}) === null, 'bootstrapHeartbeat no-ops without the binding');
-    const fakeStub = { ping: async () => ({ armed: true }) };
+    const fakeStub = { fetch: async () => new Response(JSON.stringify({ armed: true }), { headers: { 'Content-Type': 'application/json' } }) };
     const fakeNs = { idFromName: () => 'id1', get: () => fakeStub };
     const b = await bootstrapHeartbeat({ HEARTBEAT: fakeNs });
-    ok(b && b.armed === true, 'bootstrapHeartbeat arms through the binding');
+    ok(b && b.armed === true, 'bootstrapHeartbeat arms through the binding (fetch-based DO interface)');
   }
 
   console.log('W11 probes follow the LIVE config — disabled pairs cannot fake staleness');
