@@ -93,10 +93,18 @@ export const INDICATORS = [
     name: 'Multi Kernel Regression',
     icon: '\uD83D\uDCCA',
     engineTag: 'MKR',
-    // mode 'tv' = the branch the user's TradingView chart actually shows
-    // (Repaint input defaults to true and is hidden from the settings
-    // dialog). 'nrp' = the script's own non-repaint branch.
-    defaultCfg: { enabled: true, mode: 'tv', kernel: 'Laplace', bandwidth: 14 },
+    // PRODUCTION MODE (owner decision 2026-09-23, v1.9.0): 'nrp' — the
+    // script's own NON-REPAINT branch (repaint=false). It analyzes the chart
+    // data exactly like UT Bot: a causal kernel MA whose value at bar N
+    // depends only on bars <= N, firing each Up/Down label at the flip bar's
+    // OWN close — no detection delay, no reshape, deterministic history.
+    // The previous default 'tv' (the chart-default repaint branch) anchored
+    // labels one candle back and re-fit them every bar, so the bot kept
+    // delivering signals the chart had shown long before (owner report:
+    // "MKR gives the sell the chart gave long ago, whenever UT Bot fires").
+    // 'tv' stays selectable per pair from the bot panel for chart-parity
+    // comparison — but causal timeliness beats chart parity (standing rule).
+    defaultCfg: { enabled: true, mode: 'nrp', kernel: 'Laplace', bandwidth: 14 },
     compute(candles, cfg, meta) {
       const common = { kernel: cfg.kernel, bandwidth: cfg.bandwidth, deviations: cfg.deviations };
       return cfg.mode === 'nrp'

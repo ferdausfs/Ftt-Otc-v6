@@ -12,7 +12,7 @@
 
 export const CONFIG = {
   ENGINE: 'UT-BOT',              // primary engine (history ledger back-compat)
-  VERSION: 'MULTI-IND-v1.8.0',
+  VERSION: 'MULTI-IND-v1.9.0',
 
   API_BASE_URL: 'https://api.twelvedata.com',
   REQUEST_TIMEOUT: 12000,
@@ -54,14 +54,18 @@ export const CONFIG = {
   },
 
   // ── Multi Kernel Regression [ChartPrime] (second indicator) ──────────────
-  // Non-repaint port (src/strategy/multiKernelRegression.mjs): kernel-
-  // weighted MA of the last `bandwidth` closes; labels "Up"/"Down" on the
-  // MA's slope flip (ta.crossover/crossunder vs its own prior value).
+  // Production mode = 'nrp' (v1.9.0, owner decision 2026-09-23): the
+  // script's own non-repaint branch — causal kernel-weighted MA of the last
+  // `bandwidth` closes; labels "Up"/"Down" on the MA's slope flip
+  // (ta.crossover/crossunder vs its own prior value), firing at the flip
+  // bar's OWN close — UT-Bot-style chart-data analysis. The repaint 'tv'
+  // branch stays opt-in per pair from the bot panel.
   // Defaults = TradingView defaults (Laplace, bandwidth 14, source close).
   MKR: {
     DEFAULT_KERNEL: 'Laplace',
     DEFAULT_BANDWIDTH: 14,
     DEFAULT_DEVIATIONS: 2.0,
+    DEFAULT_MODE: 'nrp',
   },
 };
 

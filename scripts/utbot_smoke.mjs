@@ -261,19 +261,14 @@ async function main() {
   }
 
   // ── S7: UT Bot + MKR fire on the SAME closed candle -> ONE combined message
-  // (confluence mechanism test; MKR pinned to 'nrp' — its labels confirm at
-  // their own flip bar's close so both engines can share a candle. Default
-  // tv-mode MKR is covered by S8: labels confirm one candle after the bar TV
-  // anchors them to, so cross-indicator same-candle grouping is not the norm.)
+  // (confluence mechanism test). MKR's causal 'nrp' branch — the v1.9.0
+  // production default — fires each label at the flip bar's OWN close, so
+  // same-candle grouping with UT Bot is the norm, not the exception; no pin
+  // needed, this exercises the registry default path end to end.
   {
     const env = { SIGNAL_CACHE: mkKV(), BOT_KV: mkKV(), BOT_TOKEN: 't', TWELVEDATA_API_KEY: 'mock-key' };
     env.BOT_KV._m.set('auto_users', JSON.stringify(['777']));
     env.BOT_KV._m.set('u:777', JSON.stringify({ autoEnabled: true }));
-    const pinNrp = { pairs: {} };
-    for (const p of ['BTC/USD', 'ETH/USD', 'XRP/USD', 'SOL/USD', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD']) {
-      pinNrp.pairs[p] = { indicators: { mkr: { mode: 'nrp' } } };
-    }
-    await env.SIGNAL_CACHE.put('utbot:config', JSON.stringify(pinNrp));
     const realFetch = globalThis.fetch;
     const S7 = buildBuySeries(N, 20);   // breakout flips BOTH indicators on the last bar
     const shared = {};
@@ -310,10 +305,11 @@ async function main() {
     }
   }
 
-  // ── S8: DEFAULT config = MKR tv mode (chart parity). Scan runs the tv
-  // engine; UT Bot BUY still recorded; any MKR tv label carries mode 'tv' +
-  // confirmedAt, and is NEVER falsely grouped with a different-candle UT Bot
-  // event (grouping stays same-candle).
+  // ── S8: DEFAULT config = MKR causal 'nrp' mode (v1.9.0 production
+  // default). Scan runs the non-repaint engine: MKR events stamp mode 'nrp',
+  // carry NO confirmedAt (the label IS the flip bar's own close — nothing
+  // ever resurfaces from an older bar), and confirm on the SAME candle as a
+  // simultaneous UT Bot event.
   {
     const env = { SIGNAL_CACHE: mkKV(), BOT_KV: mkKV(), BOT_TOKEN: 't', TWELVEDATA_API_KEY: 'mock-key' };
     env.BOT_KV._m.set('auto_users', JSON.stringify(['777']));
@@ -330,19 +326,19 @@ async function main() {
       const scanMod = await import('../src/handlers/scan.js');
       const r = await scanMod.scheduledScan(env, ctxMock);
       const expectPairs = isForexMarketOpen() ? 8 : 4;
-      ok(r.ok === expectPairs, 'S8 tv-mode scan processed all active pairs');
+      ok(r.ok === expectPairs, 'S8 nrp-default scan processed all active pairs');
       const hist = await env.SIGNAL_CACHE.get('sig:BTC_USD', 'json');
       const ut = (hist || []).filter(x => x.engine === 'UT-BOT');
       const mk = (hist || []).filter(x => x.engine === 'MKR');
-      ok(ut.length === 1 && ut[0].direction === 'BUY', 'S8 UT Bot BUY recorded under tv default');
+      ok(ut.length === 1 && ut[0].direction === 'BUY', 'S8 UT Bot BUY recorded under nrp default');
+      ok(mk.length >= 1, 'S8 MKR event recorded under nrp default');
       for (const m of mk) {
-        ok(m.indicators.mode === 'tv', 'S8 MKR events stamped mode tv');
-        ok(!!m.indicators.confirmedAt, 'S8 MKR tv events carry confirmedAt');
-        ok(m.indicators.confirmedAt === m.timestamp || new Date(m.indicators.confirmedAt) > new Date(m.timestamp),
-          'S8 confirmation is never before the label candle');
+        ok(m.indicators.mode === 'nrp', 'S8 MKR events stamped mode nrp');
+        ok(!m.indicators.confirmedAt, 'S8 causal MKR events carry NO confirmedAt (fire at own close)');
+        ok(m.timestamp === ut[0].timestamp, 'S8 causal MKR confirms on the flip bar itself (same close as UT Bot)');
       }
       const cfgJson = await (await import('../src/handlers/utbotConfig.js')).handleUtBotConfigGet(env).then(r => r.json());
-      ok(cfgJson.defaults.indicators.mkr.mode === 'tv', 'S8 config exposes mkr.mode default tv');
+      ok(cfgJson.defaults.indicators.mkr.mode === 'nrp', 'S8 config exposes mkr.mode default nrp');
     } finally {
       Date.now = realNow;
       globalThis.fetch = realFetch;

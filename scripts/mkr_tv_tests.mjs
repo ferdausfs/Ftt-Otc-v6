@@ -212,15 +212,15 @@ section('T7 closed-candle discipline — forming candle never enters the curve')
   ok(Math.abs(s.lastValue - sAll.lastValue) < 1e-9, 'identical to computing without the forming candle');
 }
 
-section('T8 registry dispatch — default tv, nrp still available');
+section('T8 registry dispatch — default nrp (causal), tv opt-in');
 {
   const mkr = INDICATORS.find(i => i.id === 'mkr');
-  ok(mkr.defaultCfg.mode === 'tv', 'registry defaultCfg.mode = tv (chart parity by default)');
+  ok(mkr.defaultCfg.mode === 'nrp', 'registry defaultCfg.mode = nrp (causal production default since v1.9.0)');
   const candles = mkCandles(rampCloses(320));
-  const sTv = mkr.compute(candles, { ...mkr.defaultCfg }, { tfMs: TF });
-  ok(sTv.mode === 'tv', "registry compute -> mode 'tv' series");
-  const sNrp = mkr.compute(candles, { ...mkr.defaultCfg, mode: 'nrp' }, { tfMs: TF });
-  ok(sNrp.mode === undefined && Array.isArray(sNrp.events), "registry compute mode:'nrp' -> legacy engine");
+  const sNrp = mkr.compute(candles, { ...mkr.defaultCfg }, { tfMs: TF });
+  ok(sNrp.mode === undefined && Array.isArray(sNrp.events), "registry default compute -> causal nrp engine");
+  const sTv = mkr.compute(candles, { ...mkr.defaultCfg, mode: 'tv' }, { tfMs: TF });
+  ok(sTv.mode === 'tv', "registry compute mode:'tv' -> repaint branch (opt-in)");
   ok(Array.isArray(mkr.params.find(p => p.key === 'mode').options) && mkr.params.find(p => p.key === 'mode').options.length === 2,
     "bot UI gets a Mode enum (tv/nrp)");
 }

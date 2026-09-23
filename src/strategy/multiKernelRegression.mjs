@@ -48,23 +48,30 @@
  * ── CLASSIFICATION (standing rule — README "Repainting vs causal") ─────────
  * MKR 'tv' is REPAINTING: the two-sided fit re-shapes older offsets every
  * bar, so an extremum can "newly" satisfy the sign-flip condition many
- * hours after its bar. Timeliness beats chart parity (fixed project
- * decision, never re-litigated): in normal operation only offset-1 labels
- * are emitted; a backfill window (hard cap MKR_TV_EMIT_WINDOW = 4 candles)
- * opens exclusively for PROVEN scanner downtime, detected by comparing
- * meta.lastScanT to meta.now — never on a routine tick. MKR 'nrp' is
- * CAUSAL / non-repainting: its value at bar N depends only on bars <= N,
- * flips fire at the flip bar's own close, and no emit-window question
- * arises for it.
+ * hours after its bar — and every label TV anchors at bar b only appears
+ * when bar b+1 closes (so the chart shows it before the bot may emit it).
+ * The owner experienced exactly this as "the bot delivers the sell the
+ * chart gave long ago, whenever UT Bot fires" (2026-09-23) and ruled:
+ * MKR must analyze chart data like UT Bot does. PRODUCTION DEFAULT is
+ * therefore mode 'nrp' since v1.9.0 (registry defaultCfg + live KV): a
+ * CAUSAL / non-repainting engine whose value at bar N depends only on
+ * bars <= N, flips fire at the flip bar's own close, and no emit-window
+ * question arises at all. 'tv' remains ported and selectable per pair
+ * (bot panel Mode enum) for chart-parity comparison: in 'tv', normal
+ * operation only emits offset-1 labels; a backfill window (hard cap
+ * MKR_TV_EMIT_WINDOW = 4 candles) opens exclusively for PROVEN scanner
+ * downtime, detected by comparing meta.lastScanT to meta.now — never on
+ * a routine tick.
  *
- * ── MODE 'nrp' (repaint=false — the script's own stable mode) ───────────────
+ * ── MODE 'nrp' (repaint=false — the script's own stable mode, and the
+ *    PRODUCTION DEFAULT since v1.9.0) ──────────────────────────────────────
  * computeMultiKernelRegression(). One-sided kernel-weighted MA of the last
  * `bandwidth` closes with precalculated weights
  *   weight(i) = kernel((i/B)^2, 1)
  * and labels on ta.crossover/crossunder(nrp_sum, nrp_sum[1]) — flips fire at
- * the flip bar's own close (no detection delay). Kept byte-compatible with
- * the previous port (54 passing mkr_tests); selectable via config
- * indicators.mkr.mode = 'nrp'.
+ * the flip bar's own close (no detection delay, no gateT, deterministic
+ * history). Kept byte-compatible with the previous port (mkr_tests);
+ * selectable via config indicators.mkr.mode ('tv' = opt-in repaint branch).
  *
  * Shared Pine semantics (both modes):
  *   K1  the 17 kernel functions are verbatim (see kernelFn)
@@ -465,7 +472,7 @@ export function mkrEventToSignal(event, pair, extra = {}) {
     audit: {
       event: event.type,                    // native: 'up' | 'down'
       label: event.type === 'up' ? 'Up' : 'Down',
-      mode: extra.mode,                     // 'tv' (chart-default) | 'nrp'
+      mode: extra.mode,                     // 'nrp' (production default) | 'tv' (opt-in)
       kernel: extra.kernel,
       bandwidth: extra.bandwidth,
       value: event.value,
@@ -474,7 +481,8 @@ export function mkrEventToSignal(event, pair, extra = {}) {
       timeframe: extra.timeframe,
       eventCandle: { t: event.t, closeT: event.closeT },
       // tv mode only: the label becomes knowable one candle after the bar
-      // TV anchors it to — this is that detection close (ISO).
+      // TV anchors it to — this is that detection close (ISO). Causal nrp
+      // events carry no gateT: the label IS the flip bar's own close.
       confirmedAt: event.gateT != null ? new Date(event.gateT).toISOString() : undefined,
       barIndex: event.i,
     },

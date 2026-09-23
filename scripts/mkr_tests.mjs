@@ -27,6 +27,7 @@ import {
   kernelFn, kernelWeights, computeMultiKernelRegression, mkrEventToSignal,
   MKR_KERNELS, MKR_KERNEL_DEFAULT, MKR_BANDWIDTH_DEFAULT,
 } from '../src/strategy/multiKernelRegression.mjs';
+import { INDICATORS } from '../src/strategy/registry.mjs';
 
 let pass = 0, fail = 0;
 function ok(cond, name) {
@@ -217,6 +218,51 @@ console.log('— T9 defaults + params echo —');
   ok(r.params.kernel === 'Laplace' && r.params.bandwidth === MKR_BANDWIDTH_DEFAULT
     && r.params.deviations === 2.0, 'TradingView defaults: Laplace / 14 / 2.0');
   ok(r.up.length === 50 && r.down.length === 50 && r.dirUp.length === 50, 'series arrays index-aligned');
+}
+
+console.log('— T10 production mode: causal default, flip-bar-close emission —');
+{
+  // Owner decision 2026-09-23: MKR must analyze chart data like UT Bot —
+  // causal, signal at the flip bar's own close, never resurfacing older
+  // bars. The registry default pins that decision.
+  const mkr = INDICATORS.find(i => i.id === 'mkr');
+  ok(mkr.defaultCfg.mode === 'nrp', 'registry defaultCfg.mode = nrp (causal, UT-Bot-style)');
+
+  // A fresh V-shaped series: decline then rise -> exactly one Up flip whose
+  // event bar is the valley candle itself (no one-candle detection delay).
+  const closes = [];
+  for (let i = 0; i < 60; i++) closes.push(200 - 2 * i);          // decline
+  for (let i = 0; i < 25; i++) closes.push(101 + 3 * (i + 1));    // rise -> Up
+  const TF = 900_000;
+  const r = computeMultiKernelRegression(mkCloses(closes), { bandwidth: 5 }, { tfMs: TF });
+  const ups = r.events.filter(e => e.type === 'up');
+  ok(ups.length === 1, 'V-series produces exactly one Up flip');
+  const ev = ups[0];
+  ok(ev.gateT === undefined, 'causal event carries NO gateT (no detection delay)');
+  ok(ev.closeT === ev.t + TF, 'event closeT = flip candle own close');
+  ok(ev.price === closes[ev.i], 'event price = flip candle close');
+
+  // Scanner gate arithmetic (buildResult: gate = gateT ?? closeT; isNew =
+  // gate > lastScanT && gate <= newestCloseT). Simulate three ticks:
+  const gate = ev.gateT != null ? ev.gateT : ev.closeT;
+  const closeTNewest = ev.closeT;              // the flip candle is the newest closed candle
+  const tickAtFlipClose = { lastScanT: closeTNewest - TF, closeT: closeTNewest };
+  ok(gate > tickAtFlipClose.lastScanT && gate <= tickAtFlipClose.closeT,
+    'flip emits on the FIRST tick after its own close (zero-delay, like UT Bot)');
+  const nextTick = { lastScanT: closeTNewest, closeT: closeTNewest + TF };
+  ok(!(gate > nextTick.lastScanT && gate <= nextTick.closeT),
+    'flip is NOT re-emitted once the cursor covers it (idempotent)');
+  const lateTick = { lastScanT: closeTNewest - 10 * TF, closeT: closeTNewest + 9 * TF };
+  ok(!(gate > lateTick.closeT), 'an old flip whose close is beyond the newest candle never emits (no resurfacing)');
+
+  // Determinism: appending later candles never changes or re-fits the
+  // historical event set (the nrp estimator is purely one-sided — T7 pins
+  // values; this pins the EVENT list).
+  const more = closes.concat(Array.from({ length: 40 }, (_, i) => closes[closes.length - 1] + (i % 2 ? 1 : -1)));
+  const r2 = computeMultiKernelRegression(mkCloses(more), { bandwidth: 5 }, { tfMs: TF });
+  const ev2 = r2.events.filter(e => e.i <= ev.i && e.type === 'up');
+  ok(ev2.length === 1 && ev2[0].i === ev.i && ev2[0].closeT === ev.closeT && ev2[0].type === ev.type,
+    'historical flips are immutable under new data (no repaint resurfacing)');
 }
 
 console.log('\nMulti Kernel Regression tests: ' + pass + ' passed, ' + fail + ' failed');
