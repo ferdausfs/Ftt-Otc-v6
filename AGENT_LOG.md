@@ -1,5 +1,70 @@
 # Ftt-Otc-v6 — Agent Log
 
+## 2026-09-23 — MKR production mode switched to the causal 'nrp' branch (v1.9.0, deployed) — "analyze chart data like UT Bot"
+
+**Owner report (verbatim intent).** "Na, ekhono same somossa… ut bot jokhono
+signal dey, multi kernel indicator o same time signal dey — jakina, onek agei
+sell signal diye rekhesilo. Tai boli, multi kernel indicator ta ut bot er moto
+chart data analysis kore banate hobe." I.e. the MKR alert the bot delivers
+corresponds to a label the TV chart had shown LONG before; delivery coincides
+with fresh UT Bot alerts, making it feel like stale content fired as new.
+
+**Root cause (two layers, both found this session).**
+
+1. *Computation layer.* The registry ran MKR in `mode: 'tv'` — the Pine
+   script's `repaint=true` branch (the chart's default). That branch fits a
+   TWO-SIDED kernel curve over the newest 500 closed candles and re-fits it on
+   EVERY bar: labels anchor to the extremum bar but only become knowable one
+   candle later (gateT), and TV erases/redraws the label set continuously. An
+   emitted "Down" therefore always refers to a candle the owner had already
+   watched on the chart, and the label set the owner sees never freezes — the
+   bot's stable alert feed and the chart's moving labels cannot agree. This is
+   inherent to the repaint branch; the v1.7.1 emit-window fix (b2c423d) only
+   capped WHICH offsets may emit, not the one-candle-back anchoring.
+2. *Config layer (the reason a code-default flip alone was a no-op).* The bot
+   panel's settings dialog had persisted `indicators.mkr.mode: "tv"`
+   EXPLICITLY on all 66 pairs in the live KV (`utbot:config`), which shadows
+   `defaultCfg` on every read (`sanitizeIndicatorConfigs` copies any stored
+   valid mode). Probed via the CF API before changing anything.
+
+**Fix (owner ruling applied: causal timeliness beats chart parity).**
+
+- `src/strategy/registry.mjs`: `defaultCfg.mode 'tv' -> 'nrp'` — the script's
+  OWN `repaint=false` branch: one-sided kernel-weighted MA of the last
+  `bandwidth` closes (weights `kernel((i/B)^2,1)`), labels on
+  `ta.crossover/crossunder(nrp_sum, nrp_sum[1])`. Value at bar N depends only
+  on bars <= N; each label fires at the flip bar's OWN close (no gateT, no
+  detection delay, deterministic history). Exactly UT Bot's behavior class.
+- LIVE KV migration (`scripts/kv_mkr_mode_migrate.mjs`, dry-run then apply):
+  66/66 pairs `mode: "tv" -> "nrp"`; every other stored key byte-preserved
+  (GBP/USD's user-tuned bandwidth 16 kept). Verified: distinct modes across
+  all pairs = `nrp` via the live `/api/utbot/config`.
+- `mode: 'tv'` stays ported, tested, and selectable per pair from the bot
+  panel Mode enum for chart-parity comparison; `MKR_TV_EMIT_WINDOW = 4` and
+  the offset-1 emission rule are UNTOUCHED (b2c423d stands as-is).
+- Classification headers updated in `multiKernelRegression.mjs` +
+  `config.js` (v1.9.0): MKR production = CAUSAL (standing rule applied).
+- Tests: `mkr_tests.mjs` +T10 (registry default pin; no-gateT zero-delay
+  emission; scanner-gate arithmetic — first-tick emit, no re-emit, no
+  resurfacing; historical flips immutable when later candles append).
+  `mkr_tv_tests.mjs` T8 + `utbot_smoke.mjs` S7/S8 updated for the new
+  default; S7 same-candle confluence now exercises the DEFAULT path.
+
+**Verification.** Suites green: mkr 63, mkr_tv 45, utbot_smoke 40, utbot 92,
+bot 157, push-format 52, watchdog 58, strategy 42. (`engine_smoke.mjs` fails
+on HEAD too — legacy FTT3-era suite for the retired engine; not the live
+path, left as-is.) Deployed version 82d5aa77 (cron `*/15` verified present
+post-deploy); `/health` reports MULTI-IND-v1.9.0.
+
+**Owner-facing expectations (important).** (a) MKR alerts now carry the flip
+candle's own close time and arrive on the first tick after that close — the
+message can never reference a candle the chart showed long ago. (b) The
+causal curve is a 14-bar MA: it flips MORE often than the smooth repaint
+curve and its labels will NOT match the (repainting) labels on the owner's
+current TV chart; unticking "Repaint" in the indicator's TV settings shows
+exactly what the bot now computes. (c) When MKR and UT Bot fire on the same
+candle, they share one combined confluence message (same-candle grouping).
+
 ## 2026-09-22 — SILENT CRON-TRIGGER FAILURES: independent heartbeat, real-time admin alerting, cron self-heal (v1.8.0, deployed)
 
 **Symptoms that forced this task.** A post-v1.7.1 alert (GBP/USD) carried internally
